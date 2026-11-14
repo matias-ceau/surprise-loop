@@ -8,6 +8,7 @@ import pytest
 from surprise_loop.config import (
     AgentSpec,
     Backends,
+    ConflictParams,
     Params,
     RunConfig,
     Runtime,
@@ -53,7 +54,9 @@ def make_config(ticks: int | None = None, seed: int = 11, run_id: str = "persist
         agent=AgentSpec(
             name="a", traits=TRAITS, mood=Mood(valence=0.0, arousal=0.0), goal_priorities=PRIORITIES
         ),
-        params=Params(),
+        # The real Reconcile must raise no conflict of its own: every two-pass tick in these tests
+        # comes from the injected conflict in CONFLICT_PHASES.
+        params=Params(conflict=ConflictParams(enabled=False)),
         backends=Backends(),
         model=None,
     )
@@ -263,7 +266,11 @@ def test_interrupted_and_resumed_run_is_byte_identical(tmp_path: Path) -> None:
     assert every_file(split) == every_file(whole)
     assert resumed == uninterrupted
     assert [r.tick for r in resumed.records] == list(range(1, len(uninterrupted.records) + 1))
-    assert len(resumed.records) == 90
+    assert len(resumed.records) > 40
+    # The run went to the end of the world: every scheduled step was taken.
+    assert sum(len(r.passes) for r in resumed.records) == sum(
+        phase.steps for phase in config.world.schedule
+    )
 
 
 def test_resume_of_a_two_pass_run_is_byte_identical(tmp_path: Path) -> None:
@@ -282,13 +289,13 @@ def test_resume_of_a_two_pass_run_is_byte_identical(tmp_path: Path) -> None:
 def test_resume_ignores_a_stray_temp_file(tmp_path: Path) -> None:
     config = make_config()
     whole, split = tmp_path / "whole", tmp_path / "split"
-    asyncio.run(run(config, whole))
+    uninterrupted = asyncio.run(run(config, whole))
     asyncio.run(run(config, split, stop_after_tick=40))
     (split / "tick_000041.json.tmp").write_text('{"run_id": "persist", "ti')
 
     resumed = asyncio.run(run(config, split, resume=True))
 
-    assert len(resumed.records) == 90
+    assert len(resumed.records) == len(uninterrupted.records) > 40
     assert run_files(split) == run_files(whole)
 
 
