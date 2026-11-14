@@ -59,6 +59,26 @@ WORLD_CONFIG = WorldConfig(
     schedule=[PhaseSpec(kind=PhaseKind.FIXED_RATIO, steps=20, ratio=1)],
 )
 TRAITS = Traits(reward_sensitivity=1.0, surprise_learning_rate=0.3, mood_inertia=0.5)
+# Pinned here so no assertion depends on the provisional defaults in config.py.
+MOOD = Mood(valence=0.0, arousal=0.0)
+PRIORITIES = {GoalName.SEEK_REWARD: 1.0, GoalName.EXPLORE: 0.5, GoalName.CONSERVE: 0.5}
+COSTS = {Action.PRESS_A: 0.05, Action.PRESS_B: 0.05, Action.EXPLORE: 0.02, Action.REST: 0.0}
+
+
+def delib(**overrides: object) -> DeliberateParams:
+    """DeliberateParams with every field set explicitly; `overrides` replace single fields."""
+    fields: dict[str, object] = {
+        "temperature": 0.1,
+        "prior_expected_reward": 0.3,
+        "prior_weight": 1.0,
+        "action_costs": COSTS,
+        "approach_weight": 0.0,
+        "vigor_weight": 0.0,
+        "explore_value": 0.0,
+        "rest_value": 0.0,
+        "confidence_halfsat": 3.0,
+    }
+    return DeliberateParams(**(fields | overrides))
 
 
 def make_rt(
@@ -74,7 +94,7 @@ def make_rt(
         seed=seed,
         ticks=10,
         world=WORLD_CONFIG,
-        agent=AgentSpec(name="a", traits=traits),
+        agent=AgentSpec(name="a", traits=traits, mood=MOOD, goal_priorities=PRIORITIES),
         params=params or Params(),
         backends=backends or Backends(),
         model=None,
@@ -334,7 +354,7 @@ def _deliberate_ready(rt: Runtime, agent: AgentState, pass_index: int = 0) -> Wo
 
 
 def test_deliberate_with_nothing_recalled_predicts_prior_with_zero_confidence() -> None:
-    params = Params(deliberate=DeliberateParams(prior_expected_reward=0.42))
+    params = Params(deliberate=delib(prior_expected_reward=0.42))
     rt = make_rt(params)
     for seed in range(30):
         rt = make_rt(params, seed=seed)
@@ -352,7 +372,16 @@ def test_deliberate_with_nothing_recalled_predicts_prior_with_zero_confidence() 
 
 
 def _spread_params() -> Params:
-    return Params(deliberate=DeliberateParams(temperature=5.0))
+    return Params(
+        deliberate=delib(
+            temperature=5.0,
+            approach_weight=0.2,
+            vigor_weight=0.5,
+            explore_value=0.1,
+            rest_value=0.05,
+        ),
+        appraise=AppraiseParams(reward_gain=0.5),
+    )
 
 
 def test_deliberate_draw_matches_derived_rng_and_is_reproducible() -> None:
@@ -391,11 +420,10 @@ def test_deliberate_draw_matches_derived_rng_and_is_reproducible() -> None:
 
 
 def test_deliberate_omits_bias_when_conflict_is_set() -> None:
+    # press_a 1·1·0.5 − 0.05 = 0.45 > press_b 0.4 > explore −0.02; rest 0 + bias 1 = 1
     costs = {Action.PRESS_A: 0.05, Action.PRESS_B: 0.1, Action.EXPLORE: 0.02, Action.REST: 0.0}
     params = Params(
-        deliberate=DeliberateParams(
-            temperature=1e-3, prior_expected_reward=0.5, rest_value=0.0, action_costs=costs
-        )
+        deliberate=delib(temperature=1e-3, prior_expected_reward=0.5, action_costs=costs)
     )
     rt = make_rt(params)
     biases = {Action.PRESS_A: 0.0, Action.PRESS_B: 0.0, Action.EXPLORE: 0.0, Action.REST: 1.0}
@@ -411,7 +439,8 @@ def test_deliberate_omits_bias_when_conflict_is_set() -> None:
 
 def test_deliberate_predicts_most_frequent_recalled_event_and_confidence() -> None:
     params = Params(
-        deliberate=DeliberateParams(temperature=1e-3, confidence_halfsat=2.0, rest_value=10.0)
+        memory=MemoryParams(retrieval_k=10),
+        deliberate=delib(temperature=1e-3, confidence_halfsat=2.0, rest_value=10.0),
     )
     rt = make_rt(params)
     episodes = [
@@ -431,9 +460,10 @@ def test_deliberate_predicts_most_frequent_recalled_event_and_confidence() -> No
 
 
 def test_deliberate_uses_recalled_episodes_from_the_percept() -> None:
+    # with recall press_b ≈ 0.865 − 0.06 wins; without, press_a −0.05 > press_b −0.06, rest 0 wins
     costs = {Action.PRESS_A: 0.05, Action.PRESS_B: 0.06, Action.EXPLORE: 0.02, Action.REST: 0.0}
     params = Params(
-        deliberate=DeliberateParams(temperature=1e-3, prior_expected_reward=0.0, action_costs=costs)
+        deliberate=delib(temperature=1e-3, prior_expected_reward=0.0, action_costs=costs)
     )
     rt = make_rt(params)
     episodes = [episode(Action.PRESS_B, 1.0, tick=t) for t in (1, 2, 3)]
@@ -627,7 +657,7 @@ def test_evaluate_alignment_matches_formula() -> None:
 def test_evaluate_stays_in_range_for_extreme_inputs(action: Action) -> None:
     params = Params(
         evaluate=EvaluateParams(scale=1e-12),
-        deliberate=DeliberateParams(prior_expected_reward=1e6),
+        deliberate=delib(prior_expected_reward=1e6),
     )
     traits = Traits(reward_sensitivity=1e6, surprise_learning_rate=1.0, mood_inertia=0.0)
     rt = make_rt(params, traits=traits)
