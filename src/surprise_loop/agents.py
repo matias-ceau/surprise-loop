@@ -243,7 +243,7 @@ def appraise_prompt(ws: Workspace) -> str:
     temperament. No world information beyond the percept."""
     percept = ws.percept
     if percept is None:
-        raise ValueError("appraise_prompt needs ws.percept, which is missing")
+        raise _missing("appraise_prompt", "percept")
     agent = ws.agent
     episodes = agent.memory.episodes
     lines = ["## What just happened", _last_line(percept)]
@@ -272,7 +272,106 @@ def appraise_prompt(ws: Workspace) -> str:
     return "\n".join(lines)
 
 
+# --- Evaluate -----------------------------------------------------------------------------------
+
+
+class EvaluateOutput(_Output):
+    critique: OneLine = Field(
+        description="One or two short sentences: how well the action served the agent's goals, "
+        "and why."
+    )
+    alignment: float = Field(
+        ge=-1,
+        le=1,
+        description="How well the action served the agent's goals: -1 worked against them, "
+        "0 neutral or mixed, +1 served its most important goals well.",
+    )
+
+
+EVALUATE_INSTRUCTIONS = """\
+You are an outside critic watching an agent in a small world. You judge the one action the \
+agent just took against the agent's own goals. You only give feedback; you do not act.
+
+The agent has three goals, each with a priority (higher matters more):
+- seek_reward: getting rewards. Served by pressing a lever (press_a or press_b).
+- explore: finding out about the world. Served by explore.
+- conserve: saving effort. Served by rest.
+
+Answer with two things:
+- critique: one or two short sentences explaining your judgement, addressed to the agent. \
+Mention only what you are shown.
+- alignment: a number from -1 to +1.
+  +1: the action clearly served the agent's most important goals.
+  0: neutral, or good and bad in equal measure.
+  -1: the action clearly worked against its goals, for example effort that its experience says \
+is wasted.
+  Use values in between for partial cases.
+
+Judge the choice, not only the luck: a sensible choice given the agent's experience that \
+happened not to pay off can still score above 0, and repeating an action that keeps failing \
+should score below 0.
+
+Answer with the structured output only: critique and alignment."""
+
+evaluate_agent: Agent[None, EvaluateOutput] = Agent(
+    output_type=EvaluateOutput,
+    instructions=EVALUATE_INSTRUCTIONS,
+    name="evaluate",
+)
+
+
+def evaluate_prompt(ws: Workspace) -> str:
+    """The per-pass prompt: the agent's goals, the action and its reasoning, the prediction, the
+    actual outcome (its observation only, never the world's `StepInfo` or step counter) and the
+    agent's recent experience."""
+    percept, decision, outcome, error = ws.percept, ws.decision, ws.outcome, ws.prediction_error
+    if percept is None:
+        raise _missing("evaluate_prompt", "percept")
+    if decision is None:
+        raise _missing("evaluate_prompt", "decision")
+    if outcome is None:
+        raise _missing("evaluate_prompt", "outcome")
+    if error is None:
+        raise _missing("evaluate_prompt", "prediction_error")
+    p = decision.prediction
+    actual = outcome.observation  # never outcome.info: that is the world's hidden bookkeeping
+    lines = [
+        *_goal_lines(ws.agent, "## The agent's goal priorities (higher matters more)"),
+        "",
+        "## What it did",
+        f"Action: {decision.action.value}.",
+    ]
+    if decision.rationale:
+        lines.append(f"Its reasoning: {' '.join(decision.rationale.split())}")
+    lines += [
+        "",
+        "## What it predicted",
+        f"Event: {p.expected_event.value}. Reward: {_num(p.expected_reward)}. "
+        f"Confidence: {_num(p.confidence)}.",
+        "",
+        "## What actually happened",
+        f"Event: {actual.event.value}. Reward: {_num(actual.reward)}. "
+        f"Surprise: {_signed(error.signed)} (actual minus expected reward, weighted by "
+        "confidence).",
+        "",
+        "## Its recent experience before this action (oldest first)",
+    ]
+    if percept.recalled:
+        lines += [
+            f"{i}. {e.action.value}: got {e.event.value}, reward {_num(e.reward)}"
+            for i, e in enumerate(percept.recalled, start=1)
+        ]
+    else:
+        lines.append("None: this was its first action.")
+    lines += ["", "Judge this action against the agent's goals."]
+    return "\n".join(lines)
+
+
 # --- prompt sections shared by the phase prompts -------------------------------------------------
+
+
+def _missing(prompt: str, name: str) -> ValueError:
+    return ValueError(f"{prompt} needs ws.{name}, which is missing")
 
 
 def _last_line(percept: Percept) -> str:

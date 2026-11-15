@@ -744,20 +744,6 @@ def test_reconcile_names_missing_input(missing: str) -> None:
 # --- dispatch -------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("name", "phase", "position"),
-    [("evaluate", evaluate, 5)],
-)
-def test_llm_backend_is_not_implemented_yet(name: str, phase: Phase, position: int) -> None:
-    stub_rt = make_rt()
-    ws = base_ws(stub_rt)
-    for earlier in (perceive, appraise, deliberate, act, monitor, evaluate)[:position]:
-        ws = run(earlier, ws, stub_rt)
-    llm_rt = make_rt(backends=Backends(**{name: "llm"}))
-    with pytest.raises(NotImplementedError, match=name):
-        run(phase, ws, llm_rt)
-
-
 def test_phases_package_exports_only_the_seven_phases() -> None:
     import surprise_loop.phases as phases
 
