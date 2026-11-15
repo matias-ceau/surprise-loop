@@ -6,12 +6,15 @@ from surprise_loop.world import Observation
 
 
 def build_percept(observation: Observation, agent: AgentState, params: Params) -> Percept:
-    """What crosses into the agent: the event, reward and last action, plus last-K recall."""
+    """What crosses into the agent: the event, reward and last action, plus the episodes recalled
+    by the configured retrieval (`last_k` or `salient_k`) with `retrieval_k`."""
+    memory, k = agent.memory, params.memory.retrieval_k
+    recalled = memory.salient_k(k) if params.memory.retrieval == "salient_k" else memory.last_k(k)
     return Percept(
         event=observation.event,
         reward=observation.reward,
         last_action=observation.last_action,
-        recalled=agent.memory.last_k(params.memory.retrieval_k),
+        recalled=recalled,
     )
 
 

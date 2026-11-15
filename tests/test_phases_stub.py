@@ -219,6 +219,30 @@ def test_build_percept_copies_observation_and_recalls_last_k() -> None:
     )
 
 
+def test_build_percept_uses_the_configured_retrieval() -> None:
+    rt = make_rt()
+    saliences = [0.9, 0.2, 0.3, 0.1, 0.4]
+    episodes = [
+        episode(Action.PRESS_A, 0.0, tick=t).model_copy(update={"salience": s})
+        for t, s in enumerate(saliences, start=1)
+    ]
+    agent = agent_with(rt, episodes=episodes)
+    obs = Observation(step=9, last_action=Action.EXPLORE, event=Event.EXPLORED, reward=0.0)
+
+    default = build_percept(obs, agent, Params(memory=MemoryParams(retrieval_k=3)))
+    last_k = build_percept(
+        obs, agent, Params(memory=MemoryParams(retrieval_k=3, retrieval="last_k"))
+    )
+    salient = build_percept(
+        obs, agent, Params(memory=MemoryParams(retrieval_k=3, retrieval="salient_k"))
+    )
+
+    assert default.recalled == last_k.recalled == episodes[2:]
+    # tick 5 is the recent one; ticks 1 (0.9) and 3 (0.3) are the most salient before it
+    assert salient.recalled == [episodes[0], episodes[2], episodes[4]]
+    assert salient.recalled == agent.memory.salient_k(3)
+
+
 def test_perceive_sets_percept_from_observation() -> None:
     params = Params(memory=MemoryParams(retrieval_k=2))
     rt = make_rt(params)

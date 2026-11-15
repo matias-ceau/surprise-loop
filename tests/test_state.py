@@ -269,6 +269,63 @@ def test_memory_last_k_of_empty_memory_is_empty() -> None:
     assert Memory(episodes=[]).last_k(3) == []
 
 
+# ticks 0..7; ticks 1 and 3 tie on the highest salience
+SALIENCES = [0.5, 0.9, 0.2, 0.9, 0.1, 0.3, 0.7, 0.4]
+
+
+def salient_memory(saliences: list[float] = SALIENCES) -> Memory:
+    return Memory(
+        episodes=[episode(t).model_copy(update={"salience": s}) for t, s in enumerate(saliences)]
+    )
+
+
+@pytest.mark.parametrize(
+    ("k", "ticks"),
+    [
+        # k // 2 = 0 recent: the single most salient, the tie going to the more recent tick 3
+        (1, [3]),
+        # tick 7 recent; the most salient before it is tick 3 (tie with tick 1)
+        (2, [3, 7]),
+        # tick 7 recent; both tied ticks fill the two salient slots
+        (3, [1, 3, 7]),
+        # ticks 6, 7 recent; ticks 3, 1 most salient before them
+        (4, [1, 3, 6, 7]),
+        # ticks 6, 7 recent; ticks 3, 1, 0 most salient before them
+        (5, [0, 1, 3, 6, 7]),
+        # ticks 5, 6, 7 recent (tick 6, salience 0.7, is not counted twice); then 3, 1, 0
+        (6, [0, 1, 3, 5, 6, 7]),
+        # ticks 5, 6, 7 recent; every earlier tick but the least salient (tick 4)
+        (7, [0, 1, 2, 3, 5, 6, 7]),
+    ],
+)
+def test_memory_salient_k_selects_recent_half_plus_most_salient(k: int, ticks: list[int]) -> None:
+    recalled = salient_memory().salient_k(k)
+    assert [e.tick for e in recalled] == ticks
+    assert len(recalled) == k
+
+
+def test_memory_salient_k_ties_go_to_the_more_recent() -> None:
+    memory = salient_memory([0.5] * 8)
+    for k in range(9):
+        assert memory.salient_k(k) == memory.last_k(k)
+
+
+@pytest.mark.parametrize("n", [0, 1, 2, 5, 8])
+def test_memory_salient_k_equals_last_k_with_at_most_k_episodes(n: int) -> None:
+    memory = salient_memory(SALIENCES[:n])
+    for k in range(n, n + 3):
+        assert memory.salient_k(k) == memory.last_k(k) == memory.episodes
+
+
+def test_memory_salient_k_zero_and_negative_match_last_k() -> None:
+    memory = salient_memory()
+    assert memory.salient_k(0) == memory.last_k(0) == []
+    with pytest.raises(ValueError, match="k must be >= 0"):
+        memory.salient_k(-1)
+    with pytest.raises(ValueError, match="k must be >= 0"):
+        memory.last_k(-1)
+
+
 def test_workspace_is_frozen_and_has_documented_defaults() -> None:
     ws = Workspace(agent=agent_state(), observation=observation())
     assert ws.pass_index == 0

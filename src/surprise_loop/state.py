@@ -111,6 +111,21 @@ class Memory(_Frozen):
             raise ValueError("k must be >= 0")
         return self.episodes[max(len(self.episodes) - k, 0) :]
 
+    def salient_k(self, k: int) -> list[Episode]:
+        """The most recent `k // 2` episodes plus the `k - k // 2` most salient episodes before
+        them (ties go to the more recent), oldest first; all of them when `k` exceeds the length."""
+        if k < 0:
+            raise ValueError("k must be >= 0")
+        n = len(self.episodes)
+        if n <= k:
+            return list(self.episodes)
+        window_start = n - k // 2
+        by_salience = sorted(
+            range(window_start), key=lambda i: (self.episodes[i].salience, i), reverse=True
+        )
+        chosen = sorted(by_salience[: k - k // 2]) + list(range(window_start, n))
+        return [self.episodes[i] for i in chosen]
+
 
 class Goals(_Frozen):
     priorities: dict[GoalName, float]

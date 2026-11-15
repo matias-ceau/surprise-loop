@@ -54,6 +54,8 @@ class MemoryParams(_Frozen):
     # how many recent episodes Perceive recalls; above quit_steps, so a pause of quit_steps steps
     # does not empty the window and reset a press's expected reward to the prior (was 10)
     retrieval_k: int = Field(default=20, ge=1)
+    # how those episodes are chosen: the last k, or half recent and half most salient before them
+    retrieval: Literal["last_k", "salient_k"] = "last_k"
     # salience of an episode with zero prediction error
     base_salience: Unit = 0.1
 
