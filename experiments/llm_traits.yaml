@@ -20,7 +20,8 @@
 #   matter to you") and that also scales reward in Reconcile, so it tests whether a prompt-level
 #   trait moves breakpoint and response rate.
 # Mood inertia is left out: its stub effect runs through deliberate.vigor_weight, which the LLM
-# Deliberate does not use (task 9 report, concern 3), so 2 seeds would most likely show nothing.
+# Deliberate does not use (it only sees mood_inertia as a number in the prompt), so 2 seeds would
+# most likely show nothing.
 name: llm_traits
 seeds: [1, 2]
 ticks: null

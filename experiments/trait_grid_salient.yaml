@@ -1,6 +1,10 @@
 # trait_grid with salience-based retrieval (build step 7): the same schedule, agents and seeds,
 # but Perceive recalls the 10 most recent episodes plus the 10 most salient before them
 # (memory.retrieval: salient_k, retrieval_k 20) instead of the last 20.
+# Note: the stub Deliberate's E[x] weights recalled episodes by their position in the recalled list
+# (most recent first, weight (1 - surprise_learning_rate)^i), not by tick. Under salient_k the
+# salient episodes sit just before the recent half, so an old salient episode is weighted as if it
+# had happened just before the recent ones.
 # The v0 experiment: does a prediction-error-driven agent show stable individual differences?
 # A baseline agent plus a low and a high profile for each trait, every LLM phase stubbed.
 # Schedule: FR1 acquisition, progressive ratio, an FR1 re-baseline (so extinction starts from a
