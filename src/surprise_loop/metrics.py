@@ -8,12 +8,22 @@ The quit criterion, shared by `breakpoint` and `extinction_persistence`: within 
 in order, the first run of `quit_steps` consecutive steps with no active press. Steps outside the
 phase never count toward a run. A measure is censored when the criterion is never met inside the
 phase (the phase or the run ended first) or the phase was never reached.
+
+The CSV writers at the end turn a list of `RunResult`s into the experiment's four tables. They
+are pure and deterministic: rows follow the given results (the CLI passes them in config order,
+all seeds of the first agent first), columns follow the model fields, and every cell is written
+by `format_cell`, so the same results always give the same bytes.
 """
+
+import csv
+import io
+from collections.abc import Iterable, Sequence
+from enum import Enum
 
 from pydantic import BaseModel, ConfigDict
 
 from surprise_loop.loop import RunResult
-from surprise_loop.state import PassRecord, TickRecord
+from surprise_loop.state import PassRecord, TickRecord, Traits
 from surprise_loop.world import Action, Event, PhaseKind
 
 
@@ -250,3 +260,122 @@ def icc1(groups: list[list[float]]) -> float:
     ms_within = ss_within / (total - n)
     k0 = (total - sum(len(g) ** 2 for g in groups) / total) / (n - 1)
     return (ms_between - ms_within) / (ms_between + (k0 - 1) * ms_within)
+
+
+# --- CSV tables ---------------------------------------------------------------------------------
+
+# The `RunMetrics` fields whose between-agent stability `stability_csv` reports: every numeric
+# behavioural measure. Left out: `steps` and `ticks` (set by the schedule and the cap, and by
+# re-entry for ticks, so not a disposition of the agent), `truncated` and the two `*_censored`
+# flags (booleans that qualify another measure rather than measure behaviour). Censored
+# breakpoint and persistence values are included as they are; results.csv carries the flags.
+STABILITY_METRICS: tuple[str, ...] = (
+    "rewards",
+    "response_rate_fr",
+    "response_rate_pr",
+    "response_rate_ext",
+    "inactive_rate",
+    "breakpoint",
+    "extinction_persistence",
+    "mean_abs_pe",
+    "reentries",
+    "goal_revisions",
+)
+
+Cell = str | int | float | bool | Enum
+
+
+def format_cell(value: Cell) -> str:
+    """One CSV cell: floats by `repr` (shortest round-trip form; nan as "nan"), bools as
+    True/False, enums by value, ints and strings as they are."""
+    if isinstance(value, Enum):
+        return str(value.value)
+    if isinstance(value, float):
+        return repr(value)
+    return str(value)
+
+
+def _csv(columns: Sequence[str], rows: Iterable[Sequence[Cell]]) -> str:
+    out = io.StringIO()
+    writer = csv.writer(out, lineterminator="\n")
+    writer.writerow(columns)
+    for row in rows:
+        writer.writerow([format_cell(v) for v in row])
+    return out.getvalue()
+
+
+def _key(result: RunResult) -> list[Cell]:
+    return [result.config.agent.name, result.config.seed]
+
+
+def results_csv(results: Sequence[RunResult]) -> str:
+    """One row per run: agent, the three traits, seed, then every `RunMetrics` field."""
+    trait_names = list(Traits.model_fields)
+    metric_names = list(RunMetrics.model_fields)
+    rows = []
+    for result in results:
+        traits = result.config.agent.traits
+        metrics = summarize(result)
+        rows.append(
+            [
+                result.config.agent.name,
+                *(getattr(traits, t) for t in trait_names),
+                result.config.seed,
+                *(getattr(metrics, m) for m in metric_names),
+            ]
+        )
+    return _csv(["agent", *trait_names, "seed", *metric_names], rows)
+
+
+def phases_csv(results: Sequence[RunResult]) -> str:
+    """One row per phase reached per run: agent, seed, then the `PhaseMetrics` fields."""
+    names = list(PhaseMetrics.model_fields)
+    rows = [
+        [*_key(result), *(getattr(phase, n) for n in names)]
+        for result in results
+        for phase in phase_table(flatten(result.records))
+    ]
+    return _csv(["agent", "seed", *names], rows)
+
+
+def pe_trace_csv(results: Sequence[RunResult]) -> str:
+    """One row per world step per run: agent, seed, then the `PEPoint` fields."""
+    names = list(PEPoint.model_fields)
+    rows = [
+        [*_key(result), *(getattr(point, n) for n in names)]
+        for result in results
+        for point in pe_trace(flatten(result.records))
+    ]
+    return _csv(["agent", "seed", *names], rows)
+
+
+def stability_csv(results: Sequence[RunResult]) -> str:
+    """ICC(1) of each `STABILITY_METRICS` measure, with seeds grouped within agent.
+
+    Agents are grouped by name in order of first appearance, each group's values in the order
+    given. `n_agents` is the number of groups, `n_seeds` the number of distinct seeds.
+    """
+    groups: dict[str, list[RunMetrics]] = {}
+    for result in results:
+        groups.setdefault(result.config.agent.name, []).append(summarize(result))
+    n_seeds = len({result.config.seed for result in results})
+    rows = [
+        [
+            name,
+            icc1([[float(getattr(m, name)) for m in group] for group in groups.values()]),
+            len(groups),
+            n_seeds,
+        ]
+        for name in STABILITY_METRICS
+    ]
+    return _csv(["metric", "icc1", "n_agents", "n_seeds"], rows)
+
+
+def experiment_tables(results: Sequence[RunResult]) -> dict[str, str]:
+    """The experiment's four CSV files, by file name."""
+    return {
+        "results.csv": results_csv(results),
+        "phases.csv": phases_csv(results),
+        "pe_trace.csv": pe_trace_csv(results),
+        "stability.csv": stability_csv(results),
+    }

@@ -6,6 +6,7 @@ ticks and, given a run directory, writes `config.json` once and one `tick_<n>.js
 run can be resumed and replayed from its files. Every written byte is deterministic.
 """
 
+import asyncio
 import dataclasses
 import os
 from collections.abc import Awaitable, Callable
@@ -161,7 +162,9 @@ def _reason(e: Exception) -> str:
     return getattr(e, "strerror", None) or type(e).__name__
 
 
-def _read_config(run_dir: Path) -> RunConfig:
+def read_config(run_dir: Path) -> RunConfig:
+    """The `RunConfig` stored in `run_dir/config.json`."""
+    run_dir = Path(run_dir)
     path = run_dir / CONFIG_FILE
     if not path.is_file():
         raise RunError(f"{run_dir}: {CONFIG_FILE} is missing")
@@ -192,7 +195,7 @@ def _initial(config: RunConfig) -> tuple[AgentState, SelfAdminWorld]:
 def load_result(run_dir: Path) -> RunResult:
     """The `RunResult` of the run stored in `run_dir`, as far as its dumps go."""
     run_dir = Path(run_dir)
-    config = _read_config(run_dir)
+    config = read_config(run_dir)
     dumps = load_dumps(run_dir)
     if dumps:
         agent, world = dumps[-1].agent, dumps[-1].world
@@ -200,6 +203,17 @@ def load_result(run_dir: Path) -> RunResult:
         agent, initial_world = _initial(config)
         world = initial_world.snapshot()
     return RunResult(config=config, records=[d.record for d in dumps], agent=agent, world=world)
+
+
+def _finished(config: RunConfig, ticks_done: int, world_done: bool) -> bool:
+    """Whether a run has nothing left to do: the schedule has ended or the tick cap is reached."""
+    return world_done or (config.ticks is not None and ticks_done >= config.ticks)
+
+
+def is_complete(result: RunResult) -> bool:
+    """Whether `run` would add no tick to `result`: the same stop rule `run` uses."""
+    world_done = result.world.phase_index >= len(result.config.world.schedule)
+    return _finished(result.config, len(result.records), world_done)
 
 
 # --- run ----------------------------------------------------------------------------------------
@@ -236,7 +250,7 @@ async def _run(
         if run_dir.exists() and any(run_dir.iterdir()):
             if not resume:
                 raise RunError(f"{run_dir}: directory is not empty; pass resume=True to continue")
-            stored = _read_config(run_dir)
+            stored = read_config(run_dir)
             if stored != config:
                 raise RunError(f"{run_dir}: {CONFIG_FILE} differs from the given config")
             dumps = load_dumps(run_dir)
@@ -254,10 +268,11 @@ async def _run(
             # keep the model's HTTP client open for the whole run instead of one per call
             await stack.enter_async_context(model)
         while not (
-            world.done
-            or (config.ticks is not None and agent.tick >= config.ticks)
+            _finished(config, agent.tick, world.done)
             or (stop_after_tick is not None and agent.tick >= stop_after_tick)
         ):
+            # let concurrent runs in the same event loop take turns, even when no phase awaits I/O
+            await asyncio.sleep(0)
             agent, record = await _tick(agent, rt, phases)
             records.append(record)
             if run_dir is not None:
@@ -305,7 +320,7 @@ def _recorded(record: TickRecord, run_dir: Path, base: _Phases) -> _Phases:
 
 async def _replay(run_dir: Path, base: _Phases) -> int:
     run_dir = Path(run_dir)
-    config = _read_config(run_dir)
+    config = read_config(run_dir)
     dumps = load_dumps(run_dir)
     agent, world = _initial(config)
     # No model: the LLM-backed phases return their recorded outputs, so replay makes no calls.
