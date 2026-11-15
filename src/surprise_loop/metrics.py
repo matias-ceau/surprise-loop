@@ -371,11 +371,10 @@ def stability_csv(results: Sequence[RunResult]) -> str:
     return _csv(["metric", "icc1", "n_agents", "n_seeds"], rows)
 
 
+TABLE_FILES: tuple[str, ...] = ("results.csv", "phases.csv", "pe_trace.csv", "stability.csv")
+
+
 def experiment_tables(results: Sequence[RunResult]) -> dict[str, str]:
-    """The experiment's four CSV files, by file name."""
-    return {
-        "results.csv": results_csv(results),
-        "phases.csv": phases_csv(results),
-        "pe_trace.csv": pe_trace_csv(results),
-        "stability.csv": stability_csv(results),
-    }
+    """The experiment's four CSV files, by file name (the names in `TABLE_FILES`)."""
+    writers = (results_csv, phases_csv, pe_trace_csv, stability_csv)
+    return {name: write(results) for name, write in zip(TABLE_FILES, writers, strict=True)}

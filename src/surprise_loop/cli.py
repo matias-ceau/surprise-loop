@@ -17,8 +17,10 @@ is one of:
 - fresh: no directory, or an empty one.
 
 A run that fails (an LLM error, say) does not stop the others. When all have ended, each failed run
-is reported as one `error: <run_id> failed: ...` line, no CSV is written (a table missing some runs
-could pass for a whole one) and the exit code is 1. Rerunning the same command resumes the failed
+is reported as one `error: <run_id> failed: ...` line, no CSV is written and any CSVs an earlier
+invocation left in `DIR/<experiment name>/` are removed (a table missing some runs, or one that
+no longer matches the run directories, could pass for a whole one), and the exit code is 1. The
+CSVs are written atomically. Rerunning the same command resumes the failed
 runs from their last dump and skips the complete ones. One progress line per run goes to stderr.
 """
 
@@ -39,8 +41,9 @@ from surprise_loop.loop import (
     read_config,
     replay,
     run,
+    write_atomic,
 )
-from surprise_loop.metrics import experiment_tables, summarize
+from surprise_loop.metrics import TABLE_FILES, experiment_tables, summarize
 
 
 def _positive(text: str) -> int:
@@ -186,14 +189,17 @@ async def _experiment(args: argparse.Namespace) -> None:
         for c, o in zip(configs, outcomes, strict=True)
         if isinstance(o, BaseException)
     ]
+    out_dir = args.runs_dir / experiment.name
     if failed:
+        # tables from an earlier invocation would no longer match the run directories
+        for name in TABLE_FILES:
+            (out_dir / name).unlink(missing_ok=True)
         raise ExperimentFailed(failed, len(configs))
 
     results = [o for o in outcomes if isinstance(o, RunResult)]
-    out_dir = args.runs_dir / experiment.name
     out_dir.mkdir(parents=True, exist_ok=True)
     for name, text in experiment_tables(results).items():
-        (out_dir / name).write_text(text, encoding="utf-8", newline="")
+        write_atomic(out_dir / name, text)
     print(f"tables: {out_dir}", file=sys.stderr)
 
 

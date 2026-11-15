@@ -214,6 +214,14 @@ class ExperimentConfig(_Frozen):
     backends: Backends = Backends()
     model: str | None = None
 
+    @field_validator("seeds")
+    @classmethod
+    def _unique_seeds(cls, value: list[int]) -> list[int]:
+        # a repeated seed would give two runs the same run_id and run directory
+        if len(set(value)) != len(value):
+            raise ValueError("seeds must be unique")
+        return value
+
     @field_validator("agents")
     @classmethod
     def _unique_names(cls, value: list[AgentSpec]) -> list[AgentSpec]:

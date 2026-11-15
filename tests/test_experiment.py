@@ -16,7 +16,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from surprise_loop import cli
 from surprise_loop.agents import deliberate_agent
 from surprise_loop.config import load_config
-from surprise_loop.loop import RunResult, load_result, run
+from surprise_loop.loop import RunResult, is_complete, load_result, run
 from surprise_loop.metrics import (
     STABILITY_METRICS,
     PEPoint,
@@ -474,3 +474,81 @@ def test_llm_traits_config_is_the_real_model_experiment() -> None:
     assert experiment.model is None and experiment.ticks is None
     assert set(experiment.backends.model_dump().values()) == {"llm"}
     assert sum(phase.steps for phase in experiment.world.schedule) == 150
+
+
+# --- fix round 1 ----------------------------------------------------------------------------
+
+
+def test_duplicate_seeds_fail_with_one_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config = write_config(tmp_path, **{"seeds: [1, 2]": "seeds: [1, 1]"})
+    code, err = experiment(config, tmp_path / "runs", capsys)
+    assert code == 2
+    assert len(err.splitlines()) == 1 and err.startswith("error: ")
+    assert "seeds" in err and "unique" in err
+    assert not (tmp_path / "runs").exists()
+
+
+def test_run_capped_by_ticks_is_complete_and_not_rerun(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config = write_config(tmp_path, **{"ticks: null": "ticks: 5"})
+    runs_dir = tmp_path / "runs"
+    code, err = experiment(config, runs_dir, capsys)
+    assert code == 0, err
+    for run_id in RUN_IDS:
+        result = load_result(runs_dir / run_id)
+        assert len(result.records) == 5 and result.world.phase_index == 0  # world not done
+        assert is_complete(result)
+    first, before = csv_bytes(runs_dir), mtimes(runs_dir)
+
+    async def must_not_run(*args: object, **kwargs: object) -> RunResult:
+        raise AssertionError("a run complete by its tick cap was run again")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(cli, "run", must_not_run)
+        code, err = experiment(config, runs_dir, capsys, "--jobs", "4")
+
+    assert code == 0, err
+    assert err.count("complete, not rerun") == 4
+    assert csv_bytes(runs_dir) == first
+    assert mtimes(runs_dir) == before
+    assert all(r["truncated"] == "True" for r in read_csv(runs_dir / "exp" / "results.csv"))
+
+
+def test_a_failing_run_removes_tables_left_by_an_earlier_invocation(
+    reference: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runs_dir = tmp_path / "runs"
+    shutil.copytree(reference, runs_dir)
+    shutil.rmtree(runs_dir / "exp-fast-s1")
+    (runs_dir / "exp" / "notes.txt").write_text("not a table")
+
+    async def failing(config, run_dir, **kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("boom")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(cli, "run", failing)
+        code, err = experiment(write_config(tmp_path), runs_dir, capsys)
+
+    assert code == 1
+    assert error_lines(err) == ["error: exp-fast-s1 failed: RuntimeError: boom"]
+    assert sorted(p.name for p in (runs_dir / "exp").iterdir()) == ["notes.txt"]
+
+
+def test_tables_are_written_atomically(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    written: list[Path] = []
+    real = cli.write_atomic
+
+    def recording(path: Path, text: str) -> None:
+        written.append(path)
+        real(path, text)
+
+    monkeypatch.setattr(cli, "write_atomic", recording)
+    runs_dir = tmp_path / "runs"
+    assert experiment(write_config(tmp_path), runs_dir, capsys)[0] == 0
+    assert sorted(p.name for p in written) == CSV_FILES
+    assert sorted(p.name for p in (runs_dir / "exp").iterdir()) == CSV_FILES  # no .tmp left

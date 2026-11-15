@@ -118,10 +118,11 @@ async def _tick(agent: AgentState, rt: Runtime, ph: _Phases) -> tuple[AgentState
 # --- files --------------------------------------------------------------------------------------
 
 
-def _write_atomic(path: Path, text: str) -> None:
-    """Write `text` to a temp file beside `path`, then rename it into place."""
+def write_atomic(path: Path, text: str) -> None:
+    """Write `text` (UTF-8, newlines as given) to a temp file beside `path`, then rename it into
+    place, so `path` holds either its old content or all of `text`, never part of it."""
     temp = path.with_name(path.name + ".tmp")
-    temp.write_text(text, encoding="utf-8")
+    temp.write_text(text, encoding="utf-8", newline="")
     os.replace(temp, path)
 
 
@@ -132,7 +133,7 @@ def _dump_name(tick: int) -> str:
 def write_dump(run_dir: Path, dump: TickDump) -> Path:
     """Write `dump` to `run_dir/tick_<tick>.json` atomically and return its path."""
     path = Path(run_dir) / _dump_name(dump.tick)
-    _write_atomic(path, dump.model_dump_json())
+    write_atomic(path, dump.model_dump_json())
     return path
 
 
@@ -212,7 +213,7 @@ def _finished(config: RunConfig, ticks_done: int, world_done: bool) -> bool:
 
 def is_complete(result: RunResult) -> bool:
     """Whether `run` would add no tick to `result`: the same stop rule `run` uses."""
-    world_done = result.world.phase_index >= len(result.config.world.schedule)
+    world_done = SelfAdminWorld.restore(result.config.world, result.world).done
     return _finished(result.config, len(result.records), world_done)
 
 
@@ -260,7 +261,7 @@ async def _run(
                 world = SelfAdminWorld.restore(config.world, dumps[-1].world)
         else:
             run_dir.mkdir(parents=True, exist_ok=True)
-            _write_atomic(run_dir / CONFIG_FILE, config.model_dump_json())
+            write_atomic(run_dir / CONFIG_FILE, config.model_dump_json())
 
     rt = Runtime(config=config, world=world, model=model)
     async with AsyncExitStack() as stack:
