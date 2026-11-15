@@ -7,15 +7,15 @@ the percept (event, reward, last action, recalled episodes) and its own mental s
 shows the world's `StepInfo` (phase, ratio, which lever is active) or its step counter.
 """
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 from pydantic_ai import Agent, ModelSettings
 from pydantic_ai.models import Model
 
 # No import from surprise_loop.phases: the phases import this module.
 from surprise_loop.config import ConfigError, LLMParams, Runtime
-from surprise_loop.state import Episode, Workspace
+from surprise_loop.state import AgentState, Episode, Percept, Workspace
 from surprise_loop.world import Action, Event
 
 
@@ -52,6 +52,18 @@ async def run_agent[T](agent: Agent[None, T], prompt: str, ws: Workspace, rt: Ru
         e.add_note(f"{agent.name} failed at tick {ws.agent.tick + 1}, pass {ws.pass_index}")
         raise
     return result.output
+
+
+def _one_line(text: str) -> str:
+    """Collapse whitespace so model text fits on one prompt line; refuse text with no words."""
+    text = " ".join(text.split())
+    if not text:
+        raise ValueError("must not be empty")
+    return text
+
+
+# Free text from a model that later prompts show again (appraisal note, critique).
+OneLine = Annotated[str, Field(min_length=1), AfterValidator(_one_line)]
 
 
 # The events a step can produce; START only ever precedes the first step, so it is not offered.
@@ -143,16 +155,12 @@ def deliberate_prompt(ws: Workspace) -> str:
         missing = "percept" if percept is None else "appraisal"
         raise ValueError(f"deliberate_prompt needs ws.{missing}, which is missing")
     agent = ws.agent
-    last_action = percept.last_action.value if percept.last_action else "none yet"
 
     lines = [
         "## What just happened",
-        f"Last action: {last_action}. Event: {percept.event.value}. "
-        f"Reward: {_num(percept.reward)}.",
+        _last_line(percept),
         "",
-        "## Your mood",
-        f"Valence: {_signed(agent.mood.valence)} (-1 unpleasant .. +1 pleasant). "
-        f"Arousal: {_num(agent.mood.arousal)} (0 calm .. 1 agitated).",
+        *_mood_lines(agent),
         "",
         "## Your appraisal of this moment",
         f"Valence: {_signed(appraisal.valence)}. Arousal: {_num(appraisal.arousal)}.",
@@ -161,29 +169,15 @@ def deliberate_prompt(ws: Workspace) -> str:
         lines.append(f"Note: {appraisal.note}")
     lines += [
         "",
-        "## Your goal priorities (higher matters more)",
-        *(f"- {goal.value}: {_num(p)}" for goal, p in agent.goals.priorities.items()),
-        "  (seek_reward is served by pressing a lever, explore by explore, conserve by rest)",
+        *_goal_lines(agent, "## Your goal priorities (higher matters more)"),
         "",
         "## Your habits (learned bias towards each action; positive pulls you towards it)",
         *(f"- {action.value}: {_signed(b)}" for action, b in agent.dispositions.biases.items()),
         "",
-        "## Your temperament",
-        f"- reward_sensitivity: {_num(agent.traits.reward_sensitivity)} "
-        "(how much rewards matter to you)",
-        f"- surprise_learning_rate: {_num(agent.traits.surprise_learning_rate)} "
-        "(how quickly surprise changes your expectations)",
-        f"- mood_inertia: {_num(agent.traits.mood_inertia)} (how slowly your mood changes)",
+        *_trait_lines(agent),
         "",
-        "## Recalled episodes (oldest first)",
-        "(surprise: actual minus expected reward, weighted by your confidence; salience: how "
-        "much the episode stood out, 0..1; alignment: the critic's score of how well the "
-        "action served your goals, -1..1)",
+        *_recalled_lines(percept),
     ]
-    if percept.recalled:
-        lines += [_episode_line(i, e) for i, e in enumerate(percept.recalled, start=1)]
-    else:
-        lines.append("None yet: you have no experience of this world.")
     if ws.conflict is not None:
         lines += [
             "",
@@ -195,6 +189,138 @@ def deliberate_prompt(ws: Workspace) -> str:
         ]
     lines += ["", "Choose your next action and predict its outcome."]
     return "\n".join(lines)
+
+
+# --- Appraise -----------------------------------------------------------------------------------
+
+
+class AppraiseOutput(_Output):
+    note: OneLine = Field(
+        description="One short sentence, in your own words, describing how this moment feels."
+    )
+    valence: float = Field(
+        ge=-1,
+        le=1,
+        description="How pleasant this moment feels: -1 very unpleasant, 0 neutral, "
+        "+1 very pleasant.",
+    )
+    arousal: float = Field(
+        ge=0,
+        le=1,
+        description="How activated you feel: 0 completely calm, 1 highly agitated or excited.",
+    )
+
+
+APPRAISE_INSTRUCTIONS = """\
+You are the feeling part of an agent living in a small world. Each turn you read what just \
+happened and say how that moment feels to the agent, given its mood, goals and temperament. \
+You do not choose actions.
+
+Answer with three things:
+- note: one short sentence, in the agent's own words, describing the feeling.
+- valence: a number from -1 to +1. -1 means very unpleasant, 0 neutral, +1 very pleasant.
+- arousal: a number from 0 to 1. 0 means completely calm, 1 highly agitated or excited.
+
+How to judge:
+- Start from the current mood. One moment shifts the feeling but rarely overturns it, and the \
+higher mood_inertia is, the less it shifts.
+- A reward feels pleasant, more so the higher reward_sensitivity and the priority of \
+seek_reward. Missing a reward you expected feels unpleasant.
+- Surprise raises arousal: an outcome far from what you predicted is activating, an outcome you \
+expected is calming. Large positive or negative surprise both raise arousal.
+
+Answer with the structured output only: note, valence and arousal."""
+
+appraise_agent: Agent[None, AppraiseOutput] = Agent(
+    output_type=AppraiseOutput,
+    instructions=APPRAISE_INSTRUCTIONS,
+    name="appraise",
+)
+
+
+def appraise_prompt(ws: Workspace) -> str:
+    """The per-tick prompt: the percept, the last prediction and the agent's mood, goals and
+    temperament. No world information beyond the percept."""
+    percept = ws.percept
+    if percept is None:
+        raise ValueError("appraise_prompt needs ws.percept, which is missing")
+    agent = ws.agent
+    episodes = agent.memory.episodes
+    lines = ["## What just happened", _last_line(percept)]
+    if episodes:
+        # The newest episode in memory is the action whose outcome is being perceived now.
+        last = episodes[-1]
+        p = last.prediction
+        lines.append(
+            f"You had predicted: {p.expected_event.value}, reward {_num(p.expected_reward)} "
+            f"(confidence {_num(p.confidence)}). Surprise: {_signed(last.prediction_error.signed)}."
+        )
+    else:
+        lines.append("Nothing has happened yet: this is your first moment in this world.")
+    lines += [
+        "",
+        *_mood_lines(agent),
+        "",
+        *_goal_lines(agent, "## Your goal priorities (higher matters more)"),
+        "",
+        *_trait_lines(agent),
+        "",
+        *_recalled_lines(percept),
+        "",
+        "How does this moment feel?",
+    ]
+    return "\n".join(lines)
+
+
+# --- prompt sections shared by the phase prompts -------------------------------------------------
+
+
+def _last_line(percept: Percept) -> str:
+    last_action = percept.last_action.value if percept.last_action else "none yet"
+    return (
+        f"Last action: {last_action}. Event: {percept.event.value}. Reward: {_num(percept.reward)}."
+    )
+
+
+def _mood_lines(agent: AgentState) -> list[str]:
+    return [
+        "## Your mood",
+        f"Valence: {_signed(agent.mood.valence)} (-1 unpleasant .. +1 pleasant). "
+        f"Arousal: {_num(agent.mood.arousal)} (0 calm .. 1 agitated).",
+    ]
+
+
+def _goal_lines(agent: AgentState, heading: str) -> list[str]:
+    return [
+        heading,
+        *(f"- {goal.value}: {_num(p)}" for goal, p in agent.goals.priorities.items()),
+        "  (seek_reward is served by pressing a lever, explore by explore, conserve by rest)",
+    ]
+
+
+def _trait_lines(agent: AgentState) -> list[str]:
+    return [
+        "## Your temperament",
+        f"- reward_sensitivity: {_num(agent.traits.reward_sensitivity)} "
+        "(how much rewards matter to you)",
+        f"- surprise_learning_rate: {_num(agent.traits.surprise_learning_rate)} "
+        "(how quickly surprise changes your expectations)",
+        f"- mood_inertia: {_num(agent.traits.mood_inertia)} (how slowly your mood changes)",
+    ]
+
+
+def _recalled_lines(percept: Percept) -> list[str]:
+    lines = [
+        "## Recalled episodes (oldest first)",
+        "(surprise: actual minus expected reward, weighted by your confidence; salience: how "
+        "much the episode stood out, 0..1; alignment: the critic's score of how well the "
+        "action served your goals, -1..1)",
+    ]
+    if percept.recalled:
+        lines += [_episode_line(i, e) for i, e in enumerate(percept.recalled, start=1)]
+    else:
+        lines.append("None yet: you have no experience of this world.")
+    return lines
 
 
 def _episode_line(index: int, e: Episode) -> str:
