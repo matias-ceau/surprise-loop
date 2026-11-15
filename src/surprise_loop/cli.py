@@ -8,8 +8,9 @@ be piped; anything informational goes to stderr. A bad config or run directory i
 phases.csv, pe_trace.csv and stability.csv into `DIR/<experiment name>/`. Runs share one event
 loop, at most `--jobs` at a time; each run resolves its own model and keeps its HTTP client open
 for its own duration only. Before any run starts, every existing run directory must hold the same
-config as the experiment (with the model resolved), otherwise nothing runs (exit 2). Then each run
-is one of:
+config as the experiment (with the model resolved), and every model a run still needs must load
+(known provider, API key set), otherwise nothing runs (exit 2). A complete run needs no model: when
+none is set, the one in its config.json is used. Then each run is one of:
 
 - complete: its dumps reach the end of the schedule or the tick cap (`loop.is_complete`, the stop
   rule `run` itself uses). It is loaded, not rerun, and its files are not touched;
@@ -27,6 +28,7 @@ runs from their last dump and skips the complete ones. One progress line per run
 import argparse
 import asyncio
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import pydantic_ai
@@ -37,8 +39,8 @@ from surprise_loop.loop import (
     RunError,
     RunResult,
     is_complete,
+    load_model,
     load_result,
-    read_config,
     replay,
     run,
     write_atomic,
@@ -136,26 +138,58 @@ def _one_line(e: BaseException) -> str:
     return f"{type(e).__name__}: {message}" if message else type(e).__name__
 
 
-def _plan(configs: list[RunConfig], runs_dir: Path) -> list[RunConfig]:
-    """The configs with their model resolved, after checking every existing run directory.
+@dataclass(frozen=True)
+class _Planned:
+    """One run of an experiment: its config (model resolved) and what is already on disk."""
 
-    Raises ConfigError or RunError, before any run starts, for an LLM backend without a model or
-    a run directory whose stored config differs.
+    config: RunConfig
+    stored: RunResult | None  # None: no run directory, or an empty one
+
+    @property
+    def complete(self) -> bool:
+        return self.stored is not None and is_complete(self.stored)
+
+
+async def _plan(configs: list[RunConfig], runs_dir: Path) -> list[_Planned]:
+    """Every run with its model resolved and its existing directory read, checked before any run.
+
+    Raises ConfigError or RunError, before any run starts, for an LLM backend without a model, a
+    model that cannot be loaded (unknown provider, missing API key), or a run directory whose
+    stored config differs. A complete run is only loaded, so it needs no model: when none is set,
+    the model stored in its config.json stands in, and regenerating the tables of a finished LLM
+    experiment works without the model's environment variable.
     """
-    resolved = [c.model_copy(update={"model": resolve_model(c)}) for c in configs]
-    for config in resolved:
+    planned = []
+    for config in configs:
         run_dir = runs_dir / config.run_id
-        if run_dir.is_dir() and any(run_dir.iterdir()) and read_config(run_dir) != config:
+        stored = load_result(run_dir) if run_dir.is_dir() and any(run_dir.iterdir()) else None
+        if stored is not None and is_complete(stored):
+            try:
+                model = resolve_model(config)
+            except ConfigError:
+                model = stored.config.model
+        else:
+            model = resolve_model(config)
+        config = config.model_copy(update={"model": model})
+        if stored is not None and stored.config != config:
             raise RunError(f"{run_dir}: config.json differs from the experiment's config")
-    return resolved
+        planned.append(_Planned(config=config, stored=stored))
+    # Load each model the runs will use once, so a bad one fails here rather than in every run;
+    # close it again at once (each run loads and holds its own).
+    for name in sorted({p.config.model for p in planned if not p.complete} - {None}):
+        model = load_model(name)
+        if model is not None:
+            async with model:
+                pass
+    return planned
 
 
-async def _one(config: RunConfig, runs_dir: Path) -> tuple[RunResult, str]:
+async def _one(planned: _Planned, runs_dir: Path) -> tuple[RunResult, str]:
     """Run, resume or load one run; return its result and what was done."""
+    config, stored = planned.config, planned.stored
     run_dir = runs_dir / config.run_id
-    if run_dir.is_dir() and any(run_dir.iterdir()):
-        stored = load_result(run_dir)
-        if is_complete(stored):
+    if stored is not None:
+        if planned.complete:
             return stored, "complete, not rerun"
         result = await run(config, run_dir, resume=True)
         return result, f"resumed at tick {len(stored.records)}"
@@ -164,15 +198,17 @@ async def _one(config: RunConfig, runs_dir: Path) -> tuple[RunResult, str]:
 
 async def _experiment(args: argparse.Namespace) -> None:
     experiment = load_config(args.config)
-    configs = _plan(experiment.runs(), args.runs_dir)
+    plan = await _plan(experiment.runs(), args.runs_dir)
+    configs = [p.config for p in plan]
     gate = asyncio.Semaphore(args.jobs)
     finished = 0
 
-    async def one(config: RunConfig) -> RunResult | BaseException:
+    async def one(planned: _Planned) -> RunResult | BaseException:
         nonlocal finished
+        config = planned.config
         async with gate:
             try:
-                result, what = await _one(config, args.runs_dir)
+                result, what = await _one(planned, args.runs_dir)
             except Exception as e:
                 outcome: RunResult | BaseException = e
                 what = "failed"
@@ -183,7 +219,7 @@ async def _experiment(args: argparse.Namespace) -> None:
         print(f"[{finished}/{len(configs)}] {config.run_id}: {what}", file=sys.stderr)
         return outcome
 
-    outcomes = await asyncio.gather(*(one(c) for c in configs))
+    outcomes = await asyncio.gather(*(one(p) for p in plan))
     failed = [
         f"{c.run_id} failed: {_one_line(o)}"
         for c, o in zip(configs, outcomes, strict=True)

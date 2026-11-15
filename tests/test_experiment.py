@@ -558,3 +558,57 @@ def test_tables_are_written_atomically(
     assert experiment(write_config(tmp_path), runs_dir, capsys)[0] == 0
     assert sorted(p.name for p in written) == CSV_FILES
     assert sorted(p.name for p in (runs_dir / "exp").iterdir()) == CSV_FILES  # no .tmp left
+
+
+# --- final fix wave -------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [("nosuch:abc", "Unknown model"), ("openrouter:provider/model", "OPENROUTER_API_KEY")],
+)
+def test_a_model_that_cannot_load_fails_before_any_run(
+    model: str,
+    expected: str,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    text = CONFIG.replace("deliberate: stub", "deliberate: llm")
+    config = write_config(tmp_path, text, **{"model: null": f"model: {model}"})
+
+    code, err = experiment(config, tmp_path / "runs", capsys)
+
+    assert code == 2
+    assert len(err.splitlines()) == 1 and err.startswith("error: ")
+    assert model in err and expected in err
+    assert not (tmp_path / "runs").exists()
+
+
+def test_tables_of_a_complete_llm_experiment_regenerate_without_the_model(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    text = CONFIG.replace("deliberate: stub", "deliberate: llm")
+    config = write_config(tmp_path, text)
+    runs_dir = tmp_path / "runs"
+    monkeypatch.setenv("SURPRISE_LOOP_MODEL", "test")
+    code, err = experiment(config, runs_dir, capsys, "--jobs", "4")
+    assert code == 0, err
+    first, before = csv_bytes(runs_dir), mtimes(runs_dir)
+    for name in CSV_FILES:
+        (runs_dir / "exp" / name).unlink()
+
+    monkeypatch.delenv("SURPRISE_LOOP_MODEL")
+    code, err = experiment(config, runs_dir, capsys)
+
+    assert code == 0, err
+    assert err.count("complete, not rerun") == 4
+    assert csv_bytes(runs_dir) == first
+    assert mtimes(runs_dir) == before
+
+    # a run that still has to execute needs the model again
+    shutil.rmtree(runs_dir / "exp-fast-s2")
+    code, err = experiment(config, runs_dir, capsys)
+    assert code == 2 and "SURPRISE_LOOP_MODEL" in err
+    assert not (runs_dir / "exp-fast-s2").exists()
