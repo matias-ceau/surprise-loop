@@ -14,7 +14,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import ValidationError
 from pydantic_ai import UserError, models
 
 from surprise_loop import phases as real
@@ -28,7 +28,7 @@ from surprise_loop.config import (
 from surprise_loop.phases.heuristics import require
 from surprise_loop.phases.perceive import build_percept
 from surprise_loop.state import AgentState, PassRecord, TickDump, TickRecord, Workspace
-from surprise_loop.world import SelfAdminWorld, WorldState
+from surprise_loop.world import Frozen, SelfAdminWorld, WorldState
 
 Phase = Callable[[Workspace, Runtime], Awaitable[Workspace]]
 
@@ -48,9 +48,7 @@ class ReplayMismatch(RunError):
         self.tick = tick
 
 
-class RunResult(BaseModel):
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False, frozen=True)
-
+class RunResult(Frozen):
     config: RunConfig
     records: list[TickRecord]
     agent: AgentState
@@ -128,6 +126,13 @@ def write_atomic(path: Path, text: str) -> None:
 
 def _dump_name(tick: int) -> str:
     return f"tick_{tick:06d}.json"
+
+
+def _dump(config: RunConfig, agent: AgentState, world: SelfAdminWorld, rec: TickRecord) -> TickDump:
+    """The dump of the tick `rec` records, after it: the agent and the world as they now are."""
+    return TickDump(
+        run_id=config.run_id, tick=rec.tick, agent=agent, world=world.snapshot(), record=rec
+    )
 
 
 def write_dump(run_dir: Path, dump: TickDump) -> Path:
@@ -277,14 +282,7 @@ async def _run(
             agent, record = await _tick(agent, rt, phases)
             records.append(record)
             if run_dir is not None:
-                dump = TickDump(
-                    run_id=config.run_id,
-                    tick=record.tick,
-                    agent=agent,
-                    world=world.snapshot(),
-                    record=record,
-                )
-                write_dump(run_dir, dump)
+                write_dump(run_dir, _dump(config, agent, world, record))
 
     return RunResult(config=config, records=records, agent=agent, world=world.snapshot())
 
@@ -330,13 +328,7 @@ async def _replay(run_dir: Path, base: _Phases) -> int:
         if world.done:
             raise ReplayMismatch(run_dir, stored.tick, "the world ended before this tick")
         agent, record = await _tick(agent, rt, _recorded(stored.record, run_dir, base))
-        rebuilt = TickDump(
-            run_id=config.run_id,
-            tick=record.tick,
-            agent=agent,
-            world=world.snapshot(),
-            record=record,
-        )
+        rebuilt = _dump(config, agent, world, record)
         if rebuilt != stored:
             differing = [
                 f for f in TickDump.model_fields if getattr(rebuilt, f) != getattr(stored, f)

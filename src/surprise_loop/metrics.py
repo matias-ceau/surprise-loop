@@ -20,18 +20,12 @@ import io
 from collections.abc import Iterable, Sequence
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict
-
 from surprise_loop.loop import RunResult
 from surprise_loop.state import PassRecord, TickRecord, Traits
-from surprise_loop.world import Action, Event, PhaseKind
+from surprise_loop.world import Action, Event, Frozen, PhaseKind
 
 
-class _Frozen(BaseModel):
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False, frozen=True)
-
-
-class PhaseMetrics(_Frozen):
+class PhaseMetrics(Frozen):
     phase_index: int
     phase_kind: PhaseKind
     steps: int
@@ -41,12 +35,12 @@ class PhaseMetrics(_Frozen):
     mean_abs_pe: float
 
 
-class Censored(_Frozen):
+class Censored(Frozen):
     value: int
     censored: bool
 
 
-class PEPoint(_Frozen):
+class PEPoint(Frozen):
     step: int
     tick: int
     pass_index: int
@@ -59,7 +53,7 @@ class PEPoint(_Frozen):
     unsigned: float
 
 
-class RunMetrics(_Frozen):
+class RunMetrics(Frozen):
     steps: int
     ticks: int
     truncated: bool

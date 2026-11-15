@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 
 from surprise_loop.state import (
     AgentState,
@@ -22,35 +22,30 @@ from surprise_loop.state import (
     Memory,
     Mood,
     Traits,
-    _require_keys,
+    require_keys,
 )
-from surprise_loop.world import Action, World, WorldConfig
+from surprise_loop.world import Action, Frozen, Unit, World, WorldConfig
 
 MODEL_ENV_VAR = "SURPRISE_LOOP_MODEL"
 
-Unit = Annotated[float, Field(ge=0, le=1)]
 NonNegative = Annotated[float, Field(ge=0)]
 Positive = Annotated[float, Field(gt=0)]
 SafeName = Annotated[str, Field(pattern=r"^[A-Za-z0-9_.-]+$")]
 
 
-class _Frozen(BaseModel):
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False, frozen=True)
-
-
-class MonitorParams(_Frozen):
+class MonitorParams(Frozen):
     # minimum weight of a prediction error when the prediction had zero confidence
     confidence_floor: Unit = 0.3
     # extra unsigned error added when the predicted event was wrong
     event_mismatch_weight: NonNegative = 0.5
 
 
-class MoodParams(_Frozen):
+class MoodParams(Frozen):
     # how strongly unsigned prediction error drives arousal
     arousal_gain: NonNegative = 1.0
 
 
-class MemoryParams(_Frozen):
+class MemoryParams(Frozen):
     # how many recent episodes Perceive recalls; above quit_steps, so a pause of quit_steps steps
     # does not empty the window and reset a press's expected reward to the prior (was 10)
     retrieval_k: int = Field(default=20, ge=1)
@@ -60,7 +55,7 @@ class MemoryParams(_Frozen):
     base_salience: Unit = 0.1
 
 
-class GoalParams(_Frozen):
+class GoalParams(Frozen):
     # EMA rate of per-goal signed error (scaled by surprise_learning_rate)
     ema_rate: Unit = 0.2
     # |EMA| above which a pass counts towards an error streak
@@ -81,7 +76,7 @@ class GoalParams(_Frozen):
         return self
 
 
-class DispositionParams(_Frozen):
+class DispositionParams(Frozen):
     # rate at which an action bias drifts towards its outcome value (scaled by learning rate);
     # fast enough that the press habit wanes within PR and extinction, not after them (was 0.1)
     rate: Unit = 0.2
@@ -91,7 +86,7 @@ class DispositionParams(_Frozen):
     alignment_weight: NonNegative = 0.2
 
 
-class ConflictParams(_Frozen):
+class ConflictParams(Frozen):
     # whether Reconcile may send control back to Deliberate on a habit-vs-goal conflict
     enabled: bool = True
     # action bias at or above which a downward goal revision counts as a conflict
@@ -102,7 +97,7 @@ def _default_action_costs() -> dict[Action, float]:
     return {Action.PRESS_A: 0.05, Action.PRESS_B: 0.05, Action.EXPLORE: 0.02, Action.REST: 0.0}
 
 
-class DeliberateParams(_Frozen):
+class DeliberateParams(Frozen):
     # softmax temperature of the stub's action choice
     temperature: Positive = 0.1
     # expected reward of a press before any experience of it
@@ -127,25 +122,25 @@ class DeliberateParams(_Frozen):
     @field_validator("action_costs")
     @classmethod
     def _every_action(cls, value: dict[Action, float]) -> dict[Action, float]:
-        return _require_keys(value, Action)
+        return require_keys(value, Action)
 
 
-class AppraiseParams(_Frozen):
+class AppraiseParams(Frozen):
     # how strongly an observed reward lifts the stub's appraised valence
     reward_gain: NonNegative = 0.5
 
 
-class EvaluateParams(_Frozen):
+class EvaluateParams(Frozen):
     # utility difference that maps to alignment tanh(1) in the stub evaluator
     scale: Positive = 0.2
 
 
-class MetricsParams(_Frozen):
+class MetricsParams(Frozen):
     # consecutive steps without an active press that count as quitting
     quit_steps: int = Field(default=10, ge=1)
 
 
-class LLMParams(_Frozen):
+class LLMParams(Frozen):
     # how many times a phase agent may resend an output that fails validation (out of range,
     # unknown action, malformed) before the run stops with an error; there is no stub fallback
     output_retries: int = Field(default=3, ge=0)
@@ -156,7 +151,7 @@ class LLMParams(_Frozen):
     timeout_s: Positive = 60.0
 
 
-class Params(_Frozen):
+class Params(Frozen):
     monitor: MonitorParams = MonitorParams()
     mood: MoodParams = MoodParams()
     memory: MemoryParams = MemoryParams()
@@ -173,7 +168,7 @@ class Params(_Frozen):
 Backend = Literal["stub", "llm"]
 
 
-class Backends(_Frozen):
+class Backends(Frozen):
     appraise: Backend = "stub"
     deliberate: Backend = "stub"
     evaluate: Backend = "stub"
@@ -183,7 +178,7 @@ def _default_goal_priorities() -> dict[GoalName, float]:
     return {GoalName.SEEK_REWARD: 1.0, GoalName.EXPLORE: 0.5, GoalName.CONSERVE: 0.5}
 
 
-class AgentSpec(_Frozen):
+class AgentSpec(Frozen):
     name: SafeName
     traits: Traits
     mood: Mood = Mood(valence=0.0, arousal=0.0)
@@ -192,10 +187,10 @@ class AgentSpec(_Frozen):
     @field_validator("goal_priorities")
     @classmethod
     def _every_goal(cls, value: dict[GoalName, float]) -> dict[GoalName, float]:
-        return _require_keys(value, GoalName)
+        return require_keys(value, GoalName)
 
 
-class RunConfig(_Frozen):
+class RunConfig(Frozen):
     run_id: str
     seed: int
     ticks: int | None = Field(ge=1)
@@ -206,7 +201,7 @@ class RunConfig(_Frozen):
     model: str | None
 
 
-class ExperimentConfig(_Frozen):
+class ExperimentConfig(Frozen):
     name: SafeName
     seeds: list[int] = Field(min_length=1)
     ticks: int | None = Field(default=None, ge=1)

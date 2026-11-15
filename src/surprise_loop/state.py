@@ -7,9 +7,9 @@ take state in and return a copy, never mutating their input.
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import Field, field_validator
 
-from surprise_loop.world import Action, Event, Observation, Outcome, WorldState
+from surprise_loop.world import Action, Event, Frozen, Observation, Outcome, Unit, WorldState
 
 
 class GoalName(StrEnum):
@@ -26,11 +26,10 @@ GOAL_OF_ACTION: dict[Action, GoalName] = {
 }
 
 Signed = Annotated[float, Field(ge=-1, le=1)]
-Unit = Annotated[float, Field(ge=0, le=1)]
 Count = Annotated[int, Field(ge=0)]
 
 
-def _require_keys[K, V](value: dict[K, V], keys: type[StrEnum]) -> dict[K, V]:
+def require_keys[K, V](value: dict[K, V], keys: type[StrEnum]) -> dict[K, V]:
     """Raise unless `value` has an entry for every member of `keys`."""
     missing = [k.value for k in keys if k not in value]
     if missing:
@@ -38,58 +37,54 @@ def _require_keys[K, V](value: dict[K, V], keys: type[StrEnum]) -> dict[K, V]:
     return value
 
 
-class _Frozen(BaseModel):
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False, frozen=True)
-
-
-class Traits(_Frozen):
+class Traits(Frozen):
     reward_sensitivity: float = Field(gt=0)
     surprise_learning_rate: float = Field(gt=0, le=1)
     mood_inertia: float = Field(ge=0, lt=1)
 
 
-class Mood(_Frozen):
+class Mood(Frozen):
     valence: Signed
     arousal: Unit
 
 
-class Prediction(_Frozen):
+class Prediction(Frozen):
     expected_event: Event
     expected_reward: float
     confidence: Unit
 
 
-class PredictionError(_Frozen):
+class PredictionError(Frozen):
     raw_signed: float
     signed: float
     unsigned: float = Field(ge=0)
     event_mismatch: bool
 
 
-class Appraisal(_Frozen):
+class Appraisal(Frozen):
     valence: Signed
     arousal: Unit
     note: str = ""
 
 
-class Decision(_Frozen):
+class Decision(Frozen):
     action: Action
     prediction: Prediction
     rationale: str = ""
 
 
-class Feedback(_Frozen):
+class Feedback(Frozen):
     alignment: Signed
     critique: str = ""
 
 
-class Conflict(_Frozen):
+class Conflict(Frozen):
     kind: Literal["habit_vs_goal"]
     action: Action
     detail: str
 
 
-class Episode(_Frozen):
+class Episode(Frozen):
     tick: Count
     step: Count
     action: Action
@@ -102,7 +97,7 @@ class Episode(_Frozen):
     salience: Unit
 
 
-class Memory(_Frozen):
+class Memory(Frozen):
     episodes: list[Episode]
 
     def last_k(self, k: int) -> list[Episode]:
@@ -127,7 +122,7 @@ class Memory(_Frozen):
         return [self.episodes[i] for i in chosen]
 
 
-class Goals(_Frozen):
+class Goals(Frozen):
     priorities: dict[GoalName, float]
     error_ema: dict[GoalName, float]
     # signed: +n / -n consecutive over-threshold passes of that sign
@@ -136,20 +131,20 @@ class Goals(_Frozen):
 
     @field_validator("priorities", "error_ema", "error_streak")
     @classmethod
-    def _every_goal(cls, value: dict[GoalName, float]) -> dict[GoalName, float]:
-        return _require_keys(value, GoalName)
+    def _every_goal[V](cls, value: dict[GoalName, V]) -> dict[GoalName, V]:
+        return require_keys(value, GoalName)
 
 
-class Dispositions(_Frozen):
+class Dispositions(Frozen):
     biases: dict[Action, float]
 
     @field_validator("biases")
     @classmethod
     def _every_action(cls, value: dict[Action, float]) -> dict[Action, float]:
-        return _require_keys(value, Action)
+        return require_keys(value, Action)
 
 
-class AgentState(_Frozen):
+class AgentState(Frozen):
     traits: Traits
     mood: Mood
     memory: Memory
@@ -158,14 +153,14 @@ class AgentState(_Frozen):
     tick: Count  # completed ticks
 
 
-class Percept(_Frozen):
+class Percept(Frozen):
     event: Event
     reward: float
     last_action: Action | None
     recalled: list[Episode]
 
 
-class PassRecord(_Frozen):
+class PassRecord(Frozen):
     tick: Count
     pass_index: int = Field(ge=0, le=1)
     decision: Decision
@@ -176,14 +171,14 @@ class PassRecord(_Frozen):
     conflict: Conflict | None
 
 
-class TickRecord(_Frozen):
+class TickRecord(Frozen):
     tick: Count
     observation: Observation
     appraisal: Appraisal
     passes: list[PassRecord] = Field(min_length=1, max_length=2)
 
 
-class TickDump(_Frozen):
+class TickDump(Frozen):
     run_id: str
     tick: Count
     agent: AgentState
@@ -191,7 +186,7 @@ class TickDump(_Frozen):
     record: TickRecord
 
 
-class Workspace(_Frozen):
+class Workspace(Frozen):
     """What one tick's phases pass along; each phase returns an updated copy."""
 
     agent: AgentState

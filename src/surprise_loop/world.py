@@ -7,7 +7,7 @@ is active. It is deterministic under a seed. The agent only ever sees `Observati
 
 import random
 from enum import StrEnum
-from typing import Literal, Protocol, Self
+from typing import Annotated, Literal, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -33,18 +33,23 @@ class PhaseKind(StrEnum):
     EXTINCTION = "extinction"
 
 
-class _Frozen(BaseModel):
+class Frozen(BaseModel):
+    """The base of every state, config and result model: immutable, no unknown fields, no NaN."""
+
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False, frozen=True)
 
 
-class Observation(_Frozen):
+Unit = Annotated[float, Field(ge=0, le=1)]
+
+
+class Observation(Frozen):
     step: int
     last_action: Action | None
     event: Event
     reward: float
 
 
-class StepInfo(_Frozen):
+class StepInfo(Frozen):
     step: int
     phase_index: int
     phase_kind: PhaseKind
@@ -53,12 +58,12 @@ class StepInfo(_Frozen):
     ratio_completed: int | None
 
 
-class Outcome(_Frozen):
+class Outcome(Frozen):
     observation: Observation
     info: StepInfo
 
 
-class PhaseSpec(_Frozen):
+class PhaseSpec(Frozen):
     kind: PhaseKind
     steps: int = Field(ge=1)
     ratio: int | None = None
@@ -91,13 +96,13 @@ class PhaseSpec(_Frozen):
         return self
 
 
-class WorldConfig(_Frozen):
+class WorldConfig(Frozen):
     active_lever: Literal["press_a", "press_b", "random"]
     reward_magnitude: float = Field(gt=0)
     schedule: list[PhaseSpec] = Field(min_length=1)
 
 
-class WorldState(_Frozen):
+class WorldState(Frozen):
     seed: int
     step: int
     active_lever: Action
