@@ -143,6 +143,17 @@ class SelfAdminWorld:
 
     @classmethod
     def restore(cls, config: WorldConfig, state: WorldState) -> "SelfAdminWorld":
+        """The world `config` would be in at `state` (a snapshot); ValueError if `state` cannot
+        come from `config`'s schedule."""
+        n = len(config.schedule)
+        if not 0 <= state.phase_index <= n or (
+            state.phase_index < n
+            and not 0 <= state.step_in_phase < config.schedule[state.phase_index].steps
+        ):
+            raise ValueError(
+                f"world state at phase {state.phase_index}, step {state.step_in_phase} does not "
+                f"fit a schedule of {n} phases"
+            )
         world = cls.__new__(cls)
         world._config = config
         world._state = state

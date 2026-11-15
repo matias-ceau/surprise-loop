@@ -381,3 +381,37 @@ def test_runtime_is_a_frozen_dataclass() -> None:
     assert rt.model is None
     with pytest.raises(AttributeError):
         rt.model = "x"  # type: ignore[misc]
+
+
+# --- final fix wave -------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("priority", [0.05, 2.5])
+def test_goal_priorities_must_lie_in_the_revision_range(priority: float) -> None:
+    agents = [
+        {
+            "name": "a",
+            "traits": {"reward_sensitivity": 1, "surprise_learning_rate": 0.5, "mood_inertia": 0.5},
+            "goal_priorities": {"seek_reward": priority, "explore": 0.5, "conserve": 0.5},
+        }
+    ]
+    with pytest.raises(ValidationError, match=r"seek_reward = .* is outside \[0.1, 2\]"):
+        experiment(agents=agents)
+    # the range follows params.goals, and RunConfig checks it too
+    widened = {"goals": {"min_priority": 0.0, "max_priority": 3.0}}
+    run = experiment(agents=agents, params=widened).runs()[0]
+    with pytest.raises(ValidationError, match="outside"):
+        RunConfig.model_validate({**run.model_dump(), "params": Params().model_dump()})
+
+
+def test_goal_priorities_out_of_range_is_a_config_error(tmp_path: Path) -> None:
+    path = write(tmp_path, YAML.replace("seek_reward: 0.8", "seek_reward: 9.0"))
+    with pytest.raises(ConfigError, match="goal_priorities.seek_reward = 9 is outside"):
+        load_config(path)
+
+
+def test_config_file_that_is_not_utf8_raises_config_error(tmp_path: Path) -> None:
+    path = tmp_path / "exp.yaml"
+    path.write_bytes(b"name: \xff\xfe\n")
+    with pytest.raises(ConfigError, match="not UTF-8"):
+        load_config(path)

@@ -38,6 +38,7 @@ from surprise_loop.loop import (
     ReplayMismatch,
     RunError,
     RunResult,
+    has_run_files,
     is_complete,
     load_model,
     load_result,
@@ -115,8 +116,14 @@ def _print_metrics(result: RunResult) -> None:
     print(summarize(result).model_dump_json(indent=2))
 
 
+def _check_runs_dir(runs_dir: Path) -> None:
+    if runs_dir.exists() and not runs_dir.is_dir():
+        raise RunError(f"{runs_dir}: --runs-dir is not a directory")
+
+
 async def _run(args: argparse.Namespace) -> None:
     config = _select(args.config, args.agent, args.seed)
+    _check_runs_dir(args.runs_dir)
     run_dir = args.runs_dir / config.run_id
     result = await run(config, run_dir, resume=args.resume)
     print(f"run directory: {run_dir}", file=sys.stderr)
@@ -162,7 +169,7 @@ async def _plan(configs: list[RunConfig], runs_dir: Path) -> list[_Planned]:
     planned = []
     for config in configs:
         run_dir = runs_dir / config.run_id
-        stored = load_result(run_dir) if run_dir.is_dir() and any(run_dir.iterdir()) else None
+        stored = load_result(run_dir) if has_run_files(run_dir) else None
         if stored is not None and is_complete(stored):
             try:
                 model = resolve_model(config)
@@ -198,6 +205,7 @@ async def _one(planned: _Planned, runs_dir: Path) -> tuple[RunResult, str]:
 
 async def _experiment(args: argparse.Namespace) -> None:
     experiment = load_config(args.config)
+    _check_runs_dir(args.runs_dir)
     plan = await _plan(experiment.runs(), args.runs_dir)
     configs = [p.config for p in plan]
     gate = asyncio.Semaphore(args.jobs)

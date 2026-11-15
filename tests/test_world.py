@@ -264,3 +264,51 @@ def test_world_config_rejects_empty_schedule_and_nonpositive_reward() -> None:
         WorldConfig(active_lever="press_a", reward_magnitude=1.0, schedule=[])
     with pytest.raises(ValidationError):
         WorldConfig(active_lever="press_a", reward_magnitude=0.0, schedule=[ext(1)])
+
+
+# --- final fix wave -------------------------------------------------------------------------------
+
+
+def test_random_active_lever_for_a_known_seed() -> None:
+    assert make_world(fr(1, 1), active="random", seed=3).snapshot().active_lever == Action.PRESS_B
+
+
+def test_reinforcers_reset_at_a_phase_change() -> None:
+    world = make_world(fr(1, 2), pr(1, 2, 5))
+    assert [o.observation.event for o in run(world, [Action.PRESS_A] * 2)] == [Event.REWARD] * 2
+    first_pr = world.step(Action.PRESS_A)
+    # two FR reinforcers do not carry over: PR starts again at pr_start, not 1 + 2 * 2
+    assert first_pr.info.ratio_required == 1
+    assert first_pr.observation.event == Event.REWARD
+    assert first_pr.info.ratio_completed == 1
+
+
+def test_first_step_of_a_new_phase_reports_its_requirement() -> None:
+    world = make_world(fr(5, 2), pr(3, 1, 2), ext(1))
+    outcomes = run(world, [Action.PRESS_A] * 5)
+    assert [o.info.ratio_required for o in outcomes] == [5, 5, 3, 3, None]
+
+
+def test_restore_mid_requirement_continues_identically() -> None:
+    config = WorldConfig(active_lever="press_a", reward_magnitude=1.0, schedule=[fr(3, 10)])
+    script = [Action.PRESS_A, Action.REST, Action.PRESS_A, Action.PRESS_A, Action.PRESS_A]
+    whole = SelfAdminWorld(config, seed=0)
+    expected = run(whole, script)
+    split = SelfAdminWorld(config, seed=0)
+    head = run(split, script[:2])
+    assert split.snapshot().presses_toward_ratio == 1  # cut in the middle of a requirement
+    restored = SelfAdminWorld.restore(config, split.snapshot())
+    assert head + run(restored, script[2:]) == expected
+
+
+@pytest.mark.parametrize(
+    "update", [{"phase_index": 3}, {"phase_index": -1}, {"step_in_phase": 4}], ids=str
+)
+def test_restore_rejects_a_state_that_does_not_fit_the_schedule(update: dict) -> None:
+    config = WorldConfig(active_lever="press_a", reward_magnitude=1.0, schedule=[fr(1, 4), ext(2)])
+    state = SelfAdminWorld(config, seed=0).snapshot().model_copy(update=update)
+    with pytest.raises(ValueError, match="does not fit"):
+        SelfAdminWorld.restore(config, state)
+    # the end of the schedule is a valid state
+    done = state.model_copy(update={"phase_index": 2, "step_in_phase": 0})
+    assert SelfAdminWorld.restore(config, done).done

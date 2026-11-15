@@ -198,7 +198,8 @@ def test_non_empty_run_dir_without_resume_fails(
     shutil.copytree(smoke_run[0], runs_dir / SMOKE_RUN_ID)
     before = snapshot(runs_dir / SMOKE_RUN_ID)
     assert main(["run", str(SMOKE), "--runs-dir", str(runs_dir)]) == 2
-    assert "not empty" in assert_one_line_error(capsys)
+    line = assert_one_line_error(capsys)
+    assert "not empty" in line and "--resume" in line
     assert snapshot(runs_dir / SMOKE_RUN_ID) == before
 
 
@@ -212,6 +213,29 @@ def test_resume_with_a_changed_config_fails(
     assert main(["run", str(changed), "--runs-dir", str(runs_dir), "--resume"]) == 2
     assert "differs" in assert_one_line_error(capsys)
     assert snapshot(runs_dir / SMOKE_RUN_ID) == before
+
+
+@pytest.mark.parametrize("command", ["run", "experiment"])
+def test_runs_dir_that_is_a_file_fails(
+    command: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runs_dir = tmp_path / "runs"
+    runs_dir.write_text("not a directory")
+    assert main([command, str(SMOKE), "--runs-dir", str(runs_dir)]) == 2
+    assert "not a directory" in assert_one_line_error(capsys)
+
+
+def test_run_dir_holding_only_a_config_temp_file_starts_afresh(
+    smoke_run: tuple[Path, str], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A run killed before config.json was renamed into place leaves only config.json.tmp."""
+    run_dir = tmp_path / "runs" / SMOKE_RUN_ID
+    run_dir.mkdir(parents=True)
+    (run_dir / "config.json.tmp").write_text("{")
+    assert main(["run", str(SMOKE), "--runs-dir", str(tmp_path / "runs")]) == 0
+    out, _ = capsys.readouterr()
+    assert out == smoke_run[1]
+    assert not (run_dir / "config.json.tmp").exists()
 
 
 def test_unknown_agent_fails(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -243,7 +267,15 @@ def test_missing_run_dir_fails(
     command: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert main([command, str(tmp_path / "nope")]) == 2
-    assert "config.json" in assert_one_line_error(capsys)
+    assert "no such run directory" in assert_one_line_error(capsys)
+
+
+@pytest.mark.parametrize("command", ["metrics", "replay"])
+def test_empty_run_dir_fails(
+    command: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main([command, str(tmp_path)]) == 2
+    assert "config.json is missing" in assert_one_line_error(capsys)
 
 
 # --- entry point ---------------------------------------------------------------------------

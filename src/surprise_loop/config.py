@@ -190,6 +190,19 @@ class AgentSpec(Frozen):
         return require_keys(value, GoalName)
 
 
+def _check_priorities(agents: list[AgentSpec], goals: GoalParams) -> None:
+    """Every agent's starting goal priorities lie in [min_priority, max_priority], the range
+    Reconcile keeps them in."""
+    for agent in agents:
+        for goal, priority in agent.goal_priorities.items():
+            if not goals.min_priority <= priority <= goals.max_priority:
+                raise ValueError(
+                    f"agent {agent.name}: goal_priorities.{goal.value} = {priority:g} is outside "
+                    f"[{goals.min_priority:g}, {goals.max_priority:g}] "
+                    "(params.goals.min_priority, max_priority)"
+                )
+
+
 class RunConfig(Frozen):
     run_id: str
     seed: int
@@ -199,6 +212,11 @@ class RunConfig(Frozen):
     params: Params
     backends: Backends
     model: str | None
+
+    @model_validator(mode="after")
+    def _priorities_in_range(self) -> "RunConfig":
+        _check_priorities([self.agent], self.params.goals)
+        return self
 
 
 class ExperimentConfig(Frozen):
@@ -227,6 +245,11 @@ class ExperimentConfig(Frozen):
             raise ValueError("agent names must be unique")
         return value
 
+    @model_validator(mode="after")
+    def _priorities_in_range(self) -> "ExperimentConfig":
+        _check_priorities(self.agents, self.params.goals)
+        return self
+
     def runs(self) -> list[RunConfig]:
         """One run per agent and seed: all seeds of the first agent first."""
         return [
@@ -251,9 +274,11 @@ class ConfigError(ValueError):
 
 def load_config(path: Path) -> ExperimentConfig:
     try:
-        text = Path(path).read_text()
+        text = Path(path).read_text(encoding="utf-8")
     except FileNotFoundError:
         raise ConfigError(f"{path}: file not found") from None
+    except UnicodeDecodeError:
+        raise ConfigError(f"{path}: cannot read: not UTF-8 text") from None
     except OSError as e:
         raise ConfigError(f"{path}: cannot read: {e.strerror}") from None
     try:

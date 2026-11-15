@@ -45,7 +45,11 @@ class ReplayMismatch(RunError):
 
     def __init__(self, run_dir: Path, tick: int, problem: str) -> None:
         super().__init__(f"{run_dir}: replay differs at tick {tick}: {problem}")
-        self.tick = tick
+        self.run_dir, self.tick, self.problem = run_dir, tick, problem
+
+    def __reduce__(self) -> tuple[type["ReplayMismatch"], tuple[Path, int, str]]:
+        # picklable (e.g. across a process pool) despite the custom __init__
+        return type(self), (self.run_dir, self.tick, self.problem)
 
 
 class RunResult(Frozen):
@@ -121,6 +125,8 @@ def write_atomic(path: Path, text: str) -> None:
     place, so `path` holds either its old content or all of `text`, never part of it."""
     temp = path.with_name(path.name + ".tmp")
     temp.write_text(text, encoding="utf-8", newline="")
+    # No fsync: after a power loss a renamed file may still be empty or partial. That is loud,
+    # not silent: load_dumps or read_config then refuses the file, and the run is restarted.
     os.replace(temp, path)
 
 
@@ -172,6 +178,8 @@ def read_config(run_dir: Path) -> RunConfig:
     """The `RunConfig` stored in `run_dir/config.json`."""
     run_dir = Path(run_dir)
     path = run_dir / CONFIG_FILE
+    if not run_dir.is_dir():
+        raise RunError(f"{run_dir}: no such run directory")
     if not path.is_file():
         raise RunError(f"{run_dir}: {CONFIG_FILE} is missing")
     try:
@@ -209,6 +217,14 @@ def load_result(run_dir: Path) -> RunResult:
         agent, initial_world = _initial(config)
         world = initial_world.snapshot()
     return RunResult(config=config, records=[d.record for d in dumps], agent=agent, world=world)
+
+
+def has_run_files(run_dir: Path) -> bool:
+    """Whether `run_dir` holds anything but a leftover config.json.tmp (a run killed before its
+    config.json was in place, which left no tick either): such a directory starts afresh."""
+    if not run_dir.is_dir():
+        return False
+    return any(p.name != CONFIG_FILE + ".tmp" for p in run_dir.iterdir())
 
 
 def _finished(config: RunConfig, ticks_done: int, world_done: bool) -> bool:
@@ -253,19 +269,30 @@ async def _run(
 
     if run_dir is not None:
         run_dir = Path(run_dir)
-        if run_dir.exists() and any(run_dir.iterdir()):
+        if run_dir.exists() and not run_dir.is_dir():
+            raise RunError(f"{run_dir}: not a directory")
+        if has_run_files(run_dir):
             if not resume:
-                raise RunError(f"{run_dir}: directory is not empty; pass resume=True to continue")
+                raise RunError(
+                    f"{run_dir}: directory is not empty; resume the run to continue it (--resume)"
+                )
             stored = read_config(run_dir)
             if stored != config:
                 raise RunError(f"{run_dir}: {CONFIG_FILE} differs from the given config")
             dumps = load_dumps(run_dir)
+            if dumps and (
+                dumps[-1].run_id != config.run_id or dumps[-1].agent.traits != config.agent.traits
+            ):
+                raise RunError(f"{run_dir}: the tick dumps do not belong to {CONFIG_FILE}")
             if dumps:
                 records = [d.record for d in dumps]
                 agent = dumps[-1].agent
                 world = SelfAdminWorld.restore(config.world, dumps[-1].world)
         else:
-            run_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                run_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                raise RunError(f"{run_dir}: cannot create: {_reason(e)}") from None
             write_atomic(run_dir / CONFIG_FILE, config.model_dump_json())
 
     rt = Runtime(config=config, world=world, model=model)

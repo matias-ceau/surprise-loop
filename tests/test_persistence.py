@@ -1,5 +1,6 @@
 import asyncio
 import os
+import pickle
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
@@ -273,12 +274,13 @@ def test_interrupted_and_resumed_run_is_byte_identical(tmp_path: Path) -> None:
     )
 
 
-def test_resume_of_a_two_pass_run_is_byte_identical(tmp_path: Path) -> None:
+@pytest.mark.parametrize("stop", [17, 18])  # after a one-pass and after a two-pass tick
+def test_resume_of_a_two_pass_run_is_byte_identical(tmp_path: Path, stop: int) -> None:
     config = make_config()
     whole, split = tmp_path / "whole", tmp_path / "split"
 
     uninterrupted = asyncio.run(_run(config, whole, phases=CONFLICT_PHASES))
-    asyncio.run(_run(config, split, stop_after_tick=17, phases=CONFLICT_PHASES))
+    asyncio.run(_run(config, split, stop_after_tick=stop, phases=CONFLICT_PHASES))
     resumed = asyncio.run(_run(config, split, resume=True, phases=CONFLICT_PHASES))
 
     assert any(len(r.passes) == 2 for r in uninterrupted.records)
@@ -469,3 +471,46 @@ def test_replay_fails_when_a_recorded_decision_is_altered(tmp_path: Path) -> Non
     with pytest.raises(ReplayMismatch) as caught:
         asyncio.run(replay(tmp_path))
     assert caught.value.tick == 5
+
+
+# --- final fix wave -----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        lambda d: d.model_copy(update={"run_id": "other"}),
+        lambda d: d.model_copy(
+            update={
+                "agent": d.agent.model_copy(
+                    update={"traits": d.agent.traits.model_copy(update={"mood_inertia": 0.99})}
+                )
+            }
+        ),
+    ],
+    ids=["run_id", "traits"],
+)
+def test_resume_with_dumps_of_another_run_raises(
+    tmp_path: Path, edit: Callable[[TickDump], TickDump]
+) -> None:
+    asyncio.run(run(make_config(), tmp_path, stop_after_tick=5))
+    edit_dump(tmp_path, 5, edit)
+    before = every_file(tmp_path)
+
+    with pytest.raises(RunError, match="do not belong"):
+        asyncio.run(run(make_config(), tmp_path, resume=True))
+
+    assert every_file(tmp_path) == before
+
+
+def test_replay_mismatch_pickles() -> None:
+    error = ReplayMismatch(Path("runs/x"), 7, "mismatch in agent")
+    copy = pickle.loads(pickle.dumps(error))
+    assert type(copy) is ReplayMismatch
+    assert (copy.tick, copy.run_dir, str(copy)) == (7, Path("runs/x"), str(error))
+
+
+def test_run_dir_that_is_a_file_raises(tmp_path: Path) -> None:
+    (tmp_path / "file").write_text("x")
+    with pytest.raises(RunError, match="not a directory"):
+        asyncio.run(run(make_config(), tmp_path / "file"))
