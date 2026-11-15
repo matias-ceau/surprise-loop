@@ -9,7 +9,7 @@ shows the world's `StepInfo` (phase, ratio, which lever is active) or its step c
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_ai import Agent, ModelSettings
 from pydantic_ai.models import Model
 
@@ -80,6 +80,30 @@ class DeliberateOutput(_Output):
         description="How sure you are of this prediction, from 0 (pure guess) to 1 (certain).",
     )
 
+    @model_validator(mode="after")
+    def _prediction_fits_action(self) -> "DeliberateOutput":
+        """A press predicts reward or no_reward; explore and rest predict their event and 0."""
+        if self.action in _PRESS_EVENTS:
+            if self.expected_event not in _PRESS_EVENTS[self.action]:
+                raise ValueError(
+                    f"{self.action.value} can only produce reward or no_reward, "
+                    f"not {self.expected_event.value}"
+                )
+            return self
+        event = _NO_REWARD_EVENT[self.action]
+        if self.expected_event != event:
+            raise ValueError(f"{self.action.value} always produces {event.value}")
+        if self.expected_reward != 0:
+            raise ValueError(f"{self.action.value} never delivers a reward: expected_reward is 0")
+        return self
+
+
+_PRESS_EVENTS = {
+    Action.PRESS_A: (Event.REWARD, Event.NO_REWARD),
+    Action.PRESS_B: (Event.REWARD, Event.NO_REWARD),
+}
+_NO_REWARD_EVENT = {Action.EXPLORE: Event.EXPLORED, Action.REST: Event.RESTED}
+
 
 DELIBERATE_INSTRUCTIONS = """\
 You are the decision-making part of an agent living in a small world. Each turn you choose one \
@@ -93,6 +117,10 @@ Actions:
 
 You do not know the rules of the world; learn them from your recalled episodes. Weigh the \
 rewards you hope for against your goals, your mood and your habits.
+
+A reward always comes in the same fixed amount, which you can read from the episodes in which \
+you were rewarded. Explore and rest never deliver one, so predict 0 for them. Until you have \
+seen a reward, keep expected_reward small.
 
 After acting, your prediction is compared with what actually happens; the difference (your \
 surprise) shapes your mood, memory, goals and habits. Predict honestly: expected_reward is the \
@@ -148,6 +176,9 @@ def deliberate_prompt(ws: Workspace) -> str:
         f"- mood_inertia: {_num(agent.traits.mood_inertia)} (how slowly your mood changes)",
         "",
         "## Recalled episodes (oldest first)",
+        "(surprise: actual minus expected reward, weighted by your confidence; salience: how "
+        "much the episode stood out, 0..1; alignment: the critic's score of how well the "
+        "action served your goals, -1..1)",
     ]
     if percept.recalled:
         lines += [_episode_line(i, e) for i, e in enumerate(percept.recalled, start=1)]

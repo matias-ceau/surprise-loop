@@ -146,7 +146,7 @@ class MetricsParams(_Frozen):
 class LLMParams(_Frozen):
     # how many times a phase agent may resend an output that fails validation (out of range,
     # unknown action, malformed) before the run stops with an error; there is no stub fallback
-    output_retries: int = Field(default=2, ge=0)
+    output_retries: int = Field(default=3, ge=0)
     # sampling temperature sent to the model; 1.0 keeps the model's own action distribution,
     # the analogue of the stub's softmax sampling. null sends none (for models that reject it)
     temperature: NonNegative | None = 1.0

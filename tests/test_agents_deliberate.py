@@ -25,6 +25,7 @@ from surprise_loop.config import (
     AgentSpec,
     Backends,
     ConfigError,
+    ConflictParams,
     LLMParams,
     Params,
     RunConfig,
@@ -348,7 +349,55 @@ INVALID = [
     pytest.param({**VALID, "expected_reward": -1.0}, "expected_reward", id="negative-reward"),
     pytest.param({**VALID, "mood": "fine"}, "mood", id="extra-field"),
     pytest.param({k: v for k, v in VALID.items() if k != "action"}, "action", id="missing-field"),
+    # action/prediction consistency (the model validator)
+    pytest.param({**VALID, "expected_event": "explored"}, "can only produce", id="press-explored"),
+    pytest.param(
+        {**VALID, "action": "press_b", "expected_event": "rested"},
+        "can only produce",
+        id="press-rested",
+    ),
+    pytest.param(
+        {**VALID, "action": "explore", "expected_event": "reward", "expected_reward": 0},
+        "always produces explored",
+        id="explore-reward-event",
+    ),
+    pytest.param(
+        {**VALID, "action": "explore", "expected_event": "explored", "expected_reward": 0.5},
+        "never delivers a reward",
+        id="explore-positive-reward",
+    ),
+    pytest.param(
+        {**VALID, "action": "rest", "expected_event": "no_reward", "expected_reward": 0},
+        "always produces rested",
+        id="rest-no-reward-event",
+    ),
+    pytest.param(
+        {**VALID, "action": "rest", "expected_event": "rested", "expected_reward": 0.2},
+        "never delivers a reward",
+        id="rest-positive-reward",
+    ),
 ]
+
+
+@pytest.mark.parametrize(
+    ("action", "event", "reward"),
+    [
+        ("press_a", "reward", 1.0),
+        ("press_a", "no_reward", 0.0),
+        ("press_b", "no_reward", 0.3),
+        ("explore", "explored", 0.0),
+        ("rest", "rested", 0.0),
+    ],
+)
+def test_consistent_predictions_are_accepted(action: str, event: str, reward: float) -> None:
+    out = DeliberateOutput.model_validate(
+        {**VALID, "action": action, "expected_event": event, "expected_reward": reward}
+    )
+    assert out.action == action and out.expected_event == event
+
+
+def test_params_llm_defaults() -> None:
+    assert LLMParams() == LLMParams(output_retries=3, temperature=1.0, timeout_s=60.0)
 
 
 def retry_feedback(messages: list[ModelMessage]) -> str:
@@ -371,6 +420,7 @@ def test_invalid_output_is_retried_then_accepted(bad: dict[str, Any], field: str
     assert out.decision is not None
     assert out.decision.prediction.confidence == VALID["confidence"]
     assert out.decision.action == Action.PRESS_A
+    assert out.decision.prediction.expected_event == Event.REWARD
 
 
 @pytest.mark.parametrize("retries", [0, 1, 3])
@@ -475,3 +525,34 @@ def test_stub_backend_needs_no_model(monkeypatch: pytest.MonkeyPatch) -> None:
     result = asyncio.run(run(make_config(backends=Backends(), model=None, ticks=5)))
     assert result.config.model is None
     assert all(p.decision.rationale == "stub" for r in result.records for p in r.passes)
+
+
+def test_a_real_reconcile_conflict_reaches_the_prompt_without_hidden_information() -> None:
+    """Conflicts come from the real Reconcile: patience 1 and a habit threshold every bias meets,
+    with a model that always over-predicts lever A, so seek_reward is soon revised down."""
+    over_predict = {**VALID, "expected_reward": 5.0, "confidence": 1.0}
+    model, calls = respond(over_predict)
+    base = make_config(ticks=30)
+    config = base.model_copy(
+        update={
+            "world": base.world.model_copy(update={"active_lever": "press_a"}),
+            "params": base.params.model_copy(
+                update={
+                    "goals": base.params.goals.model_copy(update={"patience": 1}),
+                    "conflict": ConflictParams(enabled=True, habit_threshold=-1.0),
+                }
+            ),
+        }
+    )
+    with deliberate_agent.override(model=model):
+        result = asyncio.run(run(config))
+
+    conflicts = [p.conflict for r in result.records for p in r.passes if p.conflict]
+    assert conflicts, "the setup should produce at least one real conflict"
+    prompts = [user_prompt(messages) for messages in calls]
+    with_note = [p for p in prompts if "## Conflict" in p]
+    assert len(with_note) == len(conflicts)
+    for prompt in with_note:
+        assert "the priority of goal seek_reward was just lowered to" in prompt
+        for hidden in HIDDEN:
+            assert hidden not in prompt.lower()

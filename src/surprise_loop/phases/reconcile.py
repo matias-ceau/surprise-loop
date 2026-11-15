@@ -160,8 +160,10 @@ async def reconcile(ws: Workspace, rt: Runtime) -> Workspace:
             kind="habit_vs_goal",
             action=action,
             detail=(
-                f"goal {goal.value} revised down to {goals.priorities[goal]} while "
-                f"bias[{action.value}] = {bias} >= {params.conflict.habit_threshold}"
+                f"the priority of goal {goal.value} was just lowered to "
+                f"{goals.priorities[goal]:.2f}, yet the habit of {action.value} is still "
+                f"{bias:.2f}, at or above the conflict threshold of "
+                f"{params.conflict.habit_threshold:.2f}"
             ),
         )
 
