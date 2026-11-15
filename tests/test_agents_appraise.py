@@ -131,13 +131,14 @@ def test_prompt_refuses_a_percept_that_does_not_match_the_newest_episode(
 
 def test_a_real_run_with_re_entry_never_trips_the_episode_guard() -> None:
     """Real Reconcile with patience 1 and a habit threshold every bias meets, and a Deliberate that
-    always over-predicts lever A: re-entries happen, and every tick's appraisal prompt shows the
-    prediction of the action actually perceived (the second pass's after a re-entry)."""
+    always predicts a full reward from lever A: re-entries happen, and every tick's appraisal
+    prompt shows the prediction of the action actually perceived (the second pass's after a
+    re-entry)."""
     over_predict = {
         "reasoning": "A again",
         "action": "press_a",
         "expected_event": "reward",
-        "expected_reward": 5.0,
+        "expected_reward": 1.0,  # the reward magnitude: the most it may predict
         "confidence": 1.0,
     }
     deliberate_model, _ = respond(over_predict)
@@ -165,7 +166,7 @@ def test_a_real_run_with_re_entry_never_trips_the_episode_guard() -> None:
     assert any(len(r.passes) == 2 for r in result.records), "the setup should re-enter"
     assert len(calls) == len(result.records)
     for messages in calls[1:]:
-        assert "You had predicted event 'reward' with reward 5.00" in user_prompt(messages)
+        assert "You had predicted event 'reward' with reward 1.00" in user_prompt(messages)
 
 
 def test_prompt_requires_a_percept() -> None:

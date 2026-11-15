@@ -2,7 +2,7 @@
 
 from collections import Counter
 
-from surprise_loop.agents import deliberate_agent, deliberate_prompt, run_agent
+from surprise_loop.agents import STUB_RATIONALE, deliberate_agent, deliberate_prompt, run_agent
 from surprise_loop.config import Runtime, derive_rng
 from surprise_loop.phases.heuristics import (
     PRESSES,
@@ -15,8 +15,6 @@ from surprise_loop.phases.heuristics import (
 )
 from surprise_loop.state import Decision, Prediction, Workspace
 from surprise_loop.world import Action, Event
-
-STUB_RATIONALE = "stub"
 
 _DEFAULT_EVENT = {
     Action.PRESS_A: Event.NO_REWARD,
@@ -67,7 +65,8 @@ async def deliberate_stub(ws: Workspace, rt: Runtime) -> Workspace:
 
 async def deliberate_llm(ws: Workspace, rt: Runtime) -> Workspace:
     """Ask the model for an action and a prediction; invalid output is retried, then raises."""
-    out = await run_agent(deliberate_agent, deliberate_prompt(ws), ws, rt)
+    magnitude = rt.config.world.reward_magnitude
+    out = await run_agent(deliberate_agent, deliberate_prompt(ws), ws, rt, magnitude)
     prediction = Prediction(
         expected_event=out.expected_event,
         expected_reward=out.expected_reward,

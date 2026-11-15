@@ -23,6 +23,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from surprise_loop.agents import (
     EVALUATE_INSTRUCTIONS,
+    STUB_RATIONALE,
     EvaluateOutput,
     appraise_agent,
     deliberate_agent,
@@ -111,10 +112,20 @@ def test_prompt_covers_goals_action_prediction_and_outcome() -> None:
     assert "Event: reward. Reward: 0.80. Confidence: 0.70." in prompt
     # the actual outcome
     assert "Event: no_reward. Reward: 0.00. Surprise: -0.62" in prompt
-    # recent experience, oldest first, without earlier critiques (no echo of the critic)
+    # recalled experience, oldest first, without earlier critiques (no echo of the critic)
+    assert "## Its recalled experience before this action (oldest first)" in prompt
     assert "1. press_a: got reward, reward 1.00" in prompt
     assert "2. press_b: got no_reward, reward 0.00" in prompt
     assert "wasted effort" not in prompt
+
+
+def test_prompt_omits_the_stub_rationale() -> None:
+    """With a stub Deliberate and an LLM Evaluate, the placeholder rationale is not reasoning."""
+    ws = eval_ws(config())
+    decision = ws.decision.model_copy(update={"rationale": STUB_RATIONALE})
+    prompt = evaluate_prompt(ws.model_copy(update={"decision": decision}))
+    assert "Its reasoning" not in prompt
+    assert "Action: press_b." in prompt
 
 
 def test_prompt_with_no_experience_says_so() -> None:

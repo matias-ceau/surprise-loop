@@ -24,7 +24,7 @@ async def appraise_stub(ws: Workspace, rt: Runtime) -> Workspace:
 
 async def appraise_llm(ws: Workspace, rt: Runtime) -> Workspace:
     """Ask the model how this moment feels; invalid output is retried, then raises."""
-    out = await run_agent(appraise_agent, appraise_prompt(ws), ws, rt)
+    out = await run_agent(appraise_agent, appraise_prompt(ws), ws, rt, None)
     appraisal = Appraisal(valence=out.valence, arousal=out.arousal, note=out.note)
     return ws.model_copy(update={"appraisal": appraisal})
 

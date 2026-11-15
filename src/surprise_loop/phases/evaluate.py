@@ -21,7 +21,7 @@ async def evaluate_stub(ws: Workspace, rt: Runtime) -> Workspace:
 
 async def evaluate_llm(ws: Workspace, rt: Runtime) -> Workspace:
     """Ask the model to critique the action; returns feedback only, never touches ws.agent."""
-    out = await run_agent(evaluate_agent, evaluate_prompt(ws), ws, rt)
+    out = await run_agent(evaluate_agent, evaluate_prompt(ws), ws, rt, None)
     feedback = Feedback(alignment=out.alignment, critique=out.critique)
     return ws.model_copy(update={"feedback": feedback})
 

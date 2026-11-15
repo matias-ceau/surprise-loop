@@ -228,6 +228,10 @@ INVALID = [
     pytest.param({**VALID, "action": "pull_lever_c"}, "action", id="unknown-action"),
     pytest.param({**VALID, "expected_event": "start"}, "expected_event", id="start-event"),
     pytest.param({**VALID, "expected_reward": -1.0}, "expected_reward", id="negative-reward"),
+    # make_config's world has reward_magnitude 1.0, passed to the agent as its validation context
+    pytest.param(
+        {**VALID, "expected_reward": 1.5}, "at most 1: no reward is larger", id="above-magnitude"
+    ),
     pytest.param({**VALID, "mood": "fine"}, "mood", id="extra-field"),
     pytest.param({k: v for k, v in VALID.items() if k != "action"}, "action", id="missing-field"),
     # action/prediction consistency (the model validator)
@@ -402,8 +406,9 @@ def test_stub_backend_needs_no_model(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_a_real_reconcile_conflict_reaches_the_prompt_without_hidden_information() -> None:
     """Conflicts come from the real Reconcile: patience 1 and a habit threshold every bias meets,
-    with a model that always over-predicts lever A, so seek_reward is soon revised down."""
-    over_predict = {**VALID, "expected_reward": 5.0, "confidence": 1.0}
+    with a model that always predicts a full reward from lever A (the most it may predict), so
+    seek_reward is revised down once lever A stops paying every press."""
+    over_predict = {**VALID, "expected_reward": 1.0, "confidence": 1.0}
     model, calls = respond(over_predict)
     base = make_config(ticks=30)
     config = base.model_copy(
@@ -429,3 +434,18 @@ def test_a_real_reconcile_conflict_reaches_the_prompt_without_hidden_information
         assert "the priority of goal seek_reward was just lowered to" in prompt
         for hidden in HIDDEN:
             assert hidden not in prompt.lower()
+
+
+def test_expected_reward_bound_follows_the_world_reward_magnitude() -> None:
+    base = make_config(llm=LLMParams(output_retries=0))
+    config = base.model_copy(
+        update={"world": base.world.model_copy(update={"reward_magnitude": 2.0})}
+    )
+    model, calls = respond({**VALID, "expected_reward": 2.0})
+
+    out = asyncio.run(deliberate_llm(make_ws(config), runtime(config, model)))
+
+    assert len(calls) == 1
+    assert out.decision is not None and out.decision.prediction.expected_reward == 2.0
+    # without a validation context (outside an agent run) there is no upper bound
+    assert DeliberateOutput.model_validate({**VALID, "expected_reward": 5.0}).expected_reward == 5

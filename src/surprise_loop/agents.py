@@ -9,7 +9,15 @@ shows the world's `StepInfo` (phase, ratio, which lever is active) or its step c
 
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 from pydantic_ai import Agent, ModelSettings
 from pydantic_ai.models import Model
 
@@ -31,8 +39,10 @@ def model_settings(params: LLMParams) -> ModelSettings:
     return settings
 
 
-async def run_agent[T](agent: Agent[None, T], prompt: str, ws: Workspace, rt: Runtime) -> T:
-    """Run a phase agent on the run's model and return its validated output.
+async def run_agent[D, T](
+    agent: Agent[D, T], prompt: str, ws: Workspace, rt: Runtime, deps: D
+) -> T:
+    """Run a phase agent on the run's model with `deps` and return its validated output.
 
     Output that fails validation is sent back to the model up to `Params.llm.output_retries`
     times; after that pydantic-ai raises `UnexpectedModelBehavior` and the run stops. There is
@@ -45,6 +55,7 @@ async def run_agent[T](agent: Agent[None, T], prompt: str, ws: Workspace, rt: Ru
         result = await agent.run(
             prompt,
             model=rt.model,
+            deps=deps,
             model_settings=model_settings(params),
             retries={"output": params.output_retries},
         )
@@ -64,6 +75,10 @@ def _one_line(text: str) -> str:
 
 # Free text from a model that later prompts show again (appraisal note, critique).
 OneLine = Annotated[str, Field(min_length=1), AfterValidator(_one_line)]
+
+
+# The rationale of every stub Deliberate decision; not shown to the LLM Evaluate as reasoning.
+STUB_RATIONALE = "stub"
 
 
 # The events a step can produce; START only ever precedes the first step, so it is not offered.
@@ -91,6 +106,16 @@ class DeliberateOutput(_Output):
         le=1,
         description="How sure you are of this prediction, from 0 (pure guess) to 1 (certain).",
     )
+
+    @field_validator("expected_reward")
+    @classmethod
+    def _at_most_one_reward(cls, value: float, info: ValidationInfo) -> float:
+        """No step delivers more than the world's reward magnitude, which the agent runs pass in
+        the validation context (`reward_magnitude`); without it there is no upper bound."""
+        magnitude = (info.context or {}).get("reward_magnitude")
+        if magnitude is not None and value > magnitude:
+            raise ValueError(f"must be at most {magnitude:g}: no reward is larger than that")
+        return value
 
     @model_validator(mode="after")
     def _prediction_fits_action(self) -> "DeliberateOutput":
@@ -141,19 +166,24 @@ reward you actually expect, and confidence says how sure you are.
 Answer with the structured output only: reasoning, action, expected_event, expected_reward and \
 confidence."""
 
-deliberate_agent: Agent[None, DeliberateOutput] = Agent(
+# deps: the world's reward magnitude, the upper bound of `expected_reward` (a validation error,
+# so an output above it is sent back to the model like any other invalid output)
+deliberate_agent: Agent[float, DeliberateOutput] = Agent(
     output_type=DeliberateOutput,
+    deps_type=float,
     instructions=DELIBERATE_INSTRUCTIONS,
     name="deliberate",
+    validation_context=lambda ctx: {"reward_magnitude": ctx.deps},
 )
 
 
 def deliberate_prompt(ws: Workspace) -> str:
     """The per-tick prompt: what the agent perceives and its own mental state, nothing else."""
     percept, appraisal = ws.percept, ws.appraisal
-    if percept is None or appraisal is None:
-        missing = "percept" if percept is None else "appraisal"
-        raise ValueError(f"deliberate_prompt needs ws.{missing}, which is missing")
+    if percept is None:
+        raise _missing("deliberate_prompt", "percept")
+    if appraisal is None:
+        raise _missing("deliberate_prompt", "appraisal")
     agent = ws.agent
 
     lines = [
@@ -332,7 +362,7 @@ evaluate_agent: Agent[None, EvaluateOutput] = Agent(
 def evaluate_prompt(ws: Workspace) -> str:
     """The per-pass prompt: the agent's goals, the action and its reasoning, the prediction, the
     actual outcome (its observation only, never the world's `StepInfo` or step counter) and the
-    agent's recent experience."""
+    agent's recalled experience (the percept's episodes: the last k, or recent and salient ones)."""
     percept, decision, outcome, error = ws.percept, ws.decision, ws.outcome, ws.prediction_error
     if percept is None:
         raise _missing("evaluate_prompt", "percept")
@@ -350,7 +380,7 @@ def evaluate_prompt(ws: Workspace) -> str:
         "## What it did",
         f"Action: {decision.action.value}.",
     ]
-    if decision.rationale:
+    if decision.rationale and decision.rationale != STUB_RATIONALE:
         lines.append(f"Its reasoning: {' '.join(decision.rationale.split())}")
     lines += [
         "",
@@ -363,7 +393,7 @@ def evaluate_prompt(ws: Workspace) -> str:
         f"Surprise: {_signed(error.signed)} (actual minus expected reward, weighted by "
         "confidence).",
         "",
-        "## Its recent experience before this action (oldest first)",
+        "## Its recalled experience before this action (oldest first)",
     ]
     if percept.recalled:
         lines += [
