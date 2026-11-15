@@ -187,7 +187,7 @@ def response_rate(passes, phase_index: int | None = None) -> float   # active pr
 class Censored: value: int; censored: bool
 def breakpoint(passes, quit_steps: int) -> Censored            # last ratio_completed in the PR phase before the quit criterion
 def extinction_persistence(passes, quit_steps: int) -> Censored # active presses in extinction before the quit criterion
-def pe_trace(passes) -> list[PEPoint]                           # step, tick, pass_index, phase_index, phase_kind, raw_signed, signed, unsigned
+def pe_trace(passes) -> list[PEPoint]                           # step, tick, pass_index, phase_index, phase_kind, action, active_press, raw_signed, signed, unsigned
 def summarize(result: RunResult) -> RunMetrics                  # flat, CSV-ready
 def icc1(groups: list[list[float]]) -> float                    # one-way ICC; nan if undefined or zero total variance
 ```

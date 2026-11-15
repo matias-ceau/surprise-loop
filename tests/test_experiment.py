@@ -179,6 +179,12 @@ def test_pe_trace_csv_has_one_row_per_world_step(reference: Path) -> None:
     assert len(rows) == 4 * 42
     first = [r for r in rows if (r["agent"], r["seed"]) == ("slow", "1")]
     assert [int(r["step"]) for r in first] == list(range(1, 43))
+    # the per-step active presses add up to each phase's count in phases.csv
+    for phase in read_csv(reference / "exp" / "phases.csv"):
+        key = (phase["agent"], phase["seed"], phase["phase_index"])
+        steps = [r for r in rows if (r["agent"], r["seed"], r["phase_index"]) == key]
+        assert sum(r["active_press"] == "True" for r in steps) == int(phase["active_presses"])
+        assert all(r["action"] in {"press_a", "press_b", "explore", "rest"} for r in steps)
 
 
 def test_stability_csv_has_one_row_per_behavioural_metric(reference: Path) -> None:

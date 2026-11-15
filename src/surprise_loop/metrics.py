@@ -52,6 +52,8 @@ class PEPoint(_Frozen):
     pass_index: int
     phase_index: int
     phase_kind: PhaseKind
+    action: Action
+    active_press: bool
     raw_signed: float
     signed: float
     unsigned: float
@@ -185,7 +187,11 @@ def extinction_persistence(passes: list[PassRecord], quit_steps: int) -> Censore
 
 
 def pe_trace(passes: list[PassRecord]) -> list[PEPoint]:
-    """One point per pass, in step order."""
+    """One point per pass, in step order.
+
+    `action` and `active_press` are offline-analysis columns (the cumulative record); they are
+    world-side facts the agent never sees, and nothing here feeds back into a run.
+    """
     return [
         PEPoint(
             step=p.outcome.info.step,
@@ -193,6 +199,8 @@ def pe_trace(passes: list[PassRecord]) -> list[PEPoint]:
             pass_index=p.pass_index,
             phase_index=p.outcome.info.phase_index,
             phase_kind=p.outcome.info.phase_kind,
+            action=p.decision.action,
+            active_press=_is_active(p),
             raw_signed=p.prediction_error.raw_signed,
             signed=p.prediction_error.signed,
             unsigned=p.prediction_error.unsigned,

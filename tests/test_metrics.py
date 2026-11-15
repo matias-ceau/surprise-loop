@@ -351,6 +351,8 @@ def test_pe_trace_has_one_point_per_pass_in_step_order() -> None:
             pass_index=0,
             phase_index=0,
             phase_kind=FR,
+            action=ACTIVE,
+            active_press=True,
             raw_signed=0.5,
             signed=0.25,
             unsigned=0.25,
@@ -361,6 +363,8 @@ def test_pe_trace_has_one_point_per_pass_in_step_order() -> None:
             pass_index=0,
             phase_index=0,
             phase_kind=FR,
+            action=ACTIVE,
+            active_press=True,
             raw_signed=-0.25,
             signed=-0.125,
             unsigned=0.125,
@@ -371,6 +375,8 @@ def test_pe_trace_has_one_point_per_pass_in_step_order() -> None:
             pass_index=1,
             phase_index=1,
             phase_kind=PR,
+            action=INACTIVE,
+            active_press=False,
             raw_signed=1.0,
             signed=0.5,
             unsigned=0.5,
@@ -381,6 +387,8 @@ def test_pe_trace_has_one_point_per_pass_in_step_order() -> None:
             pass_index=0,
             phase_index=2,
             phase_kind=EXT,
+            action=Action.REST,
+            active_press=False,
             raw_signed=-1.5,
             signed=-0.75,
             unsigned=0.75,
@@ -405,13 +413,15 @@ def test_metric_models_are_frozen_flat_and_strict() -> None:
             pass_index=0,
             phase_index=0,
             phase_kind=FR,
+            action=ACTIVE,
+            active_press=True,
             raw_signed=math.nan,
             signed=0.0,
             unsigned=0.0,
         )
     for model in (PhaseMetrics, Censored, PEPoint, RunMetrics):
         for name, field in model.model_fields.items():
-            assert field.annotation in (int, float, bool, PhaseKind), (model, name)
+            assert field.annotation in (int, float, bool, PhaseKind, Action), (model, name)
 
 
 # --- summarize ----------------------------------------------------------------------------------

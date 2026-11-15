@@ -51,6 +51,16 @@ uv run ruff format --check .
 uv run pytest
 ```
 
+## Run an experiment and plot it
+
+```sh
+uv run surprise-loop experiment experiments/trait_grid.yaml --runs-dir runs --jobs 8
+uv run --group plot python scripts/plot_results.py runs/trait_grid
+```
+
+The first command writes the CSV tables into `runs/trait_grid/`; the second writes
+`metrics_by_agent.png`, `pe_trace.png` and `cumulative_record.png` into `runs/trait_grid/plots/`.
+
 ## Design
 
 The full v0 design, contracts and maths are in [`docs/plan-v0.md`](docs/plan-v0.md).
