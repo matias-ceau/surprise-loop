@@ -11,6 +11,7 @@ from surprise_loop.config import (
     DeliberateParams,
     EvaluateParams,
     MemoryParams,
+    MonitorParams,
     Params,
     RunConfig,
     Runtime,
@@ -600,7 +601,8 @@ def _outcome(action: Action, event: Event, reward: float) -> Outcome:
 def test_monitor_hand_cases(
     action: Action, pred: Prediction, event: Event, reward: float, raw: float, mismatch: bool
 ) -> None:
-    rt = make_rt()
+    # floor 1 and no mismatch weight make the weighted error equal the raw one (see test_monitor)
+    rt = make_rt(Params(monitor=MonitorParams(confidence_floor=1.0, event_mismatch_weight=0.0)))
     ws = base_ws(rt).model_copy(
         update={
             "decision": Decision(action=action, prediction=pred),
@@ -682,7 +684,7 @@ def test_evaluate_names_missing_input(missing: str) -> None:
 # --- Reconcile ------------------------------------------------------------------------------------
 
 
-def test_reconcile_appends_episode_and_pass_record_only() -> None:
+def test_reconcile_appends_episode_and_pass_record() -> None:
     params = Params(memory=MemoryParams(base_salience=0.15))
     rt = make_rt(params)
     old = [episode(Action.PRESS_A, 1.0, tick=1)]
@@ -719,8 +721,8 @@ def test_reconcile_appends_episode_and_pass_record_only() -> None:
     assert record.goal_revised is None
     assert record.conflict is None
     assert result.conflict is None
-    agent_rest = result.agent.model_copy(update={"memory": ws.agent.memory})
-    assert agent_rest == ws.agent
+    # mood, goals and dispositions are covered in test_reconcile.py
+    assert result.agent.tick == ws.agent.tick
 
 
 def test_reconcile_clamps_salience_to_one() -> None:
