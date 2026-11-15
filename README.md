@@ -114,4 +114,70 @@ The full v0 design, contracts and maths are in [`docs/plan-v0.md`](docs/plan-v0.
 
 ## Results
 
-TBD
+These are first numbers from v0. They show the pipeline works and point in a direction; they are
+not a finding. Stability is ICC(1) of each metric across seeds within a trait profile (1 = all the
+variance lies between profiles, 0 or below = none).
+
+### Stub phases: `experiments/trait_grid.yaml`
+
+7 profiles × 5 seeds, schedule FR1 60 → PR(1, +2) 150 → FR1 40 → extinction 150 world steps, zero
+API calls. No breakpoint or extinction value is censored.
+
+| profile | breakpoint | extinction persistence | PR response rate | extinction response rate |
+|---|---|---|---|---|
+| baseline | 9.4 ± 0.9 | 17.4 ± 1.8 | 0.31 ± 0.01 | 0.19 ± 0.01 |
+| reward_sensitivity_low (0.5) | 7.8 ± 1.1 | 14.6 ± 2.6 | 0.25 ± 0.03 | 0.16 ± 0.01 |
+| reward_sensitivity_high (2.0) | 9.8 ± 1.1 | 17.8 ± 3.0 | 0.39 ± 0.01 | 0.22 ± 0.01 |
+| surprise_learning_rate_low (0.2) | 13.8 ± 1.1 | 39.0 ± 5.5 | 0.51 ± 0.00 | 0.34 ± 0.02 |
+| surprise_learning_rate_high (0.8) | 7.4 ± 0.9 | 11.6 ± 1.3 | 0.24 ± 0.02 | 0.15 ± 0.00 |
+| mood_inertia_low (0.1) | 9.4 ± 0.9 | 17.6 ± 1.8 | 0.30 ± 0.01 | 0.19 ± 0.00 |
+| mood_inertia_high (0.9) | 11.4 ± 0.9 | 22.2 ± 1.3 | 0.39 ± 0.01 | 0.21 ± 0.01 |
+
+Mean ± SD over seeds 1–5. ICC(1): breakpoint 0.82, extinction persistence 0.91, PR response rate
+0.97, extinction response rate 0.98, mean |PE| 0.96, inactive-lever rate 0.87. Total rewards,
+FR response rate (at ceiling), re-entries and goal revisions have ICC(1) at or below 0.19.
+
+`tests/test_behaviour.py` checks the three predicted contrasts on 20 seeds: higher reward sensitivity
+raises breakpoint, higher surprise learning rate lowers persistence, and higher mood inertia raises
+persistence. Each paired difference exceeds 8 standard errors, and they hold on 20 seeds that were
+not used for tuning.
+
+Caveats:
+- **The habit-versus-goal re-entry almost never fires.** It happens about twice per 400-step run,
+  so that channel barely shapes behaviour.
+- **Trait effects are not specific to one metric.** Mood inertia also raises breakpoint, and reward
+  sensitivity's effect on persistence is not monotonic.
+- **The mood-inertia effect depends on a tuned default** (`deliberate.vigor_weight = 2.0`), which also
+  lifts the inactive-lever rate to about 0.07.
+- **The stub results show only that the deterministic channels can carry trait differences.** In
+  stub runs the traits enter through hand-written heuristics.
+
+### Real model: `experiments/llm_traits.yaml`
+
+All three LLM phases ran on one small open-weights model through OpenRouter: 4 profiles × 2 seeds,
+150 world steps each (FR1 15 → PR(1, +2) 75 → FR1 10 → extinction 50), about 3,500 model calls,
+40 minutes with `--jobs 8`. Every output passed validation, and `replay` verifies the dumps.
+
+| profile | seed | breakpoint | extinction persistence | PR response rate | extinction response rate |
+|---|---|---|---|---|---|
+| baseline | 1 / 2 | 15* / 15* | 21 / 16 | 0.92 / 0.91 | 0.42 / 0.46 |
+| surprise_learning_rate_low | 1 / 2 | 15* / 15* | 31* / 32* | 0.93 / 0.91 | 0.62 / 0.64 |
+| surprise_learning_rate_high | 1 / 2 | 11* / 13* | 5 / 15* | 0.64 / 0.72 | 0.14 / 0.30 |
+| reward_sensitivity_high | 1 / 2 | 15* / 15* | 25* / 28* | 0.93 / 0.89 | 0.50 / 0.56 |
+
+`*` = censored: the phase ended before the quit criterion was met, so the value is a lower bound.
+The model never quit in the 75-step PR phase, so breakpoint measures phase length here, not the
+agent. Persistence orders the profiles the same way as the stubs: a low surprise learning rate is
+most persistent and a high one least. With two seeds and heavy censoring this is a direction, not a
+result. ICC(1) of PR and extinction response rate is 0.92 and 0.88. Longer PR and extinction phases
+are the next step.
+
+Reproduce:
+
+```sh
+uv run surprise-loop experiment experiments/trait_grid.yaml --jobs 8
+uv run --group plot python scripts/plot_results.py runs/trait_grid
+SURPRISE_LOOP_MODEL=openrouter:<provider>/<model> OPENROUTER_API_KEY=... \
+  uv run surprise-loop experiment experiments/llm_traits.yaml --jobs 8
+uv run --group plot python scripts/plot_results.py runs/llm_traits
+```
