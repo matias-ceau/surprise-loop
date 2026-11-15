@@ -27,20 +27,22 @@ from surprise_loop.agents import (
     AppraiseOutput,
     appraise_agent,
     appraise_prompt,
+    deliberate_agent,
 )
-from surprise_loop.config import Backends, ConfigError, LLMParams, RunConfig
+from surprise_loop.config import Backends, ConfigError, ConflictParams, LLMParams, RunConfig
 from surprise_loop.loop import load_dumps, replay, run
 from surprise_loop.phases import appraise
 from surprise_loop.phases.appraise import appraise_llm
 from surprise_loop.state import Appraisal, Memory, TickDump
-from surprise_loop.world import Event, Observation
+from surprise_loop.world import Action, Event, Observation
 
 VALID = {"note": "stung by the empty lever", "valence": -0.45, "arousal": 0.61}
 APPRAISE = Backends(appraise="llm")
 
 
 def config(**kwargs: Any) -> RunConfig:
-    return make_config(backends=APPRAISE, run_id="llm-appraise", **kwargs)
+    kwargs.setdefault("backends", APPRAISE)
+    return make_config(run_id="llm-appraise", **kwargs)
 
 
 # --- prompt ---------------------------------------------------------------------------------------
@@ -51,7 +53,11 @@ def test_prompt_contains_every_state_element() -> None:
 
     # observation (as perceived) and the prediction it is compared with
     assert "Last action: press_b. Event: no_reward. Reward: 0.00." in prompt
-    assert "You had predicted: reward, reward 0.90 (confidence 0.35). Surprise: -0.53." in prompt
+    assert (
+        "You had predicted event 'reward' with reward 0.90 (confidence 0.35). Surprise: -0.53 "
+        "(actual minus expected reward, weighted by your confidence; negative = worse than "
+        "expected)." in prompt
+    )
     # mood
     assert "Valence: -0.31" in prompt and "Arousal: 0.72" in prompt
     # goals
@@ -102,6 +108,64 @@ def test_prompts_sent_during_a_run_hold_no_hidden_world_information() -> None:
     assert len(calls) == len(result.records) == 25
     for messages in calls:
         assert_no_hidden(user_prompt(messages))
+
+
+@pytest.mark.parametrize(
+    ("last_action", "memory_action"),
+    [(Action.PRESS_A, Action.PRESS_B), (None, Action.PRESS_B), (Action.PRESS_B, None)],
+)
+def test_prompt_refuses_a_percept_that_does_not_match_the_newest_episode(
+    last_action: Action | None, memory_action: Action | None
+) -> None:
+    ws = make_ws(config())
+    episodes = ws.agent.memory.episodes
+    if memory_action is None:
+        episodes = []
+    else:
+        episodes = [*episodes[:-1], episodes[-1].model_copy(update={"action": memory_action})]
+    agent = ws.agent.model_copy(update={"memory": Memory(episodes=episodes)})
+    percept = ws.percept.model_copy(update={"last_action": last_action})
+    with pytest.raises(ValueError, match="newest episode in memory"):
+        appraise_prompt(ws.model_copy(update={"agent": agent, "percept": percept}))
+
+
+def test_a_real_run_with_re_entry_never_trips_the_episode_guard() -> None:
+    """Real Reconcile with patience 1 and a habit threshold every bias meets, and a Deliberate that
+    always over-predicts lever A: re-entries happen, and every tick's appraisal prompt shows the
+    prediction of the action actually perceived (the second pass's after a re-entry)."""
+    over_predict = {
+        "reasoning": "A again",
+        "action": "press_a",
+        "expected_event": "reward",
+        "expected_reward": 5.0,
+        "confidence": 1.0,
+    }
+    deliberate_model, _ = respond(over_predict)
+    appraise_model, calls = respond(VALID)
+    base = config(ticks=30, backends=Backends(appraise="llm", deliberate="llm"))
+    cfg = base.model_copy(
+        update={
+            "world": base.world.model_copy(update={"active_lever": "press_a"}),
+            "params": base.params.model_copy(
+                update={
+                    "goals": base.params.goals.model_copy(update={"patience": 1}),
+                    "conflict": ConflictParams(enabled=True, habit_threshold=-1.0),
+                }
+            ),
+        }
+    )
+    with (
+        deliberate_agent.override(model=deliberate_model),
+        appraise_agent.override(model=appraise_model),
+    ):
+        result = asyncio.run(run(cfg))
+
+    # The world (40 steps) can end before 30 ticks: re-entries take extra steps.
+    assert len(result.records) >= 20
+    assert any(len(r.passes) == 2 for r in result.records), "the setup should re-enter"
+    assert len(calls) == len(result.records)
+    for messages in calls[1:]:
+        assert "You had predicted event 'reward' with reward 5.00" in user_prompt(messages)
 
 
 def test_prompt_requires_a_percept() -> None:

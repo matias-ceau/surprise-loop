@@ -10,6 +10,8 @@ import asyncio
 import sys
 from pathlib import Path
 
+import pydantic_ai
+
 from surprise_loop.config import ConfigError, RunConfig, load_config
 from surprise_loop.loop import ReplayMismatch, RunError, RunResult, load_result, replay, run
 from surprise_loop.metrics import summarize
@@ -89,6 +91,9 @@ def _error(e: Exception) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    # The CLI owns its output: no pydantic-ai first-run banner on stderr (pydantic_ai.BANNER_ENABLED
+    # is its documented switch for programs; PYDANTIC_AI_NO_BANNER is the environment equivalent).
+    pydantic_ai.BANNER_ENABLED = False
     try:
         asyncio.run(_COMMANDS[args.command](args))
     except ReplayMismatch as e:

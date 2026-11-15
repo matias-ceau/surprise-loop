@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import shutil
 import subprocess
 from contextlib import redirect_stderr, redirect_stdout
@@ -254,3 +255,32 @@ def test_console_script_is_wired() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert "run" in result.stdout and "replay" in result.stdout
+
+
+def test_run_with_an_llm_backend_prints_no_pydantic_ai_banner(tmp_path: Path) -> None:
+    """pydantic-ai shows a first-run banner on stderr to a terminal or a coding agent (it stays
+    silent under pytest and CI). The CLI owns its output, so it turns the banner off."""
+    config = tmp_path / "llm.yaml"
+    text = SMOKE.read_text().replace("ticks: 100", "ticks: 3")
+    config.write_text(text.replace("deliberate: stub", "deliberate: llm"))
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in {"PYTEST_VERSION", "CI", "PYDANTIC_AI_NO_BANNER", "SURPRISE_LOOP_MODEL"}
+    }
+    env["AI_AGENT"] = "test-harness"  # what makes pydantic-ai show the banner on a pipe
+    env["SURPRISE_LOOP_MODEL"] = "test"
+
+    result = subprocess.run(
+        ["uv", "run", "surprise-loop", "run", str(config), "--runs-dir", str(tmp_path / "runs")],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["steps"] == 3
+    for text in (result.stdout, result.stderr):
+        assert "PYDANTIC_AI_NO_BANNER" not in text
+        assert "observability" not in text.lower()

@@ -212,22 +212,22 @@ class AppraiseOutput(_Output):
 
 
 APPRAISE_INSTRUCTIONS = """\
-You are the feeling part of an agent living in a small world. Each turn you read what just \
-happened and say how that moment feels to the agent, given its mood, goals and temperament. \
-You do not choose actions.
+You are an agent living in a small world. Each turn you read what just happened and say how it \
+feels to you, given your mood, goals and temperament. Here you only feel; you do not choose \
+actions.
 
 Answer with three things:
-- note: one short sentence, in the agent's own words, describing the feeling.
+- note: one short sentence, in your own words, describing how you feel.
 - valence: a number from -1 to +1. -1 means very unpleasant, 0 neutral, +1 very pleasant.
 - arousal: a number from 0 to 1. 0 means completely calm, 1 highly agitated or excited.
 
 How to judge:
-- Start from the current mood. One moment shifts the feeling but rarely overturns it, and the \
-higher mood_inertia is, the less it shifts.
-- A reward feels pleasant, more so the higher reward_sensitivity and the priority of \
-seek_reward. Missing a reward you expected feels unpleasant.
-- Surprise raises arousal: an outcome far from what you predicted is activating, an outcome you \
-expected is calming. Large positive or negative surprise both raise arousal.
+- Start from your current mood. One moment shifts your feeling but rarely overturns it, and the \
+higher your mood_inertia, the less it shifts.
+- A reward feels pleasant to you, more so the higher your reward_sensitivity and the priority of \
+your seek_reward goal. Missing a reward you expected feels unpleasant.
+- Surprise raises your arousal: an outcome far from what you predicted is activating, an outcome \
+you expected is calming. Large positive and large negative surprises both raise arousal.
 
 Answer with the structured output only: note, valence and arousal."""
 
@@ -245,15 +245,24 @@ def appraise_prompt(ws: Workspace) -> str:
     if percept is None:
         raise _missing("appraise_prompt", "percept")
     agent = ws.agent
-    episodes = agent.memory.episodes
+    # The newest episode in memory is the action whose outcome is being perceived now.
+    last = agent.memory.episodes[-1] if agent.memory.episodes else None
+    last_action = last.action if last is not None else None
+    if last_action != percept.last_action:
+        perceived = percept.last_action.value if percept.last_action else "none"
+        remembered = last_action.value if last_action else "none"
+        raise ValueError(
+            f"appraise_prompt: the percept's last action ({perceived}) is not the action of the "
+            f"newest episode in memory ({remembered}), so its prediction cannot be shown"
+        )
     lines = ["## What just happened", _last_line(percept)]
-    if episodes:
-        # The newest episode in memory is the action whose outcome is being perceived now.
-        last = episodes[-1]
+    if last is not None:
         p = last.prediction
         lines.append(
-            f"You had predicted: {p.expected_event.value}, reward {_num(p.expected_reward)} "
-            f"(confidence {_num(p.confidence)}). Surprise: {_signed(last.prediction_error.signed)}."
+            f"You had predicted event '{p.expected_event.value}' with reward "
+            f"{_num(p.expected_reward)} (confidence {_num(p.confidence)}). "
+            f"Surprise: {_signed(last.prediction_error.signed)} (actual minus expected reward, "
+            "weighted by your confidence; negative = worse than expected)."
         )
     else:
         lines.append("Nothing has happened yet: this is your first moment in this world.")
