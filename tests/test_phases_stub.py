@@ -444,6 +444,32 @@ def test_deliberate_draw_matches_derived_rng_and_is_reproducible() -> None:
     assert len(seen) == len(Action)
 
 
+def test_deliberate_draw_for_known_seeds() -> None:
+    """Hard-coded outcomes of the draw (independent of the re-derivation above)."""
+    params = _spread_params()
+    episodes = [episode(Action.PRESS_A, 1.0, tick=1), episode(Action.REST, 0.0, Event.RESTED)]
+    chosen = []
+    for seed in (0, 1, 6):
+        rt = make_rt(params, seed=seed)
+        ws = _deliberate_ready(rt, agent_with(rt, episodes=episodes, tick=6))
+        chosen.append(run(deliberate, ws, rt).decision.action)
+    assert chosen == [Action.REST, Action.EXPLORE, Action.PRESS_B]
+
+
+def test_deliberate_expected_event_tie_goes_to_the_most_recent() -> None:
+    params = Params(deliberate=delib(temperature=1e-3, rest_value=10.0))
+    rt = make_rt(params)
+    for first, last in [(Event.RESTED, Event.REWARD), (Event.REWARD, Event.RESTED)]:
+        episodes = [
+            episode(Action.REST, 0.0, first, tick=1),
+            episode(Action.REST, 0.0, last, tick=2),
+        ]
+        ws = _deliberate_ready(rt, agent_with(rt, episodes=episodes))
+        d = run(deliberate, ws, rt).decision
+        assert d.action == Action.REST
+        assert d.prediction.expected_event == last
+
+
 def test_deliberate_omits_bias_when_conflict_is_set() -> None:
     # press_a 1·1·0.5 − 0.05 = 0.45 > press_b 0.4 > explore −0.02; rest 0 + bias 1 = 1
     costs = {Action.PRESS_A: 0.05, Action.PRESS_B: 0.1, Action.EXPLORE: 0.02, Action.REST: 0.0}
@@ -537,6 +563,21 @@ def test_appraise_stays_in_range_for_extreme_inputs(reward: float) -> None:
 
     assert a.valence == valence
     assert a.arousal == 1.0
+
+
+@pytest.mark.parametrize(("valence", "reward"), [(-1.0, 1e9), (1.0, -1e9)])
+def test_appraise_extreme_reward_overturns_an_opposite_mood(valence: float, reward: float) -> None:
+    params = Params(appraise=AppraiseParams(reward_gain=1e6))
+    traits = Traits(reward_sensitivity=1e6, surprise_learning_rate=1.0, mood_inertia=0.0)
+    rt = make_rt(params, traits=traits)
+    agent = agent_with(rt, mood=Mood(valence=valence, arousal=0.0))
+    obs = Observation(step=1, last_action=Action.PRESS_A, event=Event.REWARD, reward=reward)
+    ws = run(perceive, base_ws(rt, agent, obs), rt)
+
+    a = run(appraise_stub, ws, rt).appraisal
+
+    assert a.valence == -valence  # clamped at the opposite end
+    assert 0.0 <= a.arousal <= 1.0
 
 
 def test_appraise_requires_percept() -> None:
@@ -747,6 +788,7 @@ def test_reconcile_appends_episode_and_pass_record() -> None:
     assert result.conflict is None
     # mood, goals and dispositions are covered in test_reconcile.py
     assert result.agent.tick == ws.agent.tick
+    assert result.agent.traits == ws.agent.traits  # traits never change
 
 
 def test_reconcile_clamps_salience_to_one() -> None:

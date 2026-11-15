@@ -82,7 +82,10 @@ def baseline(runs: dict[str, list[Run]]) -> list[Run]:
 
 def _phase(r: Run, kind: PhaseKind) -> list[PassRecord]:
     """The passes of the first phase of `kind` in the run."""
-    index = next(p.outcome.info.phase_index for p in r.passes if p.outcome.info.phase_kind == kind)
+    index = next(
+        (p.outcome.info.phase_index for p in r.passes if p.outcome.info.phase_kind == kind), None
+    )
+    assert index is not None, f"the run never reached a {kind.value} phase"
     return [p for p in r.passes if p.outcome.info.phase_index == index]
 
 
@@ -150,6 +153,7 @@ def test_pr_response_rate_falls_from_the_first_to_the_last_quarter(baseline: lis
     for r in baseline:
         pr = _phase(r, PhaseKind.PROGRESSIVE_RATIO)
         quarter = len(pr) // 4
+        assert quarter > 0
         assert _rate(pr[-quarter:]) < _rate(pr[:quarter]), r.result.config.seed
 
 
@@ -164,6 +168,7 @@ def test_extinction_response_rate_falls_from_the_first_to_the_last_third(
     for r in baseline:
         ext = _phase(r, PhaseKind.EXTINCTION)
         third = len(ext) // 3
+        assert third > 0
         assert _rate(ext[-third:]) < _rate(ext[:third]), r.result.config.seed
 
 

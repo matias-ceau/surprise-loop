@@ -305,6 +305,16 @@ def test_a_sub_threshold_pass_restarts_the_streak() -> None:
     assert results[-1].agent.goals.revisions == 0
 
 
+def test_an_ema_exactly_at_the_threshold_does_not_count() -> None:
+    rt = make_rt(params(goals=goal_params(patience=1, error_threshold=0.1)))
+    # ema = 0.5 · 0.2 = 0.1, not above the threshold (a strict comparison); 0.5 · 0.21 is
+    at = run_passes(make_agent(rt), rt, [0.2])[-1].agent.goals
+    above = run_passes(make_agent(rt), rt, [0.21])[-1].agent.goals
+    assert at.error_ema[SEEK] == 0.1
+    assert at.error_streak[SEEK] == 0 and at.revisions == 0
+    assert above.revisions == 1
+
+
 def test_a_sign_flip_restarts_the_streak() -> None:
     rt = make_rt(params(goals=goal_params(patience=3, error_threshold=0.1)))
     # ema: 0.5, 0.75, then 0.375 − 1.0 = −0.625, then −0.8125

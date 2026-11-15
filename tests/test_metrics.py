@@ -476,11 +476,18 @@ def _quit_start(phase_passes: list[PassRecord], quit_steps: int) -> int | None:
     return None
 
 
-@pytest.mark.parametrize("name", list(SCHEDULES))
-def test_summarize_a_100_tick_stub_run_matches_hand_computation(name: str) -> None:
-    config = make_config(SCHEDULES[name], ticks=100)
+# (schedule, seed): seed 3 on "complete" quits inside PR, so the uncensored breakpoint path is
+# hand-checked too (the other runs are censored in PR)
+HAND_CASES = [("complete", 5), ("truncated", 5), ("complete", 3)]
+
+
+@pytest.mark.parametrize(("name", "seed"), HAND_CASES)
+def test_summarize_a_100_tick_stub_run_matches_hand_computation(name: str, seed: int) -> None:
+    config = make_config(SCHEDULES[name], ticks=100, seed=seed)
     result = asyncio.run(run(config))
+    before = result.model_copy(deep=True)
     m = summarize(result)
+    assert result == before  # summarize leaves its input as it was
 
     ps = [p for record in result.records for p in record.passes]
     kinds = {i: spec.kind for i, spec in enumerate(config.world.schedule)}
@@ -554,6 +561,8 @@ def test_summarize_a_100_tick_stub_run_matches_hand_computation(name: str) -> No
             assert got == value, field
     # the run exercised the measures
     assert m.steps == 100 and m.rewards > 0 and m.response_rate_fr > 0
+    if (name, seed) == ("complete", 3):
+        assert m.breakpoint > 0 and not m.breakpoint_censored
 
 
 def test_summarize_counts_reentries_revisions_and_truncation() -> None:

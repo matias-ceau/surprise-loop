@@ -21,6 +21,7 @@ from surprise_loop.state import (
     GOAL_OF_ACTION,
     AgentState,
     Conflict,
+    Decision,
     Dispositions,
     Episode,
     Feedback,
@@ -68,7 +69,7 @@ def update_goals(
     priorities = dict(goals.priorities)
     revisions = goals.revisions
     revised = 0
-    if s != 0 and abs(streak) >= p.patience:
+    if abs(streak) >= p.patience:  # streak is 0 when s is (patience >= 1)
         priorities[goal] = clamp(
             priorities[goal] + p.revision_step * s, p.min_priority, p.max_priority
         )
@@ -105,13 +106,12 @@ def update_dispositions(
 
 def _episode(
     tick: int,
-    ws: Workspace,
+    decision: Decision,
     outcome: Outcome,
     error: PredictionError,
     feedback: Feedback,
     params: Params,
 ) -> Episode:
-    decision = require(ws.decision, "decision", "reconcile")
     return Episode(
         tick=tick,
         step=outcome.info.step,
@@ -139,7 +139,10 @@ async def reconcile(ws: Workspace, rt: Runtime) -> Workspace:
 
     mood = update_mood(agent.mood, error, agent, params)
     memory = Memory(
-        episodes=[*agent.memory.episodes, _episode(tick, ws, outcome, error, feedback, params)]
+        episodes=[
+            *agent.memory.episodes,
+            _episode(tick, decision, outcome, error, feedback, params),
+        ]
     )
     goals, revised = update_goals(
         agent.goals, goal, error, agent.traits.surprise_learning_rate, params

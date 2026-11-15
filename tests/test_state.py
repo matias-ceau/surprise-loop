@@ -4,6 +4,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ValidationError
 
+from surprise_loop import config, loop, metrics, state, world
 from surprise_loop.state import (
     GOAL_OF_ACTION,
     AgentState,
@@ -163,6 +164,10 @@ BOUNDED: list[tuple[type[BaseModel], Any, str, list[Any]]] = [
     (Goals, goals, "revisions", [-1]),
     (AgentState, agent_state, "tick", [-1]),
     (PassRecord, pass_record, "pass_index", [-1, 2]),
+    (PassRecord, pass_record, "tick", [-1]),
+    (Episode, episode, "tick", [-1]),
+    (Episode, episode, "step", [-1]),
+    (TickRecord, tick_record, "tick", [-1]),
 ]
 
 CASES = [
@@ -360,3 +365,36 @@ def test_workspace_copies_carry_passes_as_a_tuple() -> None:
     later = ws.model_copy(update={"percept": percept, "passes": (pass_record(),)})
     assert ws.percept is None and ws.passes == ()
     assert later.passes == (pass_record(),)
+
+
+def test_every_model_is_frozen_and_forbids_unknown_fields() -> None:
+    """Every pydantic model of the state, world, config, loop and metrics modules."""
+    modules = [state, world, config, loop, metrics]
+    found = [
+        obj
+        for module in modules
+        for obj in vars(module).values()
+        if isinstance(obj, type)
+        and issubclass(obj, BaseModel)
+        and obj.__module__ == module.__name__
+    ]
+    assert len(found) > 30
+    for model in found:
+        assert model.model_config.get("extra") == "forbid", model.__name__
+        assert model.model_config.get("frozen") is True, model.__name__
+        assert model.model_config.get("allow_inf_nan") is False, model.__name__
+
+
+def test_tick_dump_with_unset_optional_fields_reserializes_identically() -> None:
+    record = pass_record(0).model_copy(update={"goal_revised": None, "conflict": None})
+    dump = TickDump(
+        run_id="exp-a-s7",
+        tick=2,
+        agent=agent_state(),
+        world=world_state(),
+        record=tick_record().model_copy(update={"passes": [record]}),
+    )
+    text = dump.model_dump_json()
+    loaded = TickDump.model_validate_json(text)
+    assert loaded == dump
+    assert loaded.model_dump_json() == text

@@ -211,6 +211,8 @@ def summarize(result: RunResult) -> RunMetrics:
     def of_kind(kind: PhaseKind) -> list[PassRecord]:
         return [p for p in passes if p.outcome.info.phase_kind == kind]
 
+    # The first PR phase is found from the passes, not the config's schedule: a run cut short by
+    # its tick cap may never reach it, and then every FR step counts as "before PR".
     pr_indices = [p.outcome.info.phase_index for p in of_kind(PhaseKind.PROGRESSIVE_RATIO)]
     first_pr = min(pr_indices, default=None)
     fr = [

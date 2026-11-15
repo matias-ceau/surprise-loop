@@ -82,12 +82,12 @@ def test_run_reports_the_run_directory_on_stderr(
 
 
 def test_run_selects_agent_and_seed(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    other = (
+    other_agent = (
         "  - name: other\n"
         "    traits: {reward_sensitivity: 2.0, surprise_learning_rate: 0.3, mood_inertia: 0.2}\n"
     )
     replacements = {"ticks: 100": "ticks: 3", "seeds: [1]": "seeds: [1, 7]"}
-    config = smoke_copy(tmp_path, **replacements, **{"backends:": other + "backends:"})
+    config = smoke_copy(tmp_path, **replacements, **{"backends:": other_agent + "backends:"})
     runs_dir = tmp_path / "runs"
 
     assert main(["run", str(config), "--runs-dir", str(runs_dir)]) == 0
@@ -99,8 +99,8 @@ def test_run_selects_agent_and_seed(tmp_path: Path, capsys: pytest.CaptureFixtur
         "stub_smoke-baseline-s7",
         "stub_smoke-other-s1",
     ]
-    other = load_result(runs_dir / "stub_smoke-other-s1").config
-    assert (other.agent.name, other.seed) == ("other", 1)
+    stored = load_result(runs_dir / "stub_smoke-other-s1").config
+    assert (stored.agent.name, stored.seed) == ("other", 1)
     assert load_result(runs_dir / "stub_smoke-baseline-s7").config.seed == 7
 
 
@@ -134,9 +134,10 @@ def test_replay_verifies_every_tick(
 ) -> None:
     run_dir, _ = smoke_run
     assert main(["replay", str(run_dir)]) == 0
-    out, _ = capsys.readouterr()
+    out, err = capsys.readouterr()
     assert len(out.splitlines()) == 1
-    assert "100" in out
+    assert "100 ticks verified" in out
+    assert err == ""
 
 
 def test_replay_mismatch_exits_1(
