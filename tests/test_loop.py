@@ -257,13 +257,23 @@ def test_run_stop_after_tick_stops_early() -> None:
 
 
 def test_run_returns_the_config_with_resolved_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(MODEL_ENV_VAR, "env-model")
+    monkeypatch.setenv(MODEL_ENV_VAR, "test")
     config = make_config(5, backends=Backends(deliberate="llm"))
 
     result = asyncio.run(run(config, stop_after_tick=0))
 
     assert result.records == []
-    assert result.config == config.model_copy(update={"model": "env-model"})
+    assert result.config == config.model_copy(update={"model": "test"})
+
+
+def test_run_with_an_unknown_model_name_fails_before_tick_one(tmp_path: Path) -> None:
+    config = make_config(5, backends=Backends(deliberate="llm"), model="no-such-model")
+    run_dir = tmp_path / "run"
+
+    with pytest.raises(ConfigError, match="no-such-model"):
+        asyncio.run(run(config, run_dir))
+
+    assert not run_dir.exists()
 
 
 def test_run_with_llm_backend_and_no_model_fails_before_tick_one(

@@ -9,13 +9,16 @@ run can be resumed and replayed from its files. Every written byte is determinis
 import dataclasses
 import os
 from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic_ai import UserError, models
 
 from surprise_loop import phases as real
 from surprise_loop.config import (
+    ConfigError,
     RunConfig,
     Runtime,
     initial_agent_state,
@@ -169,6 +172,19 @@ def _read_config(run_dir: Path) -> RunConfig:
         raise RunError(f"{run_dir}: cannot read {CONFIG_FILE}: {problem}") from None
 
 
+def load_model(name: str | None) -> models.Model | None:
+    """The pydantic-ai model for `name` (e.g. "openrouter:<id>", or "test" for `TestModel`).
+
+    Resolved once per run, so every call of the run shares one model and one HTTP client.
+    """
+    if name is None:
+        return None
+    try:
+        return models.infer_model(name)
+    except UserError as e:
+        raise ConfigError(f"model {name!r}: {e}") from None
+
+
 def _initial(config: RunConfig) -> tuple[AgentState, SelfAdminWorld]:
     return initial_agent_state(config), SelfAdminWorld(config.world, config.seed)
 
@@ -211,6 +227,7 @@ async def _run(
     phases: _Phases,
 ) -> RunResult:
     config = config.model_copy(update={"model": resolve_model(config)})
+    model = load_model(config.model)
     agent, world = _initial(config)
     records: list[TickRecord] = []
 
@@ -231,23 +248,27 @@ async def _run(
             run_dir.mkdir(parents=True, exist_ok=True)
             _write_atomic(run_dir / CONFIG_FILE, config.model_dump_json())
 
-    rt = Runtime(config=config, world=world, model=None)
-    while not (
-        world.done
-        or (config.ticks is not None and agent.tick >= config.ticks)
-        or (stop_after_tick is not None and agent.tick >= stop_after_tick)
-    ):
-        agent, record = await _tick(agent, rt, phases)
-        records.append(record)
-        if run_dir is not None:
-            dump = TickDump(
-                run_id=config.run_id,
-                tick=record.tick,
-                agent=agent,
-                world=world.snapshot(),
-                record=record,
-            )
-            write_dump(run_dir, dump)
+    rt = Runtime(config=config, world=world, model=model)
+    async with AsyncExitStack() as stack:
+        if model is not None:
+            # keep the model's HTTP client open for the whole run instead of one per call
+            await stack.enter_async_context(model)
+        while not (
+            world.done
+            or (config.ticks is not None and agent.tick >= config.ticks)
+            or (stop_after_tick is not None and agent.tick >= stop_after_tick)
+        ):
+            agent, record = await _tick(agent, rt, phases)
+            records.append(record)
+            if run_dir is not None:
+                dump = TickDump(
+                    run_id=config.run_id,
+                    tick=record.tick,
+                    agent=agent,
+                    world=world.snapshot(),
+                    record=record,
+                )
+                write_dump(run_dir, dump)
 
     return RunResult(config=config, records=records, agent=agent, world=world.snapshot())
 
@@ -287,6 +308,7 @@ async def _replay(run_dir: Path, base: _Phases) -> int:
     config = _read_config(run_dir)
     dumps = load_dumps(run_dir)
     agent, world = _initial(config)
+    # No model: the LLM-backed phases return their recorded outputs, so replay makes no calls.
     rt = Runtime(config=config, world=world, model=None)
     for stored in dumps:
         if world.done:

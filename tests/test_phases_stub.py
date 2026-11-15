@@ -746,7 +746,7 @@ def test_reconcile_names_missing_input(missing: str) -> None:
 
 @pytest.mark.parametrize(
     ("name", "phase", "position"),
-    [("appraise", appraise, 1), ("deliberate", deliberate, 2), ("evaluate", evaluate, 5)],
+    [("appraise", appraise, 1), ("evaluate", evaluate, 5)],
 )
 def test_llm_backend_is_not_implemented_yet(name: str, phase: Phase, position: int) -> None:
     stub_rt = make_rt()

@@ -143,6 +143,17 @@ class MetricsParams(_Frozen):
     quit_steps: int = Field(default=10, ge=1)
 
 
+class LLMParams(_Frozen):
+    # how many times a phase agent may resend an output that fails validation (out of range,
+    # unknown action, malformed) before the run stops with an error; there is no stub fallback
+    output_retries: int = Field(default=2, ge=0)
+    # sampling temperature sent to the model; 1.0 keeps the model's own action distribution,
+    # the analogue of the stub's softmax sampling. null sends none (for models that reject it)
+    temperature: NonNegative | None = 1.0
+    # per-request timeout in seconds
+    timeout_s: Positive = 60.0
+
+
 class Params(_Frozen):
     monitor: MonitorParams = MonitorParams()
     mood: MoodParams = MoodParams()
@@ -154,6 +165,7 @@ class Params(_Frozen):
     appraise: AppraiseParams = AppraiseParams()
     evaluate: EvaluateParams = EvaluateParams()
     metrics: MetricsParams = MetricsParams()
+    llm: LLMParams = LLMParams()
 
 
 Backend = Literal["stub", "llm"]

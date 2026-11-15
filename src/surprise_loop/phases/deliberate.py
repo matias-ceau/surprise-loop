@@ -2,6 +2,7 @@
 
 from collections import Counter
 
+from surprise_loop.agents import deliberate_agent, deliberate_prompt, run_agent
 from surprise_loop.config import Runtime, derive_rng
 from surprise_loop.phases.heuristics import (
     PRESSES,
@@ -64,8 +65,20 @@ async def deliberate_stub(ws: Workspace, rt: Runtime) -> Workspace:
     return ws.model_copy(update={"decision": decision})
 
 
+async def deliberate_llm(ws: Workspace, rt: Runtime) -> Workspace:
+    """Ask the model for an action and a prediction; invalid output is retried, then raises."""
+    out = await run_agent(deliberate_agent, deliberate_prompt(ws), ws, rt)
+    prediction = Prediction(
+        expected_event=out.expected_event,
+        expected_reward=out.expected_reward,
+        confidence=out.confidence,
+    )
+    decision = Decision(action=out.action, prediction=prediction, rationale=out.reasoning)
+    return ws.model_copy(update={"decision": decision})
+
+
 async def deliberate(ws: Workspace, rt: Runtime) -> Workspace:
     backend = rt.config.backends.deliberate
     if backend == "stub":
         return await deliberate_stub(ws, rt)
-    raise NotImplementedError(f'deliberate backend "{backend}" is not implemented yet')
+    return await deliberate_llm(ws, rt)
