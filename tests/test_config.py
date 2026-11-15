@@ -209,11 +209,12 @@ def test_agent_goal_priorities_default_and_must_cover_every_goal() -> None:
         AgentSpec(name="x", traits=t, goal_priorities={"seek_reward": 1.0, "explore": 0.5})
 
 
-def test_params_defaults_are_the_provisional_values() -> None:
+def test_params_defaults_are_the_tuned_values() -> None:
+    # The values tuned against tests/test_behaviour.py; change them only together with that gate.
     p = Params()
     assert p.monitor == MonitorParams(confidence_floor=0.3, event_mismatch_weight=0.5)
     assert p.mood == MoodParams(arousal_gain=1.0)
-    assert p.memory == MemoryParams(retrieval_k=10, base_salience=0.1)
+    assert p.memory == MemoryParams(retrieval_k=20, base_salience=0.1)
     assert p.goals == GoalParams(
         ema_rate=0.2,
         error_threshold=0.05,
@@ -222,7 +223,7 @@ def test_params_defaults_are_the_provisional_values() -> None:
         min_priority=0.1,
         max_priority=2.0,
     )
-    assert p.dispositions == DispositionParams(rate=0.1, bound=1.0, alignment_weight=0.2)
+    assert p.dispositions == DispositionParams(rate=0.2, bound=1.0, alignment_weight=0.2)
     assert p.conflict == ConflictParams(enabled=True, habit_threshold=0.1)
     assert p.deliberate == DeliberateParams(
         temperature=0.1,
@@ -230,9 +231,9 @@ def test_params_defaults_are_the_provisional_values() -> None:
         prior_weight=1.0,
         action_costs={"press_a": 0.05, "press_b": 0.05, "explore": 0.02, "rest": 0.0},
         approach_weight=0.2,
-        vigor_weight=0.5,
-        explore_value=0.1,
-        rest_value=0.05,
+        vigor_weight=2.0,
+        explore_value=0.3,
+        rest_value=0.3,
         confidence_halfsat=3.0,
     )
     assert p.appraise == AppraiseParams(reward_gain=0.5)

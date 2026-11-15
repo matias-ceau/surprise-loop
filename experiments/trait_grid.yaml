@@ -1,0 +1,36 @@
+# The v0 experiment: does a prediction-error-driven agent show stable individual differences?
+# A baseline agent plus a low and a high profile for each trait, every LLM phase stubbed.
+# Schedule: FR1 acquisition, progressive ratio, an FR1 re-baseline (so extinction starts from a
+# reinforced state, not from the end of PR), then extinction. 400 world steps per run.
+# tests/test_behaviour.py runs this schedule and these agents over 20 seeds as the behavioural gate.
+name: trait_grid
+seeds: [1, 2, 3, 4, 5]
+ticks: null
+world:
+  active_lever: random
+  reward_magnitude: 1.0
+  schedule:
+    - {kind: fixed_ratio, steps: 60, ratio: 1}
+    - {kind: progressive_ratio, steps: 150, pr_start: 1, pr_increment: 2}
+    - {kind: fixed_ratio, steps: 40, ratio: 1}
+    - {kind: extinction, steps: 150}
+agents:
+  - name: baseline
+    traits: {reward_sensitivity: 1.0, surprise_learning_rate: 0.5, mood_inertia: 0.5}
+  - name: reward_sensitivity_low
+    traits: {reward_sensitivity: 0.5, surprise_learning_rate: 0.5, mood_inertia: 0.5}
+  - name: reward_sensitivity_high
+    traits: {reward_sensitivity: 2.0, surprise_learning_rate: 0.5, mood_inertia: 0.5}
+  - name: surprise_learning_rate_low
+    traits: {reward_sensitivity: 1.0, surprise_learning_rate: 0.2, mood_inertia: 0.5}
+  - name: surprise_learning_rate_high
+    traits: {reward_sensitivity: 1.0, surprise_learning_rate: 0.8, mood_inertia: 0.5}
+  - name: mood_inertia_low
+    traits: {reward_sensitivity: 1.0, surprise_learning_rate: 0.5, mood_inertia: 0.1}
+  - name: mood_inertia_high
+    traits: {reward_sensitivity: 1.0, surprise_learning_rate: 0.5, mood_inertia: 0.9}
+backends:
+  appraise: stub
+  deliberate: stub
+  evaluate: stub
+model: null

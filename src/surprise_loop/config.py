@@ -1,7 +1,8 @@
 """Experiment configuration, parameters and run setup.
 
 Every number that shapes behaviour lives in `Params` (or in `Traits`). The defaults below are
-provisional: a later task tunes them against behavioural tests. Each can be overridden from YAML.
+tuned so the stub agent passes the behavioural gate in tests/test_behaviour.py on the
+experiments/trait_grid.yaml schedule. Each can be overridden from YAML.
 """
 
 import os
@@ -50,8 +51,9 @@ class MoodParams(_Frozen):
 
 
 class MemoryParams(_Frozen):
-    # how many recent episodes Perceive recalls
-    retrieval_k: int = Field(default=10, ge=1)
+    # how many recent episodes Perceive recalls; above quit_steps, so a pause of quit_steps steps
+    # does not empty the window and reset a press's expected reward to the prior (was 10)
+    retrieval_k: int = Field(default=20, ge=1)
     # salience of an episode with zero prediction error
     base_salience: Unit = 0.1
 
@@ -78,8 +80,9 @@ class GoalParams(_Frozen):
 
 
 class DispositionParams(_Frozen):
-    # rate at which an action bias drifts towards its outcome value (scaled by learning rate)
-    rate: Unit = 0.1
+    # rate at which an action bias drifts towards its outcome value (scaled by learning rate);
+    # fast enough that the press habit wanes within PR and extinction, not after them (was 0.1)
+    rate: Unit = 0.2
     # action biases are clamped to [-bound, bound]
     bound: Positive = 1.0
     # weight of the evaluator's alignment in the outcome value
@@ -108,12 +111,14 @@ class DeliberateParams(_Frozen):
     action_costs: dict[Action, float] = Field(default_factory=_default_action_costs)
     # how much appraised valence pulls towards pressing
     approach_weight: float = 0.2
-    # how much appraised arousal pulls towards pressing
-    vigor_weight: float = 0.5
-    # base value of exploring
-    explore_value: float = 0.1
-    # base value of resting
-    rest_value: float = 0.05
+    # how much appraised arousal pulls towards pressing; strong enough that arousal lingering
+    # under high mood_inertia measurably prolongs pressing in extinction (was 0.5)
+    vigor_weight: float = 2.0
+    # base value of exploring; with rest_value, a clear alternative to a press that no longer
+    # pays, so the agent quits within a phase instead of choosing near-randomly (was 0.1)
+    explore_value: float = 0.3
+    # base value of resting (was 0.05)
+    rest_value: float = 0.3
     # recalled episodes of an action at which prediction confidence reaches 0.5
     confidence_halfsat: Positive = 3.0
 
