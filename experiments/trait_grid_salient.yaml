@@ -1,0 +1,46 @@
+# trait_grid with salience-based retrieval (build step 7): the same schedule, agents and seeds,
+# but Perceive recalls the 10 most recent episodes plus the 10 most salient before them
+# (memory.retrieval: salient_k, retrieval_k 20) instead of the last 20.
+# Note: the stub Deliberate's E[x] weights recalled episodes by their position in the recalled list
+# (most recent first, weight (1 - surprise_learning_rate)^i), not by tick. Under salient_k the
+# salient episodes sit just before the recent half, so an old salient episode is weighted as if it
+# had happened just before the recent ones.
+# The v0 experiment: does a prediction-error-driven agent show stable individual differences?
+# A baseline agent plus a low and a high profile for each trait, every LLM phase stubbed.
+# Schedule: FR1 acquisition, progressive ratio, an FR1 re-baseline (so extinction starts from a
+# reinforced state, not from the end of PR), then extinction. 400 world steps per run.
+# The behavioural gate (tests/test_behaviour.py) covers trait_grid.yaml, not this file.
+name: trait_grid_salient
+seeds: [1, 2, 3, 4, 5]
+ticks: null
+world:
+  active_lever: random
+  reward_magnitude: 1.0
+  schedule:
+    - {kind: fixed_ratio, steps: 60, ratio: 1}
+    - {kind: progressive_ratio, steps: 150, pr_start: 1, pr_increment: 2}
+    - {kind: fixed_ratio, steps: 40, ratio: 1}
+    - {kind: extinction, steps: 150}
+agents:
+  - name: baseline
+    traits: {reward_sensitivity: 1.0, surprise_learning_rate: 0.5, mood_inertia: 0.5}
+  - name: reward_sensitivity_low
+    traits: {reward_sensitivity: 0.5, surprise_learning_rate: 0.5, mood_inertia: 0.5}
+  - name: reward_sensitivity_high
+    traits: {reward_sensitivity: 2.0, surprise_learning_rate: 0.5, mood_inertia: 0.5}
+  - name: surprise_learning_rate_low
+    traits: {reward_sensitivity: 1.0, surprise_learning_rate: 0.2, mood_inertia: 0.5}
+  - name: surprise_learning_rate_high
+    traits: {reward_sensitivity: 1.0, surprise_learning_rate: 0.8, mood_inertia: 0.5}
+  - name: mood_inertia_low
+    traits: {reward_sensitivity: 1.0, surprise_learning_rate: 0.5, mood_inertia: 0.1}
+  - name: mood_inertia_high
+    traits: {reward_sensitivity: 1.0, surprise_learning_rate: 0.5, mood_inertia: 0.9}
+params:
+  memory:
+    retrieval: salient_k
+backends:
+  appraise: stub
+  deliberate: stub
+  evaluate: stub
+model: null

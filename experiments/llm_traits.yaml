@@ -1,0 +1,49 @@
+# Build step 6 on the real model: do trait differences survive when the LLM chooses the actions?
+# The model comes from SURPRISE_LOOP_MODEL (e.g. openrouter:<id>). Run it with
+#   surprise-loop experiment experiments/llm_traits.yaml --jobs 8
+# About 150 world steps per run, so about 450 model calls per run and 3,600 for the experiment.
+#
+# Schedule: trait_grid's FR1 -> PR -> FR1 re-baseline -> extinction (same ratios) in 150 steps
+# instead of 400. Most of the budget goes to PR and extinction, where the two censored measures
+# live; FR1 acquisition is quick. With stub phases on seeds 1-5, baseline and
+# surprise_learning_rate_high quit inside PR in 10 of 10 runs and inside extinction in 9 of 10,
+# while surprise_learning_rate_low, which needs trait_grid's 150-step phases, is censored in most
+# runs (4/5 and 3/5; its values are then lower bounds, and results.csv carries the flags).
+#
+# Profiles, with trait_grid's values and names so the two experiments line up:
+# - baseline, the mid-range agent;
+# - surprise_learning_rate_low / _high, the pair with by far the largest stub contrast (extinction
+#   persistence 38 vs 12, 26 SE in trait_grid); a pair, not one profile against the baseline,
+#   tests the direction of the effect as well as its size, and with two seeds per profile only a
+#   large effect can show up as between-agent variance in stability.csv;
+# - reward_sensitivity_high, the trait the model is told about most directly ("how much rewards
+#   matter to you") and that also scales reward in Reconcile, so it tests whether a prompt-level
+#   trait moves breakpoint and response rate.
+# Mood inertia is left out: its stub effect runs through deliberate.vigor_weight, which the LLM
+# Deliberate does not use (it only sees mood_inertia as a number in the prompt), so 2 seeds would
+# most likely show nothing.
+name: llm_traits
+seeds: [1, 2]
+ticks: null
+world:
+  active_lever: random
+  reward_magnitude: 1.0
+  schedule:
+    - {kind: fixed_ratio, steps: 15, ratio: 1}
+    - {kind: progressive_ratio, steps: 75, pr_start: 1, pr_increment: 2}
+    - {kind: fixed_ratio, steps: 10, ratio: 1}
+    - {kind: extinction, steps: 50}
+agents:
+  - name: baseline
+    traits: {reward_sensitivity: 1.0, surprise_learning_rate: 0.5, mood_inertia: 0.5}
+  - name: surprise_learning_rate_low
+    traits: {reward_sensitivity: 1.0, surprise_learning_rate: 0.2, mood_inertia: 0.5}
+  - name: surprise_learning_rate_high
+    traits: {reward_sensitivity: 1.0, surprise_learning_rate: 0.8, mood_inertia: 0.5}
+  - name: reward_sensitivity_high
+    traits: {reward_sensitivity: 2.0, surprise_learning_rate: 0.5, mood_inertia: 0.5}
+backends:
+  appraise: llm
+  deliberate: llm
+  evaluate: llm
+model: null
