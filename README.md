@@ -172,6 +172,42 @@ most persistent and a high one least. With two seeds and heavy censoring this is
 result. ICC(1) of PR and extinction response rate is 0.92 and 0.88. Longer PR and extinction phases
 are the next step.
 
+### Real model, longer phases: `experiments/llm_traits_long.yaml`
+
+This uses the same model, profiles and seeds, with PR lengthened to 200 steps and extinction to
+150, giving 375 world steps per run. It made about 9,000 model calls and took 47 minutes with
+`--jobs 8`. Every output passed validation, and `replay` verifies the dumps (checked on two runs).
+
+| profile | seed | breakpoint | extinction persistence | PR response rate | extinction response rate | goal revisions |
+|---|---|---|---|---|---|---|
+| baseline | 1 / 2 | 13 / 19 | 10 / 56* | 0.40 / 0.71 | 0.13 / 0.37 | 8 / 10 |
+| surprise_learning_rate_low | 1 / 2 | 23* / 23* | 56* / 36 | 0.81 / 0.81 | 0.37 / 0.38 | 5 / 3 |
+| surprise_learning_rate_high | 1 / 2 | 19 / 21 | 17 / 59* | 0.59 / 0.78 | 0.29 / 0.39 | 16 / 17 |
+| reward_sensitivity_high | 1 / 2 | 17 / 17 | 12 / 10 | 0.56 / 0.56 | 0.21 / 0.13 | 8 / 9 |
+
+With room to quit, the model now meets the quit criterion in PR in 6 of 8 runs, so breakpoint
+measures the agent rather than the phase length. Three findings:
+
+- **The behavioural differences mostly do not hold within a profile.** ICC(1) is 0.60 for
+  breakpoint, 0.30 for PR response rate, 0.28 for extinction response rate and −0.09 for extinction
+  persistence.
+  - `surprise_learning_rate_low` and `reward_sensitivity_high` behave alike on both seeds: one
+    presses the most, the other the least.
+  - The baseline and `surprise_learning_rate_high` profiles differ more between their two seeds
+    than between each other.
+  - The short run's ordering, where a high surprise learning rate gave the least persistence, does
+    not replicate.
+- **The stable numbers are mechanical.** Goal revisions and re-entries have ICC(1) of 0.95 and
+  0.81. The deterministic Reconcile scales its goal error average by the surprise learning rate, so
+  they mostly track that trait directly, not the model's choices.
+- **The answer to the research question here is "not yet".** With one small model, two seeds per
+  profile and traits given to the LLM only as numbers in the prompt and through the deterministic
+  channels, the LLM-driven agent shows a few consistent profiles, not stable individual
+  differences across the board.
+
+The next steps are more seeds per profile and a quit criterion that tolerates short pauses: the
+extinction values swing because a single 10-step pause ends the count.
+
 Reproduce:
 
 ```sh
@@ -180,4 +216,5 @@ uv run --group plot python scripts/plot_results.py runs/trait_grid
 SURPRISE_LOOP_MODEL=openrouter:<provider>/<model> OPENROUTER_API_KEY=... \
   uv run surprise-loop experiment experiments/llm_traits.yaml --jobs 8
 uv run --group plot python scripts/plot_results.py runs/llm_traits
+# the same with experiments/llm_traits_long.yaml (and runs/llm_traits_long) for the longer phases
 ```
