@@ -424,12 +424,14 @@ For the 13:00 meadow facts, with `attention=None`, `extra=0` and default `LensPa
 
 ```python
 # ladder.py (Task 5)
-def ladder_body(level: int, scene: Literal["A", "B"]) -> tuple[Levels, Temperament, float]   # belief, temperament, arousal
-def ladder_prompt(level: int, scene: Literal["A", "B"], order: list[str], p: LensParams) -> str
-class LadderAnswer(Frozen): scene: str; level: int; i: int; order: list[str]; letter: str; action: str; why: str
+def ladder_body(level: int, scene: Literal["A", "B"], lp: LadderParams) -> tuple[Levels, Temperament, float]   # belief, temperament, arousal
+def ladder_prompt(...) -> str                                             # lens text, question, four lettered actions
+class LadderAnswer(Frozen): scene; level; i; order; letter; action; why; model: str; prompt: str
+    # an answer counts only for the model and the exact prompt it was given to; anything else is stale and asked again
 class CurveSummary(Frozen): share: list[float]; slope: float; range: float; worst_drop: float; passed: bool
-def summarize(answers: list[LadderAnswer]) -> dict[str, CurveSummary]    # keyed by scene
-async def run_ladder(model: object, samples: int, jobs: int, out_dir: Path, p: LensParams, done: list[LadderAnswer]) -> list[LadderAnswer]
+def summarize(answers: list[LadderAnswer], lp: LadderParams) -> dict[str, CurveSummary]    # keyed by scene
+async def run_ladder(...) -> list[LadderAnswer]                           # takes the whole Params; see ladder.py
+# ladder-check exits 0 when both scenes pass, 1 when the check ran and a scene failed, 2 when incomplete or on error
 
 # metrics.py (Task 9)
 def flatten(records: list[TickRecord]) -> list[PassRecord]
