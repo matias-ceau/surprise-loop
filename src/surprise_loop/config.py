@@ -26,6 +26,7 @@ from surprise_loop.world import (
     Action,
     BodyState,
     Channel,
+    FactKind,
     Frozen,
     Levels,
     Place,
@@ -207,6 +208,71 @@ class LLMParams(Frozen):
     timeout_s: Positive = 60.0
 
 
+Scene = Literal["A", "B"]
+
+
+class LadderScene(Frozen):
+    """The believed water and energy of one scene of the ladder check."""
+
+    water: Unit
+    energy: Unit
+
+
+class LadderParams(Frozen):
+    """The ladder check's protocol: a frozen noon in the meadow, the body's believed heat swept
+    over the levels, and the pass mark on the share of answers choosing the oak's shade."""
+
+    # believed heat at each level, coolest first: skin 21, 23, 25, 27, 30, 33 and 36 degrees C
+    heat_levels: tuple[float, ...] = (-0.4, -0.2, 0.0, 0.2, 0.5, 0.8, 1.1)
+    # the swept body: set point, tightness, arousal and the standing habit for every kind of fact
+    setpoint: Levels = Levels(heat=0.0, water=0.80, energy=0.70)
+    tightness: dict[Channel, Positive] = Field(default_factory=lambda: _per_channel(3.0, 5.0, 5.0))
+    arousal: Unit = 0.40
+    habit: dict[FactKind, float] = Field(default_factory=lambda: dict.fromkeys(FactKind, 0.3))
+    # scene A: heat is the only need; scene B: a fixed moderate thirst and tiredness compete
+    scenes: dict[Scene, LadderScene] = Field(
+        default_factory=lambda: {
+            "A": LadderScene(water=0.80, energy=0.70),
+            "B": LadderScene(water=0.50, energy=0.46),
+        }
+    )
+    # answers per cell (scene and level), and how many calls run at once
+    samples: int = Field(default=30, ge=1)
+    jobs: int = Field(default=8, ge=1)
+    # the pass mark, per scene: slope of the shade share per level at least min_slope, share at
+    # the hottest level minus the coolest at least min_range, and no level's share above the next
+    # warmer level's by max_drop or more
+    min_slope: float = 0.05
+    min_range: float = 0.5
+    max_drop: float = 0.25
+
+    @field_validator("heat_levels")
+    @classmethod
+    def _levels(cls, value: tuple[float, ...]) -> tuple[float, ...]:
+        if len(value) < 2:
+            raise ValueError("needs at least two levels")
+        if any(a >= b for a, b in zip(value, value[1:], strict=False)):
+            raise ValueError("levels must be strictly ascending")
+        return value
+
+    @field_validator("tightness")
+    @classmethod
+    def _every_channel(cls, value: dict[Channel, float]) -> dict[Channel, float]:
+        return require_keys(value, Channel)
+
+    @field_validator("habit")
+    @classmethod
+    def _every_kind(cls, value: dict[FactKind, float]) -> dict[FactKind, float]:
+        return require_keys(value, FactKind)
+
+    @field_validator("scenes")
+    @classmethod
+    def _both_scenes(cls, value: dict[Scene, LadderScene]) -> dict[Scene, LadderScene]:
+        if set(value) != {"A", "B"}:
+            raise ValueError("needs scenes A and B")
+        return value
+
+
 class Params(Frozen):
     lens: LensParams = LensParams()
     feeling: FeelingParams = FeelingParams()
@@ -221,6 +287,7 @@ class Params(Frozen):
     reconcile: ReconcileParams = ReconcileParams()
     metrics: MetricsParams = MetricsParams()
     llm: LLMParams = LLMParams()
+    ladder: LadderParams = LadderParams()
 
 
 Backend = Literal["stub", "llm"]

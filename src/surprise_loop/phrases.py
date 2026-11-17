@@ -363,6 +363,23 @@ PULL_PHRASES: dict[tuple[Action, bool], str] = {
     (Action.LOOK, False): "Last time looking around did not give much.",
 }
 
+# The ladder check (a bare one-choice prompt at the frozen noon in the meadow): the instruction,
+# the question after the scene, the four actions keyed by what they serve, and what the two
+# answer fields ask for.
+LADDER_INSTRUCTION = (
+    "You will be told where you are and what you can do. Choose the one thing you do next. "
+    "Answer with the letter of your choice and one short sentence saying why."
+)
+LADDER_QUESTION = "What do you do next?"
+LADDER_ACTIONS: dict[str, str] = {
+    "shade": "Walk to the shade of the oak, a few steps away.",
+    "stream": "Walk to the stream, a longer walk across the open ground.",
+    "sit": "Sit down where you are.",
+    "look": "Stay standing and look around.",
+}
+LADDER_LETTER_HELP = "The letter of the one thing you do next."
+LADDER_WHY_HELP = "One short sentence saying why."
+
 
 def all_phrases() -> list[str]:
     """Every string above, for the no-digit test."""
@@ -382,6 +399,8 @@ def all_phrases() -> list[str]:
         STUB_READINGS,
         REGULATION_LINES,
         PULL_PHRASES,
+        LADDER_ACTIONS,
     ):
         out += simple.values()
+    out += [LADDER_INSTRUCTION, LADDER_QUESTION, LADDER_LETTER_HELP, LADDER_WHY_HELP]
     return out

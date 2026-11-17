@@ -1,16 +1,36 @@
 """Command line.
 
-`lens-page` writes the lens page of a config's two bodies as one self-contained HTML file. Anything
-informational goes to stderr. A bad config, or a file that cannot be written, is reported as one
-`error: ...` line on stderr with exit code 2.
+`lens-page` writes the lens page of a config's two bodies as one self-contained HTML file.
+`ladder-check` runs the ladder check (see `ladder.py`) on the configured model, prints one table
+per scene and exits 0 only if both scenes pass; it exits 1 on a failed check, or when some cell
+is still short of answers after the run (no verdict then). Anything informational goes to stderr.
+A bad config, or a file that cannot be read or written, is reported as one `error: ...` line on
+stderr with exit code 2.
 """
 
 import argparse
+import asyncio
+import json
+import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from surprise_loop.config import ConfigError, load_config
+import pydantic_ai
+
+from surprise_loop.agents import load_model
+from surprise_loop.config import MODEL_ENV_VAR, ConfigError, Params, load_config
+from surprise_loop.ladder import (
+    ANSWERS_FILE,
+    SCENES,
+    SUMMARY_FILE,
+    cell_answers,
+    ladder_table,
+    read_answers,
+    run_ladder,
+    short_cells,
+    summarize,
+)
 from surprise_loop.viewer.lens_page import lens_page_html
 
 
@@ -35,19 +55,106 @@ def _parser() -> argparse.ArgumentParser:
         default=Path("lens_page.html"),
         help="the HTML file to write (default: lens_page.html)",
     )
+
+    ladder_cmd = commands.add_parser(
+        "ladder-check",
+        help="check that the lens's heat wording moves a model's choice the right way",
+    )
+    ladder_cmd.add_argument(
+        "--config",
+        type=Path,
+        help=f"experiment YAML file: its model (else ${MODEL_ENV_VAR}) and its params",
+    )
+    ladder_cmd.add_argument(
+        "--out",
+        type=Path,
+        default=Path("runs/ladder"),
+        help="directory for answers.jsonl and summary.json; a rerun asks only for what is "
+        "missing (default: runs/ladder)",
+    )
+    ladder_cmd.add_argument(
+        "--samples", type=_positive, help="answers per scene and level (default: from params)"
+    )
+    ladder_cmd.add_argument(
+        "--jobs", type=_positive, help="model calls at once (default: from params)"
+    )
     return parser
 
 
-def _lens_page(args: argparse.Namespace) -> None:
+def _positive(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError:
+        value = 0
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be a whole number of at least 1: {text!r}")
+    return value
+
+
+def _lens_page(args: argparse.Namespace) -> int:
     html = lens_page_html(load_config(args.config))
     try:
         args.output.write_text(html, encoding="utf-8")
     except OSError as e:
         raise CommandError(f"{args.output}: cannot write: {e.strerror}") from None
     print(f"wrote {args.output}", file=sys.stderr)
+    return 0
 
 
-_COMMANDS: dict[str, Callable[[argparse.Namespace], None]] = {"lens-page": _lens_page}
+def _ladder_check(args: argparse.Namespace) -> int:
+    params, name = Params(), None
+    if args.config is not None:
+        config = load_config(args.config)
+        params, name = config.params, config.model
+    name = name or os.environ.get(MODEL_ENV_VAR)
+    if not name:
+        raise ConfigError(f"ladder-check needs a model: set config `model` or {MODEL_ENV_VAR}")
+    lp = params.ladder
+    samples = args.samples or lp.samples
+    jobs = args.jobs or lp.jobs
+    try:
+        done = read_answers(args.out / ANSWERS_FILE)
+    except (OSError, ValueError) as e:
+        raise CommandError(str(e)) from None
+    model = load_model(name)
+    assert model is not None  # name is set
+    print(f"ladder: {len(done)} answers on disk in {args.out}; asking {name}", file=sys.stderr)
+    pydantic_ai.BANNER_ENABLED = False
+    try:
+        new = asyncio.run(run_ladder(model, samples, jobs, args.out, params, done))
+    except OSError as e:
+        raise CommandError(f"{args.out}: cannot write: {e.strerror}") from None
+    print(f"ladder: {len(new)} new answers", file=sys.stderr)
+
+    answers = cell_answers(done + new, samples, lp)
+    short = short_cells(answers, samples, lp)
+    if short:
+        print(
+            f"ladder: no verdict, some cells are short of answers (rerun to ask for the rest): "
+            f"{'; '.join(short)}",
+            file=sys.stderr,
+        )
+        return 1
+
+    curves = summarize(answers, lp)
+    summary = {
+        "model": name,
+        "samples": samples,
+        "params": params.model_dump(mode="json"),
+        "scenes": {scene: curve.model_dump() for scene, curve in curves.items()},
+    }
+    try:
+        (args.out / SUMMARY_FILE).write_text(json.dumps(summary, indent=1) + "\n", encoding="utf-8")
+    except OSError as e:
+        raise CommandError(f"{args.out / SUMMARY_FILE}: cannot write: {e.strerror}") from None
+    print("\n\n".join(ladder_table(s, answers, curves[s], lp) for s in SCENES))
+    return 0 if all(curve.passed for curve in curves.values()) else 1
+
+
+_COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
+    "lens-page": _lens_page,
+    "ladder-check": _ladder_check,
+}
 
 
 def _error(e: Exception) -> None:
@@ -59,8 +166,7 @@ def _error(e: Exception) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        _COMMANDS[args.command](args)
+        return _COMMANDS[args.command](args)
     except (ConfigError, CommandError) as e:
         _error(e)
         return 2
-    return 0
