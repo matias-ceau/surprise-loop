@@ -2,12 +2,15 @@
 
 Every run here is a whole day of `experiments/clearing_day.yaml` (both bodies, seeds 1 to 10) on
 the rule-based stubs, with no model and no tick files. Each set of runs is computed once per test
-session. A criterion that names a stub runs with that stub; the others run the experiment as its
-file configures it (the `reactive` stub, the default).
+session. A criterion that names a stub runs with that stub. The collapse-and-places criterion
+holds for the `reactive` stub (the one the file configures) and the `lookahead` stub; `blind` is a
+control and is exempt (a chooser that reads nothing runs dry). The day pair's opposite values are
+read from the experiment as its file configures it (`reactive`).
 
 The criteria (the plan's Task 10, plus the controller's liveliness criterion):
 
-- no run has more than 6 collapsed steps, and every run visits all three places;
+- `reactive` and `lookahead`: no run has more than 6 collapsed steps, and every run visits all
+  three places (`blind` exempt);
 - `reactive`: every run has at least 3 passes with a body error, and at most half its passes;
 - `reactive`: at least 3 of Ilo's 10 runs have an override, and no run has two-pass ticks on more
   than a quarter of its ticks;
@@ -100,7 +103,8 @@ def every_run(runs: Runs) -> list[RunResult]:
 
 
 def label(result: RunResult) -> str:
-    return f"{result.config.agent.name} seed {result.config.seed}"
+    stub = result.config.params.deliberate.stub
+    return f"{stub} {result.config.agent.name} seed {result.config.seed}"
 
 
 def passes(result: RunResult) -> list[PassRecord]:
@@ -151,18 +155,19 @@ def failing(runs: list[RunResult], ok: Callable[[RunResult], bool]) -> list[str]
 # --- the gate -----------------------------------------------------------------------------------
 
 
-def test_no_run_collapses_for_more_than_six_steps(configured: Runs) -> None:
-    collapsed = {label(r): summarize(r).collapsed_steps for r in every_run(configured)}
+def test_no_run_collapses_for_more_than_six_steps(configured: Runs, lookahead: Runs) -> None:
+    runs = every_run(configured) + every_run(lookahead)
+    collapsed = {label(r): summarize(r).collapsed_steps for r in runs}
     assert max(collapsed.values()) <= MAX_COLLAPSED, collapsed
 
 
-def test_every_run_visits_all_three_places(configured: Runs) -> None:
+def test_every_run_visits_all_three_places(configured: Runs, lookahead: Runs) -> None:
     def visits_all(result: RunResult) -> bool:
         places = {result.records[0].observation.place}
         places |= {p.outcome.info.place for p in passes(result)}
         return len(places) == 3
 
-    assert failing(every_run(configured), visits_all) == []
+    assert failing(every_run(configured) + every_run(lookahead), visits_all) == []
 
 
 def test_reactive_expectations_usually_hold_and_sometimes_fail(configured: Runs) -> None:
