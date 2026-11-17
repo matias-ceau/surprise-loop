@@ -17,9 +17,8 @@ from surprise_loop.phrases import (
     OPENING,
     SURPRISE_PHRASES,
     WORLD_SURPRISE_PHRASES,
-    Sign,
 )
-from surprise_loop.state import BodyLine, FeltFact, FeltScene, SurpriseNote, Temperament
+from surprise_loop.state import BodyLine, FeltFact, FeltScene, Sign, SurpriseNote, Temperament
 from surprise_loop.world import Channel, Fact, FactName, Levels, Place
 
 

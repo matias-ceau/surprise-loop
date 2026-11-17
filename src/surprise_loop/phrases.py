@@ -5,12 +5,8 @@ Fact phrases are said of the world ("it is really hot"), not reported as reading
 run from grade 1 to grade 4, and a table may stop early (the lens then uses the highest it has).
 """
 
-from typing import Literal
-
-from surprise_loop.state import ChangeWord
+from surprise_loop.state import ChangeWord, Sign
 from surprise_loop.world import Action, Channel, FactName, OpenQuestion, Place
-
-Sign = Literal["+", "-", "0"]
 
 OPENING: dict[Place, str] = {
     Place.MEADOW: "You are standing in the middle of the forest clearing.",

@@ -1,4 +1,4 @@
-"""The agent's mental state and what it makes of a moment.
+"""The agent's mental state, what it makes of a moment, and the records of each tick.
 
 CoreAgent is the only owner of mental state. Every model here is frozen: phases take state in and
 return a copy, never mutating their input.
@@ -7,21 +7,28 @@ return a copy, never mutating their input.
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from surprise_loop.world import (
+    Action,
     Channel,
+    Event,
     FactKind,
     FactName,
     Frozen,
     Levels,
+    Observation,
     OpenQuestion,
+    Outcome,
     Place,
     Unit,
+    WorldState,
 )
 
 Signed = Annotated[float, Field(ge=-1, le=1)]
 Count = Annotated[int, Field(ge=0)]
+PassIndex = Annotated[int, Field(ge=0, le=1)]
+Sign = Literal["+", "-", "0"]  # which way a fact's value points: toward comfort, away, neither
 
 
 def require_keys[K, V](value: dict[K, V], keys: type[StrEnum]) -> dict[K, V]:
@@ -118,13 +125,29 @@ class SurpriseNote(Frozen):
     question: OpenQuestion | None = None
     actual: bool | None = None
 
+    @model_validator(mode="after")
+    def _one_pair_or_none(self) -> "SurpriseNote":
+        body = (self.channel, self.worse)
+        world = (self.question, self.actual)
+        unset = (None, None)
+        if not (
+            body == world == unset
+            or (None not in body and world == unset)
+            or (None not in world and body == unset)
+        ):
+            raise ValueError(
+                "a surprise note is a body pair (channel, worse), a world pair "
+                "(question, actual), or empty"
+            )
+        return self
+
 
 class FeltFact(Frozen):
     name: FactName
     about: Place | None
     weight: float
     value: float
-    sign: Literal["+", "-", "0"]
+    sign: Sign
     grade: int
     noticed: bool
     phrase: str | None
@@ -153,3 +176,161 @@ class FeltScene(Frozen):
         if self.surprise is not None:
             parts.append(self.surprise)
         return " ".join(parts)
+
+
+class Offer(Frozen):
+    action: Action
+    phrase: str
+
+
+class Appraisal(Frozen):
+    reading: str
+    about: Channel | None  # the channel the reading is about, if any
+
+
+class Decision(Frozen):
+    action: Action
+    expectation: Expectation
+    why: str = ""
+
+
+class Feedback(Frozen):
+    judged_step: Count | None  # the step of the episode judged; None when nothing was judged
+    score: Signed | None
+    line: str = ""
+
+
+class Override(Frozen):
+    """An urgent need the chosen action did not serve; pass 1 is offered only `actions`."""
+
+    channel: Channel
+    actions: list[Action] = Field(min_length=1)  # the offered actions that serve the channel
+    detail: str
+
+
+class Episode(Frozen):
+    tick: Count
+    step: Count
+    place: Place
+    action: Action
+    event: Event
+    expectation: Expectation
+    comparison: Comparison
+    need_before: dict[Channel, float]  # needs at decision time
+    salience: Unit
+    scene: str
+    reading: str
+    regulation: str = ""
+    score: Signed | None = None
+
+    @field_validator("need_before")
+    @classmethod
+    def _every_channel(cls, value: dict[Channel, float]) -> dict[Channel, float]:
+        return require_keys(value, Channel)
+
+
+class Memory(Frozen):
+    episodes: list[Episode]
+
+    def last_k(self, k: int) -> list[Episode]:
+        """The most recent `k` episodes, oldest first; all of them when `k` exceeds the length."""
+        if k < 0:
+            raise ValueError("k must be >= 0")
+        return self.episodes[max(len(self.episodes) - k, 0) :]
+
+    def salient_k(self, k: int) -> list[Episode]:
+        """The most recent `k // 2` episodes plus the `k - k // 2` most salient episodes before
+        them (ties go to the more recent), oldest first; all of them when `k` exceeds the length."""
+        if k < 0:
+            raise ValueError("k must be >= 0")
+        n = len(self.episodes)
+        if n <= k:
+            return list(self.episodes)
+        window_start = n - k // 2
+        by_salience = sorted(
+            range(window_start), key=lambda i: (self.episodes[i].salience, i), reverse=True
+        )
+        chosen = sorted(by_salience[: k - k // 2]) + list(range(window_start, n))
+        return [self.episodes[i] for i in chosen]
+
+
+class Pulls(Frozen):
+    """How much each action at each place has helped: the slowest channel."""
+
+    values: dict[Place, dict[Action, float]]
+
+    @field_validator("values")
+    @classmethod
+    def _every_place_and_action(
+        cls, value: dict[Place, dict[Action, float]]
+    ) -> dict[Place, dict[Action, float]]:
+        require_keys(value, Place)
+        for place, per_action in value.items():
+            try:
+                require_keys(per_action, Action)
+            except ValueError as e:
+                raise ValueError(f"{place.value}: {e}") from None
+        return value
+
+
+class AgentState(Frozen):
+    temperament: Temperament
+    belief: Levels
+    feeling: Feeling
+    memory: Memory
+    pulls: Pulls
+    attention: Channel | None
+    voiced: SurpriseNote | None
+    tick: Count  # completed ticks
+
+
+class Percept(Frozen):
+    scene: FeltScene
+    offers: list[Offer]
+    recalled: list[Episode]
+    pull_line: str
+
+
+class PassRecord(Frozen):
+    tick: Count
+    pass_index: PassIndex
+    scene: FeltScene  # what Deliberate saw on this pass
+    offers: list[Action]
+    decision: Decision
+    outcome: Outcome
+    comparison: Comparison
+    feedback: Feedback
+    belief_after: Levels
+    feeling_after: Feeling
+    override: Override | None
+
+
+class TickRecord(Frozen):
+    tick: Count
+    observation: Observation
+    appraisal: Appraisal
+    passes: list[PassRecord] = Field(min_length=1, max_length=2)
+
+
+class TickDump(Frozen):
+    run_id: str
+    tick: Count
+    agent: AgentState
+    world: WorldState
+    record: TickRecord
+
+
+class Workspace(Frozen):
+    """What one tick's phases pass along; each phase returns an updated copy."""
+
+    agent: AgentState
+    observation: Observation
+    pass_index: PassIndex = 0
+    percept: Percept | None = None
+    appraisal: Appraisal | None = None
+    override: Override | None = None
+    decision: Decision | None = None
+    outcome: Outcome | None = None
+    comparison: Comparison | None = None
+    feedback: Feedback | None = None
+    passes: tuple[PassRecord, ...] = ()

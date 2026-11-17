@@ -1,4 +1,5 @@
 import pytest
+from bodies import ILO
 from pydantic import ValidationError
 
 from surprise_loop.state import Temperament
@@ -21,14 +22,7 @@ from surprise_loop.world import (
 
 
 def temperament(**changes: object) -> Temperament:
-    fields: dict[str, object] = {
-        "setpoint": Levels(heat=-0.1, water=0.8, energy=0.7),
-        "tightness": {Channel.HEAT: 3.0, Channel.WATER: 6.0, Channel.ENERGY: 6.0},
-        "trust": {Channel.HEAT: 0.5, Channel.WATER: 0.3, Channel.ENERGY: 0.5},
-        "habit": {FactKind.BURDEN: 0.6, FactKind.RELIEF: 0.2, FactKind.AMBIENT: 0.1},
-        "baseline": -0.1,
-    }
-    return Temperament.model_validate(fields | changes)
+    return Temperament.model_validate(ILO.model_dump() | changes)
 
 
 def test_frozen_noon_facts_are_the_owners_example() -> None:

@@ -2,28 +2,13 @@ import itertools
 import math
 
 import pytest
+from bodies import ILO, ILO_AFTERNOON, TAVI, TAVI_AFTERNOON
 
 from surprise_loop.config import FeelingParams
 from surprise_loop.feeling import discomfort, feel, felt, grade, needs
-from surprise_loop.state import Comparison, Feeling, Temperament
-from surprise_loop.world import Channel, FactKind, Levels
+from surprise_loop.state import Comparison, Feeling
+from surprise_loop.world import Channel, Levels
 
-ILO = Temperament(
-    setpoint=Levels(heat=-0.1, water=0.80, energy=0.70),
-    tightness={Channel.HEAT: 3.0, Channel.WATER: 6.0, Channel.ENERGY: 6.0},
-    trust={Channel.HEAT: 0.5, Channel.WATER: 0.3, Channel.ENERGY: 0.5},
-    habit={FactKind.BURDEN: 0.6, FactKind.RELIEF: 0.2, FactKind.AMBIENT: 0.1},
-    baseline=-0.1,
-)
-TAVI = Temperament(
-    setpoint=Levels(heat=0.2, water=0.80, energy=0.70),
-    tightness={Channel.HEAT: 2.5, Channel.WATER: 4.0, Channel.ENERGY: 4.0},
-    trust={Channel.HEAT: 0.5, Channel.WATER: 0.5, Channel.ENERGY: 0.5},
-    habit={FactKind.BURDEN: 0.1, FactKind.RELIEF: 0.1, FactKind.AMBIENT: 0.6},
-    baseline=0.1,
-)
-ILO_AFTERNOON = Levels(heat=0.74, water=0.58, energy=0.25)
-TAVI_AFTERNOON = Levels(heat=0.0, water=0.85, energy=0.75)
 EDGES = (0.5, 1.0, 2.0, 3.0)
 P = FeelingParams()
 

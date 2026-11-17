@@ -1,11 +1,22 @@
 import re
 
 import pytest
+from bodies import (
+    HOTTER,
+    ILO,
+    ILO_AFTERNOON,
+    ILO_AFTERNOON_AROUSAL,
+    ILO_TEXT,
+    TAVI,
+    TAVI_AFTERNOON,
+    TAVI_AFTERNOON_AROUSAL,
+    TAVI_TEXT,
+)
 
 from surprise_loop.config import LensParams
 from surprise_loop.lens import felt_scene
 from surprise_loop.phrases import FACT_PHRASES, WORLD_SURPRISE_PHRASES
-from surprise_loop.state import FeltScene, SurpriseNote, Temperament
+from surprise_loop.state import FeltScene, SurpriseNote
 from surprise_loop.world import (
     Channel,
     Fact,
@@ -17,45 +28,16 @@ from surprise_loop.world import (
     frozen_noon_facts,
 )
 
-ILO = Temperament(
-    setpoint=Levels(heat=-0.1, water=0.80, energy=0.70),
-    tightness={Channel.HEAT: 3.0, Channel.WATER: 6.0, Channel.ENERGY: 6.0},
-    trust={Channel.HEAT: 0.5, Channel.WATER: 0.3, Channel.ENERGY: 0.5},
-    habit={FactKind.BURDEN: 0.6, FactKind.RELIEF: 0.2, FactKind.AMBIENT: 0.1},
-    baseline=-0.1,
-)
-TAVI = Temperament(
-    setpoint=Levels(heat=0.2, water=0.80, energy=0.70),
-    tightness={Channel.HEAT: 2.5, Channel.WATER: 4.0, Channel.ENERGY: 4.0},
-    trust={Channel.HEAT: 0.5, Channel.WATER: 0.5, Channel.ENERGY: 0.5},
-    habit={FactKind.BURDEN: 0.1, FactKind.RELIEF: 0.1, FactKind.AMBIENT: 0.6},
-    baseline=0.1,
-)
-ILO_BELIEF = Levels(heat=0.74, water=0.58, energy=0.25)
-TAVI_BELIEF = Levels(heat=0.0, water=0.85, energy=0.75)
-HOTTER = SurpriseNote(channel=Channel.HEAT, worse=True)
 P = LensParams()
-
-ILO_TEXT = (
-    "You are standing in the middle of the forest clearing. There is no place to sit, and you "
-    "need one. It is really hot. The sun beats down on your head. The one dark patch is under "
-    "the oak, a few steps off. Your legs are heavy. Your head is thick. It is hotter than you "
-    "thought it would be."
-)
-TAVI_TEXT = (
-    "You are standing in the middle of the forest clearing. The air is pleasantly warm. The sun "
-    "sits on your shoulders. It looks dim under the oak. Birds are calling. A stream runs "
-    "somewhere to the west. A light breeze moves the leaves."
-)
 
 
 def ilo_scene(**changes: object) -> FeltScene:
     args: dict[str, object] = {
         "place": Place.MEADOW,
         "facts": frozen_noon_facts(),
-        "belief": ILO_BELIEF,
+        "belief": ILO_AFTERNOON,
         "t": ILO,
-        "arousal": 0.70,
+        "arousal": ILO_AFTERNOON_AROUSAL,
         "attention": None,
         "voiced": HOTTER,
         "extra": 0,
@@ -68,9 +50,9 @@ def tavi_scene(**changes: object) -> FeltScene:
     args: dict[str, object] = {
         "place": Place.MEADOW,
         "facts": frozen_noon_facts(),
-        "belief": TAVI_BELIEF,
+        "belief": TAVI_AFTERNOON,
         "t": TAVI,
-        "arousal": 0.20,
+        "arousal": TAVI_AFTERNOON_AROUSAL,
         "attention": None,
         "voiced": None,
         "extra": 0,
@@ -156,7 +138,7 @@ def test_signed_grades_move_one_way_as_believed_heat_rises() -> None:
     steps = round((1.2 - -0.5) / 0.05)
     for i in range(steps + 1):
         heat = -0.5 + i * 0.05
-        scene = ilo_scene(belief=ILO_BELIEF.replace(Channel.HEAT, heat))
+        scene = ilo_scene(belief=ILO_AFTERNOON.replace(Channel.HEAT, heat))
         grades = by_name(scene)
         for name in watched:
             history[name].append(grades[name])
@@ -196,8 +178,8 @@ def test_cool_air_reads_cool_for_a_hot_body_and_bad_for_a_chilled_one() -> None:
         name=FactName.COOL_AIR, kind=FactKind.RELIEF, about=None, bearing={Channel.HEAT: -1.4}
     )
     tight = ILO.tightness[Channel.HEAT]
-    hot = ILO_BELIEF.replace(Channel.HEAT, ILO.setpoint.heat + 2.0 / tight)
-    chilled = ILO_BELIEF.replace(Channel.HEAT, ILO.setpoint.heat - 2.0 / tight)
+    hot = ILO_AFTERNOON.replace(Channel.HEAT, ILO.setpoint.heat + 2.0 / tight)
+    chilled = ILO_AFTERNOON.replace(Channel.HEAT, ILO.setpoint.heat - 2.0 / tight)
 
     (for_hot,) = ilo_scene(facts=[cool_air], belief=hot).facts
     assert for_hot.sign == "+"
