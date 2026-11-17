@@ -49,7 +49,7 @@ FACT_PHRASES: dict[FactName, dict[Sign, list[str] | str]] = {
             "It is really cold.",
             "The cold bites through you.",
         ],
-        "0": "The air is cool.",
+        "0": "You hardly notice the air.",
     },
     FactName.SUN: {
         "-": [
@@ -118,19 +118,20 @@ FACT_PHRASES: dict[FactName, dict[Sign, list[str] | str]] = {
         ],
         "0": "An oak stands a few steps off.",
     },
-    # The oak's shade seen from the stream: no word may make the oak sound near.
+    # The oak's shade seen from the stream. No distance in the wording: how far the oak is
+    # belongs to the offer phrases.
     FactName.OAK_SHADE_FAR: {
         "+": [
-            "There is shade under the oak, back across the clearing.",
-            "You think of the oak's shade across the clearing.",
-            "The one dark patch is under the oak, far across the open ground.",
-            "Under the oak, far off, it is dark; nothing else matters.",
+            "There is shade under the oak.",
+            "The oak has deep shade.",
+            "The one dark patch is under the oak.",
+            "Under the oak it is dark; nothing else matters.",
         ],
         "-": [
-            "Far off, it looks dim under the oak.",
-            "Far off under the oak it looks cold.",
+            "It looks dim under the oak.",
+            "Under the oak it looks cold.",
         ],
-        "0": "An oak stands far off across the clearing.",
+        "0": "An oak stands at the edge of the clearing.",
     },
     FactName.OAK_LOG_SHADED: {
         "+": [

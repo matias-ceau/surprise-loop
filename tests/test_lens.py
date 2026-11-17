@@ -218,5 +218,5 @@ def test_no_cool_air_phrase_says_warm_or_hot() -> None:
 def test_the_far_oak_never_sounds_near() -> None:
     table = FACT_PHRASES[FactName.OAK_SHADE_FAR]
     for phrase in [*table["+"], *table["-"], table["0"]]:
-        assert "a few steps" not in phrase.lower(), phrase
-        assert "close" not in phrase.lower(), phrase
+        for word in ("a few steps", "close", "far", "across", "steps"):
+            assert word not in phrase.lower(), (word, phrase)

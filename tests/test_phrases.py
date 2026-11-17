@@ -59,11 +59,18 @@ def test_ladder_words_are_five_distinct_phrases_per_channel() -> None:
         assert words[ChangeWord.SAME] == "about the same"
 
 
-@pytest.mark.parametrize("name", [FactName.AIR, FactName.SUN])
+@pytest.mark.parametrize("name", [FactName.AIR, FactName.COOL_AIR, FactName.SUN])
 def test_air_and_sun_neutral_phrases_differ_from_every_graded_phrase(name: FactName) -> None:
     table = FACT_PHRASES[name]
     graded = [*table["+"], *table["-"]]
     assert table["0"] not in graded
+
+
+def test_the_cool_air_neutral_phrase_carries_no_temperature() -> None:
+    neutral = FACT_PHRASES[FactName.COOL_AIR]["0"]
+    assert isinstance(neutral, str)
+    for word in ("cool", "cold", "chill", "warm", "hot"):
+        assert word not in neutral.lower(), (word, neutral)
 
 
 def test_surprise_tables_are_complete() -> None:
