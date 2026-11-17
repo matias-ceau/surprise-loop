@@ -6,14 +6,13 @@ are presentation constants: they choose what to show, not how a body behaves.
 """
 
 import itertools
-import json
-from importlib import resources
 from typing import Any
 
 from surprise_loop.config import AgentSpec, ConfigError, ExperimentConfig, LensParams
 from surprise_loop.lens import felt_scene
 from surprise_loop.phrases import OPENING
 from surprise_loop.state import FeltScene
+from surprise_loop.viewer import export_page
 from surprise_loop.world import Fact, Levels, Place, frozen_noon_facts
 
 PLACE = Place.MEADOW
@@ -148,12 +147,4 @@ def lens_data(config: ExperimentConfig) -> dict[str, Any]:
 
 def lens_page_html(config: ExperimentConfig) -> str:
     """One self-contained HTML page: the template with the lens data embedded as JSON."""
-    template = (
-        resources.files("surprise_loop.viewer")
-        .joinpath("lens_page.html")
-        .read_text(encoding="utf-8")
-    )
-    payload = json.dumps(lens_data(config), ensure_ascii=False, separators=(",", ":"))
-    # nothing inside the script element may close it or open a comment
-    payload = payload.replace("<", "\\u003c")
-    return template.replace(PLACEHOLDER, payload, 1)
+    return export_page("lens_page.html", PLACEHOLDER, lens_data(config))

@@ -26,6 +26,8 @@ failed runs from their last dump and skips the complete ones. One progress line 
 stderr.
 
 `lens-page` writes the lens page of a config's two bodies as one self-contained HTML file.
+`scene` writes the film of two stored runs of the same day (same seed, world config and number of
+world steps, else an error) as one self-contained HTML file.
 `ladder-check` runs the ladder check (see `ladder.py`) on the configured model, prints one table
 per scene and exits 0 only if both scenes pass, 1 when the check ran to completion and a scene
 failed. Anything informational goes to stderr. A bad config, or a file that cannot be read or
@@ -79,6 +81,7 @@ from surprise_loop.loop import (
 from surprise_loop.metrics import TABLE_FILES, experiment_tables
 from surprise_loop.metrics import summarize as summarize_run
 from surprise_loop.viewer.lens_page import lens_page_html
+from surprise_loop.viewer.scene import scene_html
 
 
 class CommandError(Exception):
@@ -137,6 +140,19 @@ def _parser() -> argparse.ArgumentParser:
         help="the HTML file to write (default: lens_page.html)",
     )
 
+    scene_cmd = commands.add_parser(
+        "scene", help="write the film of two stored runs of the same day as one HTML file"
+    )
+    scene_cmd.add_argument("run_a", type=Path, help="run directory shown on the left")
+    scene_cmd.add_argument("run_b", type=Path, help="run directory shown on the right")
+    scene_cmd.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        default=Path("scene.html"),
+        help="the HTML file to write (default: scene.html)",
+    )
+
     ladder_cmd = commands.add_parser(
         "ladder-check",
         help="check that the lens's heat wording moves a model's choice the right way",
@@ -174,6 +190,16 @@ def _positive(text: str) -> int:
 
 def _lens_page(args: argparse.Namespace) -> int:
     html = lens_page_html(load_config(args.config))
+    try:
+        args.output.write_text(html, encoding="utf-8")
+    except OSError as e:
+        raise CommandError(f"{args.output}: cannot write: {e.strerror}") from None
+    print(f"wrote {args.output}", file=sys.stderr)
+    return 0
+
+
+def _scene(args: argparse.Namespace) -> int:
+    html = scene_html(load_result(args.run_a), load_result(args.run_b))
     try:
         args.output.write_text(html, encoding="utf-8")
     except OSError as e:
@@ -425,6 +451,7 @@ _COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "metrics": _metrics,
     "replay": _replay,
     "lens-page": _lens_page,
+    "scene": _scene,
     "ladder-check": _ladder_check,
 }
 

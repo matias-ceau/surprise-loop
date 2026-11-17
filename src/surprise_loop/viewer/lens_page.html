@@ -4,25 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>The clearing, lived twice</title>
+@@CLEARING@@
 <style>
-  :root {
-    --bg: #12110d;
-    --panel: #1a1914;
-    --ink: #ece6d6;
-    --soft: #c9c2b0;
-    --dim: #8b8576;
-    --rule: #2d2b24;
-    --accent: #e0b86f;
-    --serif: Georgia, "Iowan Old Style", "Palatino Linotype", Palatino, "Times New Roman", serif;
-    --mono: ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
-  }
-  * { box-sizing: border-box; }
-  html { background: var(--bg); }
-  body {
-    margin: 0; background: var(--bg); color: var(--ink);
-    font: 16px/1.5 var(--serif);
-    -webkit-font-smoothing: antialiased;
-  }
   .page { max-width: 1320px; margin: 0 auto; padding: 36px 32px 48px; }
 
   header.top { display: grid; grid-template-columns: 1fr auto; gap: 8px 40px; align-items: end;
@@ -35,7 +18,6 @@
   .presets { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; align-self: end; }
   .presets span { width: 100%; text-align: right; font: 10px/1 var(--mono); letter-spacing: .18em;
     text-transform: uppercase; color: var(--dim); margin-bottom: 2px; }
-  button { font: inherit; color: inherit; cursor: pointer; }
   .preset { background: transparent; border: 1px solid var(--rule); border-radius: 999px;
     padding: 7px 15px; font: 13px/1 var(--serif); color: var(--soft);
     transition: border-color .2s, color .2s, background .2s; }
@@ -59,42 +41,8 @@
     .body .why { min-height: 0; }
   }
   .body { display: flex; flex-direction: column; min-width: 0; }
-  .head { margin: 0 0 10px; display: flex; justify-content: space-between; align-items: baseline;
-    font: 11px/1 var(--mono); letter-spacing: .2em; text-transform: uppercase; color: var(--dim);
-    font-weight: normal; }
-  .head b { color: var(--ink); font-weight: normal; }
-  .frame { position: relative; border-radius: 6px; overflow: hidden; background: #000;
-    box-shadow: 0 0 0 1px #000, 0 18px 40px -18px #000; }
-  .frame svg { display: block; width: 100%; height: auto; }
-  .frame svg .p { transition: fill .6s ease, stroke .6s ease, opacity .6s ease, filter .6s ease,
-    stop-color .6s ease; }
-
-  .lens { margin: 18px 2px 0; font-size: 19px; line-height: 1.55; min-height: 7.9em;
-    color: var(--ink); text-wrap: pretty; }
-  .s { cursor: pointer; border-radius: 3px; padding: 1px 0; box-decoration-break: clone;
-    -webkit-box-decoration-break: clone; transition: background .2s, color .2s;
-    background-image: linear-gradient(currentColor, currentColor); background-size: 0 1px;
-    background-repeat: no-repeat; background-position: 0 100%; }
-  .s:hover { background-color: #ffffff10; }
-  .s.opening { color: var(--soft); }
-  .s.bodyline { font-style: italic; }
-  .s.surprise { color: var(--accent); }
-  .s.chosen { background-color: #e0b86f2e; }
-  .s.fresh { animation: arrive .9s ease; }
-  @keyframes arrive { from { opacity: 0; filter: blur(3px); } to { opacity: 1; filter: none; } }
-
-  .why { margin: 14px 0 0; padding: 12px 14px; min-height: 152px; border-left: 2px solid var(--rule);
-    background: var(--panel); font: 12.5px/1.6 var(--mono); color: var(--soft);
-    border-radius: 0 4px 4px 0; }
-  .why .title { color: var(--ink); font: italic 15px/1.4 var(--serif); margin-bottom: 4px; }
-  .why .muted { color: var(--dim); }
-  .why .nums { display: flex; flex-wrap: wrap; gap: 2px 18px; }
-  .why .nums b { color: var(--ink); font-weight: normal; }
-  .why .bar { position: relative; height: 6px; margin: 9px 0 3px; border-radius: 3px; max-width: 320px; }
-  .why .bar i { position: absolute; top: -4px; width: 2px; height: 14px; background: var(--ink);
-    margin-left: -1px; }
-  .why .ends { display: flex; justify-content: space-between; max-width: 320px; font-size: 10.5px;
-    color: var(--dim); }
+  .lens { min-height: 7.9em; }
+  .why { min-height: 152px; }
 
   .controls { margin-top: 18px; display: grid; grid-template-columns: max-content 1fr 3.4em;
     gap: 14px 12px; align-items: center; font: 12px/1 var(--mono); color: var(--dim); }
@@ -155,231 +103,9 @@
 const DATA = JSON.parse(document.getElementById("lens-data").textContent);
 const G = DATA.grid;
 const DIMS = ["heat", "water", "energy", "arousal"];
-
-/* ---------- colour: one continuous scale, bad to good for this body ---------- */
-const BAD_SOFT = "#dc8a4c", BAD_DEEP = "#a52f1d";
-const MIDDLE = "#cdc4aa";           /* neither good nor bad */
-const GOOD_SOFT = "#a7cfa6", GOOD_DEEP = "#2e8d89";
-const PAPER = "#d8d1bf";            /* what an unnoticed thing fades toward */
-const NIGHT = "#141a18";            /* darkens the scale for dark things (shade) */
-const VALUE_SCALE = 1.6;            /* a value this large is most of the way along the scale */
-const FADE = 0.74;                  /* how far an unnoticed thing fades */
-const UNNOTICED_OPACITY = 0.2;      /* for line work: birds, breeze, outlines */
-
-function hex(c) { return [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16)); }
-function rgb(a) { return "rgb(" + a.map(v => Math.round(v)).join(",") + ")"; }
-function mixA(a, b, k) { return a.map((v, i) => v + (b[i] - v) * k); }
-function mix(a, b, k) { return rgb(mixA(hex(a), hex(b), Math.max(0, Math.min(1, k)))); }
-function toHex(s) {
-  const m = s.match(/\d+/g).map(Number);
-  return "#" + m.map(v => v.toString(16).padStart(2, "0")).join("");
-}
-function lean(value) { return Math.tanh(value / VALUE_SCALE); }   /* -1 bad .. +1 good */
-function scaleColour(t) {
-  /* five stops, continuous through the middle: deep bad, bad, neither, good, deep good */
-  const k = Math.min(1, Math.abs(t));
-  const [soft, deep] = t < 0 ? [BAD_SOFT, BAD_DEEP] : [GOOD_SOFT, GOOD_DEEP];
-  return k < 0.5 ? mix(MIDDLE, soft, 2 * k) : mix(soft, deep, 2 * k - 1);
-}
-/* a thing's own colour, pulled toward the scale as far as its value leans, then faded if unnoticed */
-function tint(base, value, noticed, opts) {
-  const o = opts || {};
-  const t = lean(value);
-  let target = toHex(scaleColour(t));
-  if (o.depth) target = toHex(mix(target, NIGHT, o.depth));
-  let c = toHex(mix(base, target, Math.abs(t) * (o.reach === undefined ? 0.92 : o.reach)));
-  if (!noticed) c = toHex(mix(c, PAPER, FADE));
-  return c;
-}
-
-/* ---------- the picture: a side-on view of the clearing ---------- */
-const NAMES = {
-  air: "the air", sun: "the sun", no_seat: "no seat here", oak_shade: "the oak's shade",
-  stream: "the stream", breeze: "the breeze", birdsong: "the birds",
-};
-const FELT_ZERO = 0.005;            /* below this a felt strength shows as 0.00 */
-const CHANNEL_WORDS = {
-  heat: ["too cool", "too hot"], water: ["over-full", "thirsty"], energy: ["restless", "tired"],
-};
-
-function sceneSvg(id) {
-  return `
-<svg viewBox="0 0 480 300" role="img" aria-label="the clearing as this body lives it">
-  <defs>
-    <linearGradient id="${id}-sky" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" class="p" data-k="skyTop"/>
-      <stop offset="1" class="p" data-k="skyLow"/>
-    </linearGradient>
-    <radialGradient id="${id}-glow">
-      <stop offset="0" class="p" data-k="glowIn"/>
-      <stop offset="1" class="p" data-k="glowOut" stop-opacity="0"/>
-    </radialGradient>
-    <linearGradient id="${id}-ground" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#a3a578"/>
-      <stop offset="1" stop-color="#7a7f55"/>
-    </linearGradient>
-    <radialGradient id="${id}-vig" cx="0.5" cy="0.6" r="0.78">
-      <stop class="p" data-k="vigIn" offset="0.7" stop-color="#000" stop-opacity="0"/>
-      <stop offset="1" class="p" data-k="vigOut" stop-color="#000"/>
-    </radialGradient>
-    <filter id="${id}-soft" x="-20%" y="-20%" width="140%" height="140%">
-      <feGaussianBlur stdDeviation="1.4"/>
-    </filter>
-  </defs>
-
-  <g class="p" data-fact="air">
-    <rect width="480" height="196" fill="url(#${id}-sky)"/>
-    <g class="p" data-k="shimmer" fill="none" stroke-width="1.6" stroke-linecap="round">
-      <path d="M20 132 q30 -7 60 0 t60 0 t60 0 t60 0 t60 0 t60 0 t60 0"/>
-      <path d="M0 150 q30 -6 60 0 t60 0 t60 0 t60 0 t60 0 t60 0 t60 0 t60 0"/>
-      <path d="M30 168 q30 -5 60 0 t60 0 t60 0 t60 0 t60 0 t60 0 t60 0"/>
-    </g>
-  </g>
-
-  <g class="p" data-fact="sun">
-    <g class="p" data-k="rays" stroke-linecap="round">
-      <path d="M150 70 L206 286" stroke-width="22"/>
-      <path d="M150 70 L250 286" stroke-width="12"/>
-      <path d="M150 70 L168 286" stroke-width="10"/>
-    </g>
-    <circle class="p" data-k="glow" cx="150" cy="64" r="60" fill="url(#${id}-glow)"/>
-    <circle class="p" data-k="disc" cx="150" cy="64" r="17"/>
-  </g>
-
-  <path d="M0 176 q16 -26 34 -6 q14 -34 40 -4 q20 -22 38 -2 q22 -40 50 -2 q18 -24 36 0 q20 -30 44 -2 q24 -36 52 0 q18 -22 36 -2 q22 -34 48 0 q18 -24 38 -2 q20 -30 44 0 q12 -14 20 -6 V200 H0Z"
-        fill="#5f6d4f" opacity="0.55"/>
-  <rect y="190" width="480" height="110" fill="url(#${id}-ground)"/>
-
-  <g class="p" data-fact="stream">
-    <path class="p" data-k="water" d="M0 214 C52 206 104 220 118 240 C130 258 76 278 0 292 Z"/>
-    <path class="p" data-k="bank" fill="none" stroke-width="3"
-          d="M0 214 C52 206 104 220 118 240 C130 258 76 278 0 292"/>
-    <g class="p" data-k="glints" stroke-width="2" stroke-linecap="round">
-      <path d="M14 232 h22"/><path d="M44 244 h28"/><path d="M12 258 h18"/><path d="M40 270 h22"/>
-    </g>
-  </g>
-
-  <g class="p" data-fact="oak_shade">
-    <ellipse class="p" data-k="pool" cx="372" cy="262" rx="78" ry="17"/>
-    <path class="p" data-k="trunk" d="M364 262 C366 230 364 196 360 166 L380 166 C376 196 376 230 382 262 Z"/>
-    <g class="p" data-k="crown">
-      <ellipse cx="372" cy="128" rx="70" ry="46"/>
-      <ellipse cx="330" cy="146" rx="38" ry="28"/>
-      <ellipse cx="414" cy="146" rx="40" ry="28"/>
-      <ellipse cx="368" cy="98" rx="44" ry="30"/>
-    </g>
-  </g>
-
-  <g class="p" data-fact="no_seat">
-    <ellipse class="p" data-k="patch" cx="232" cy="270" rx="52" ry="11"/>
-    <g class="p" data-k="wanted" fill="none" stroke-width="1.8" stroke-dasharray="4 4" stroke-linecap="round">
-      <rect x="252" y="252" width="44" height="12" rx="6"/>
-      <path d="M258 264 v8 M290 264 v8"/>
-    </g>
-  </g>
-
-  <g class="p" data-fact="breeze" fill="none" stroke-width="1.6" stroke-linecap="round">
-    <g class="p" data-k="wind">
-      <path d="M52 110 q22 -9 44 0 q12 6 24 0"/>
-      <path d="M84 124 q16 -6 32 0 q9 4 18 0"/>
-      <path d="M300 206 q20 -8 40 0 q11 5 22 0"/>
-      <path d="M180 196 q14 -5 28 0 q8 4 16 0"/>
-    </g>
-  </g>
-
-  <g class="p" data-fact="birdsong" fill="none" stroke-width="1.7" stroke-linecap="round">
-    <g class="p" data-k="birds">
-      <path d="M236 54 q7 -8 14 0 q7 -8 14 0"/>
-      <path d="M276 38 q5 -6 10 0 q5 -6 10 0"/>
-      <path d="M418 64 q6 -7 12 0 q6 -7 12 0"/>
-      <path d="M60 46 q5 -6 10 0 q5 -6 10 0"/>
-    </g>
-  </g>
-
-  <g data-k="figure">
-    <ellipse cx="232" cy="270" rx="15" ry="4" fill="#000" opacity="0.28"/>
-    <path d="M223 269 C220 244 224 230 232 224 C240 230 244 244 241 269 Z" fill="#2b2520"/>
-    <circle cx="232" cy="214" r="8" fill="#2b2520"/>
-  </g>
-
-  <rect width="480" height="300" fill="url(#${id}-vig)" pointer-events="none"/>
-</svg>`;
-}
-
-function setFill(el, c) { el.style.fill = c; }
-function setStroke(el, c) { el.style.stroke = c; }
-
-function paintScene(root, entry, arousal) {
-  const q = k => root.querySelector(`[data-k="${k}"]`);
-  const fact = {};
-  entry.facts.forEach(f => { fact[f.name] = f; });
-  const on = n => fact[n] ? fact[n].noticed : false;
-  const val = n => fact[n] ? fact[n].value : 0;
-  const bad = n => Math.max(0, -lean(val(n)));
-  const good = n => Math.max(0, lean(val(n)));
-  const strength = n => on(n) ? 1 : UNNOTICED_OPACITY;
-
-  /* unnoticed things also lose their edges */
-  root.querySelectorAll("[data-fact]").forEach(g => {
-    const n = g.getAttribute("data-fact");
-    g.style.filter = on(n) || n === "air" ? "none" : `url(#${root.dataset.id}-soft)`;
-  });
-
-  /* the air: the whole sky's tint, and a shimmer of heat when the air is bad */
-  q("skyTop").style.stopColor = tint("#a9bcc0", val("air"), on("air"), { reach: 0.85 });
-  q("skyLow").style.stopColor = tint("#e6dfcc", val("air"), on("air"), { reach: 0.6 });
-  setStroke(q("shimmer"), tint("#f4e7c8", val("air"), on("air"), { reach: 0.4 }));
-  q("shimmer").style.opacity = (0.08 + 0.6 * bad("air")) * (on("air") ? 1 : 0.4);
-
-  /* the sun: its glow widens as it presses on the body, beams reach down when it is bad */
-  const sunBad = bad("sun"), sunOn = on("sun");
-  setFill(q("disc"), sunOn ? toHex(mix("#fff6df", "#fffdf7", sunBad)) : toHex(mix("#fbf1d3", PAPER, FADE)));
-  q("glowIn").style.stopColor = sunOn ? toHex(mix("#fff1c4", "#fff8ea", sunBad)) : PAPER;
-  q("glowOut").style.stopColor = tint("#f7dd96", val("sun"), sunOn, { reach: 0.9 });
-  q("glow").setAttribute("r", String(44 + 60 * Math.abs(lean(val("sun")))));
-  q("glow").style.opacity = sunOn ? 0.75 + 0.25 * sunBad : 0.35;
-  setStroke(q("rays"), tint("#fff1d0", val("sun"), sunOn, { reach: 0.3 }));
-  q("rays").style.opacity = sunOn ? 0.05 + 0.22 * sunBad : 0.03;
-
-  /* the stream: the water itself, and its glints when it would help */
-  setFill(q("water"), tint("#6f9db0", val("stream"), on("stream"), { reach: 0.55 }));
-  setStroke(q("bank"), tint("#c9d8cf", val("stream"), on("stream"), { reach: 0.7 }));
-  setStroke(q("glints"), on("stream") ? "#f2fbff" : toHex(mix("#f2fbff", PAPER, FADE)));
-  q("glints").style.opacity = on("stream") ? 0.45 + 0.5 * good("stream") : 0.3;
-
-  /* the oak: its pool of shade carries the value, the tree follows a little */
-  setFill(q("pool"), tint("#4a5545", val("oak_shade"), on("oak_shade"), { depth: 0.45 }));
-  setFill(q("trunk"), tint("#4c3c2b", 0, on("oak_shade")));
-  setFill(q("crown"), tint("#5f7f52", val("oak_shade"), on("oak_shade"), { reach: 0.45, depth: 0.15 }));
-
-  /* no seat: bare ground at the body's feet, and the dotted outline of a seat wanted and absent */
-  setFill(q("patch"), tint("#b6a37a", val("no_seat"), on("no_seat"), { reach: 0.75 }));
-  setStroke(q("wanted"), tint("#3a2a1e", val("no_seat"), on("no_seat"), { reach: 0.6, depth: 0.2 }));
-  q("wanted").style.opacity = on("no_seat") ? Math.min(1, 1.6 * bad("no_seat")) : 0;
-
-  /* the breeze and the birds: line work, present at full strength or barely */
-  setStroke(q("wind"), tint("#f6f4ec", val("breeze"), on("breeze"), { reach: 0.7 }));
-  q("wind").style.opacity = strength("breeze");
-  setStroke(q("birds"), tint("#2f2a24", val("birdsong"), on("birdsong")));
-  q("birds").style.opacity = on("birdsong") ? 0.9 : 0.35;
-
-  /* arousal closes the frame */
-  const a = Math.max(0, Math.min(1, arousal));
-  q("vigIn").setAttribute("offset", String(0.92 - 0.72 * a));
-  q("vigOut").style.stopOpacity = String(0.22 + 0.7 * a);
-}
+const NOON = 780;                   /* the frozen 13:00 sets the hour of the picture */
 
 /* ---------- text ---------- */
-function fmt(x, d) {
-  const s = Math.abs(x).toFixed(d);
-  return (x < 0 && Number(s) !== 0 ? "−" : "") + s;
-}
-function signed(x, d) { return (x > 0 ? "+" : "") + fmt(x, d); }
-function ordinal(n) {
-  const ends = ["th", "st", "nd", "rd"], v = n % 100;
-  return n + (ends[(v - 20) % 10] || ends[v] || ends[0]);
-}
-
 function sentences(entry) {
   const out = [{ key: "opening", cls: "opening", text: DATA.place.opening }];
   entry.facts.forEach(f => { if (f.noticed) out.push({ key: "fact:" + f.name, cls: "fact", text: f.phrase }); });
@@ -388,66 +114,10 @@ function sentences(entry) {
   return out;
 }
 
-function scaleGradient() {
-  const stops = [];
-  for (let i = 0; i <= 20; i++) {
-    const t = -1 + i / 10;
-    stops.push(scaleColour(t) + " " + (i * 5) + "%");
-  }
-  return "linear-gradient(90deg," + stops.join(",") + ")";
-}
-
-function factWhy(entry, name) {
-  const i = entry.facts.findIndex(f => f.name === name);
-  const f = entry.facts[i];
-  const t = lean(f.value);
-  const verdict = f.sign === "+" ? "good for this body" : f.sign === "-" ? "bad for this body" : "neither good nor bad";
-  const state = f.noticed
-    ? `noticed, ${ordinal(i + 1)} of ${entry.facts.length} by weight`
-    : `<span class="muted">not noticed now, ${ordinal(i + 1)} of ${entry.facts.length} by weight</span>`;
-  return `<div class="title">${NAMES[f.name] || f.name}</div>
-    <div>${state}</div>
-    <div class="nums"><span>weight <b>${f.weight.toFixed(3)}</b></span>
-      <span>value <b>${signed(f.value, 2)}</b></span>
-      <span>sign <b>${f.sign}</b></span><span>grade <b>${f.grade}</b></span></div>
-    <div class="bar" style="background:${scaleGradient()}"><i style="left:${(50 + 50 * t).toFixed(1)}%"></i></div>
-    <div class="ends"><span>bad</span><span>${verdict}</span><span>good</span></div>`;
-}
-
-function bodyWhy(entry, channel) {
-  const line = entry.body.find(b => b.channel === channel);
-  const felt = entry.felt[channel];
-  const words = CHANNEL_WORDS[channel] || ["", ""];
-  /* at a strength that shows as zero there is no direction to name */
-  const way = Math.abs(felt) < FELT_ZERO ? "where this body wants it" : felt > 0 ? words[1] : words[0];
-  const head = `<div class="title">the body: ${channel}</div>`;
-  const state = line ? `speaks, at grade ${Math.abs(line.grade)}`
-    : `<span class="muted">silent now</span>`;
-  return head + `<div>${state}</div>
-    <div class="nums"><span>felt strength <b>${signed(felt, 2)}</b> (${way})</span>
-      ${line ? `<span>grade <b>${line.grade}</b></span>` : ""}</div>`;
-}
-
-function openingWhy(entry) {
-  const noticed = entry.facts.filter(f => f.noticed).length;
-  const felt = Object.keys(entry.felt).map(c => `<span>${c} <b>${signed(entry.felt[c], 2)}</b></span>`).join("");
-  return `<div class="title">the middle of the clearing</div>
-    <div>${noticed} of ${entry.facts.length} facts noticed; ${entry.body.length} body line${entry.body.length === 1 ? "" : "s"}</div>
-    <div class="nums"><span class="muted">felt strength</span>${felt}</div>`;
-}
-
 function surpriseWhy() {
   return `<div class="title">the last surprise, voiced</div>
     <div>carried in from the config's start state, not from the sliders:
     it belongs to the worked example only, and moving a slider drops it.</div>`;
-}
-
-function idleWhy(entry) {
-  const left = entry.facts.filter(f => !f.noticed).map(f => NAMES[f.name] || f.name);
-  const felt = Object.keys(entry.felt).map(c => `<span>${c} <b>${signed(entry.felt[c], 2)}</b></span>`).join("");
-  return `<div class="muted">Click a sentence for the numbers behind it.</div>
-    <div>left unsaid: ${left.length ? left.join(", ") : "nothing"}</div>
-    <div class="nums"><span class="muted">felt strength</span>${felt}</div>`;
 }
 
 /* ---------- state and controls ---------- */
@@ -551,7 +221,7 @@ function current(body) {
 
 function render(body) {
   const { entry, values } = current(body);
-  paintScene(body.el.querySelector("svg"), entry, values.arousal);
+  paintScene(body.el.querySelector("svg"), entry, values.arousal, { place: DATA.place.name, minute: NOON });
 
   ["heat", "water", "energy"].forEach(d => {
     body[d].input.value = String(body.idx[d]);
@@ -583,7 +253,7 @@ function render(body) {
   const why = body.el.querySelector(".why");
   const key = body.chosen;
   if (!key) why.innerHTML = idleWhy(entry);
-  else if (key === "opening") why.innerHTML = openingWhy(entry);
+  else if (key === "opening") why.innerHTML = openingWhy(entry, DATA.place.name);
   else if (key === "surprise") why.innerHTML = entry.surprise ? surpriseWhy() : idleWhy(entry);
   else if (key.startsWith("fact:")) why.innerHTML = factWhy(entry, key.slice(5));
   else if (key.startsWith("body:")) why.innerHTML = bodyWhy(entry, key.slice(5));
