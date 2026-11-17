@@ -49,8 +49,31 @@ def test_frozen_noon_facts_follow_the_config_defaults() -> None:
     by_name = {f.name: f for f in frozen_noon_facts()}
     for name in (FactName.NO_SEAT, FactName.OAK_SHADE, FactName.STREAM, FactName.BREEZE):
         assert by_name[name].bearing == config.bearings[name]
-    assert FactName.AIR not in config.bearings
-    assert FactName.SUN not in config.bearings
+    computed = {FactName.AIR, FactName.COOL_AIR, FactName.SUN}
+    assert set(config.bearings) == set(FactName) - computed
+    assert config.bearings[FactName.OAK_SHADE_FAR] == {Channel.HEAT: -1.0}
+
+
+def test_fact_names_are_in_canonical_order() -> None:
+    assert [n.value for n in FactName] == [
+        "air",
+        "cool_air",
+        "sun",
+        "shade",
+        "no_seat",
+        "log",
+        "log_sun",
+        "oak_shade",
+        "oak_shade_far",
+        "oak_log_shaded",
+        "oak_log_sunlit",
+        "water",
+        "trickle",
+        "stream",
+        "meadow_sun",
+        "breeze",
+        "birdsong",
+    ]
 
 
 def test_levels_of_and_replace() -> None:
@@ -90,12 +113,14 @@ def test_fact_tables() -> None:
     burden, relief, ambient = FactKind.BURDEN, FactKind.RELIEF, FactKind.AMBIENT
     assert kinds == {
         FactName.AIR: burden,
+        FactName.COOL_AIR: relief,
         FactName.SUN: burden,
         FactName.SHADE: relief,
         FactName.NO_SEAT: burden,
         FactName.LOG: relief,
         FactName.LOG_SUN: burden,
         FactName.OAK_SHADE: relief,
+        FactName.OAK_SHADE_FAR: relief,
         FactName.OAK_LOG_SHADED: relief,
         FactName.OAK_LOG_SUNLIT: relief,
         FactName.WATER: relief,
@@ -107,12 +132,14 @@ def test_fact_tables() -> None:
     }
     assert FACT_ABOUT == {
         FactName.AIR: None,
+        FactName.COOL_AIR: None,
         FactName.SUN: None,
         FactName.SHADE: None,
         FactName.NO_SEAT: None,
         FactName.LOG: None,
         FactName.LOG_SUN: None,
         FactName.OAK_SHADE: Place.OAK,
+        FactName.OAK_SHADE_FAR: Place.OAK,
         FactName.OAK_LOG_SHADED: Place.OAK,
         FactName.OAK_LOG_SUNLIT: Place.OAK,
         FactName.WATER: None,

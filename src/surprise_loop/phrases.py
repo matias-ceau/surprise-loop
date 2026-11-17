@@ -35,6 +35,22 @@ FACT_PHRASES: dict[FactName, dict[Sign, list[str] | str]] = {
         ],
         "0": "You hardly notice the air.",
     },
+    # Air below neutral. "+" is cool air good for this body (a hot body), "-" bad (a chilled one).
+    FactName.COOL_AIR: {
+        "+": [
+            "The air is pleasantly cool.",
+            "The coolness is welcome.",
+            "The cool air soothes your skin.",
+            "The cool air is exactly what you needed.",
+        ],
+        "-": [
+            "The air is a little cool on you.",
+            "It is cold.",
+            "It is really cold.",
+            "The cold bites through you.",
+        ],
+        "0": "The air is cool.",
+    },
     FactName.SUN: {
         "-": [
             "The sun is a little warm on you.",
@@ -101,6 +117,20 @@ FACT_PHRASES: dict[FactName, dict[Sign, list[str] | str]] = {
             "Under the oak it looks cold.",
         ],
         "0": "An oak stands a few steps off.",
+    },
+    # The oak's shade seen from the stream: no word may make the oak sound near.
+    FactName.OAK_SHADE_FAR: {
+        "+": [
+            "There is shade under the oak, back across the clearing.",
+            "You think of the oak's shade across the clearing.",
+            "The one dark patch is under the oak, far across the open ground.",
+            "Under the oak, far off, it is dark; nothing else matters.",
+        ],
+        "-": [
+            "Far off, it looks dim under the oak.",
+            "Far off under the oak it looks cold.",
+        ],
+        "0": "An oak stands far off across the clearing.",
     },
     FactName.OAK_LOG_SHADED: {
         "+": [

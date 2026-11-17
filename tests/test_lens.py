@@ -1,3 +1,5 @@
+import re
+
 import pytest
 
 from surprise_loop.config import LensParams
@@ -187,3 +189,34 @@ def test_a_world_surprise_is_voiced() -> None:
     scene = tavi_scene(voiced=note)
     assert scene.surprise == WORLD_SURPRISE_PHRASES[(OpenQuestion.STREAM_FULL, False)]
     assert scene.text().endswith(scene.surprise)
+
+
+def test_cool_air_reads_cool_for_a_hot_body_and_bad_for_a_chilled_one() -> None:
+    cool_air = Fact(
+        name=FactName.COOL_AIR, kind=FactKind.RELIEF, about=None, bearing={Channel.HEAT: -1.4}
+    )
+    tight = ILO.tightness[Channel.HEAT]
+    hot = ILO_BELIEF.replace(Channel.HEAT, ILO.setpoint.heat + 2.0 / tight)
+    chilled = ILO_BELIEF.replace(Channel.HEAT, ILO.setpoint.heat - 2.0 / tight)
+
+    (for_hot,) = ilo_scene(facts=[cool_air], belief=hot).facts
+    assert for_hot.sign == "+"
+    assert for_hot.phrase is not None
+    assert not re.search(r"\b(warm|hot)", for_hot.phrase, re.IGNORECASE)
+
+    (for_chilled,) = ilo_scene(facts=[cool_air], belief=chilled).facts
+    assert for_chilled.sign == "-"
+    assert for_chilled.phrase in FACT_PHRASES[FactName.COOL_AIR]["-"]
+
+
+def test_no_cool_air_phrase_says_warm_or_hot() -> None:
+    table = FACT_PHRASES[FactName.COOL_AIR]
+    for phrase in [*table["+"], *table["-"], table["0"]]:
+        assert not re.search(r"\b(warm|hot)", phrase, re.IGNORECASE), phrase
+
+
+def test_the_far_oak_never_sounds_near() -> None:
+    table = FACT_PHRASES[FactName.OAK_SHADE_FAR]
+    for phrase in [*table["+"], *table["-"], table["0"]]:
+        assert "a few steps" not in phrase.lower(), phrase
+        assert "close" not in phrase.lower(), phrase

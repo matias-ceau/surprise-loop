@@ -65,12 +65,14 @@ class FactName(StrEnum):
     """This order is the canonical order of a fact list."""
 
     AIR = "air"
+    COOL_AIR = "cool_air"
     SUN = "sun"
     SHADE = "shade"
     NO_SEAT = "no_seat"
     LOG = "log"
     LOG_SUN = "log_sun"
     OAK_SHADE = "oak_shade"
+    OAK_SHADE_FAR = "oak_shade_far"
     OAK_LOG_SHADED = "oak_log_shaded"
     OAK_LOG_SUNLIT = "oak_log_sunlit"
     WATER = "water"
@@ -112,12 +114,14 @@ QUESTION_OF: dict[Action, OpenQuestion | None] = {
 
 FACT_KIND: dict[FactName, FactKind] = {
     FactName.AIR: FactKind.BURDEN,
+    FactName.COOL_AIR: FactKind.RELIEF,
     FactName.SUN: FactKind.BURDEN,
     FactName.SHADE: FactKind.RELIEF,
     FactName.NO_SEAT: FactKind.BURDEN,
     FactName.LOG: FactKind.RELIEF,
     FactName.LOG_SUN: FactKind.BURDEN,
     FactName.OAK_SHADE: FactKind.RELIEF,
+    FactName.OAK_SHADE_FAR: FactKind.RELIEF,
     FactName.OAK_LOG_SHADED: FactKind.RELIEF,
     FactName.OAK_LOG_SUNLIT: FactKind.RELIEF,
     FactName.WATER: FactKind.RELIEF,
@@ -130,12 +134,14 @@ FACT_KIND: dict[FactName, FactKind] = {
 
 FACT_ABOUT: dict[FactName, Place | None] = {
     FactName.AIR: None,
+    FactName.COOL_AIR: None,
     FactName.SUN: None,
     FactName.SHADE: None,
     FactName.NO_SEAT: None,
     FactName.LOG: None,
     FactName.LOG_SUN: None,
     FactName.OAK_SHADE: Place.OAK,
+    FactName.OAK_SHADE_FAR: Place.OAK,
     FactName.OAK_LOG_SHADED: Place.OAK,
     FactName.OAK_LOG_SUNLIT: Place.OAK,
     FactName.WATER: None,
@@ -243,13 +249,16 @@ class BodyParams(Frozen):
     water_delay: int = 2
 
 
-# The constant bearings of the fact table. AIR and SUN are computed from the hour and the place.
+# The constant bearings of the fact table. AIR, COOL_AIR and SUN are computed from the hour and
+# the place. Warm and cool air are two facts because a phrase knows only name, sign and grade;
+# likewise the oak's shade seen from the meadow (near) and from the stream (far).
 DEFAULT_BEARINGS: dict[FactName, dict[Channel, float]] = {
     FactName.SHADE: {Channel.HEAT: -1.0},
     FactName.NO_SEAT: {Channel.ENERGY: 1.0},
     FactName.LOG: {Channel.ENERGY: -1.0},
     FactName.LOG_SUN: {Channel.ENERGY: 0.5},
     FactName.OAK_SHADE: {Channel.HEAT: -1.0},
+    FactName.OAK_SHADE_FAR: {Channel.HEAT: -1.0},
     FactName.OAK_LOG_SHADED: {Channel.HEAT: -1.0, Channel.ENERGY: -0.6},
     FactName.OAK_LOG_SUNLIT: {Channel.HEAT: -1.0},
     FactName.WATER: {Channel.WATER: -1.0, Channel.HEAT: -0.3},
