@@ -12,7 +12,7 @@ tiredness); a negative bearing relieves it.
 from enum import StrEnum
 from typing import Annotated, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class Frozen(BaseModel):
@@ -292,6 +292,37 @@ class WorldConfig(Frozen):
     bearings: dict[FactName, dict[Channel, float]] = DEFAULT_BEARINGS
     body: BodyParams = BodyParams()
 
+    @field_validator("air_curve", "sun_curve")
+    @classmethod
+    def _curve(cls, value: list[tuple[int, float]]) -> list[tuple[int, float]]:
+        if len(value) < 2:
+            raise ValueError("a curve needs at least two points")
+        if any(m0 >= m1 for (m0, _), (m1, _) in zip(value, value[1:], strict=False)):
+            raise ValueError("a curve's minutes must be strictly increasing")
+        return value
+
+    @field_validator("paces")
+    @classmethod
+    def _paces(cls, value: dict[str, float]) -> dict[str, float]:
+        pairs = [frozenset(key.split("-")) for key in value]
+        wanted = {frozenset((a, b)) for a in Place for b in Place if a is not b}
+        if len(pairs) != len(wanted) or set(pairs) != wanted:
+            raise ValueError(
+                'paces needs exactly one "a-b" key for each pair of places: '
+                + ", ".join(sorted("-".join(sorted(p)) for p in wanted))
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _times(self) -> "WorldConfig":
+        if self.start_minute >= self.end_minute:
+            raise ValueError("start_minute must be before end_minute")
+        if self.tick_minutes <= 0:
+            raise ValueError("tick_minutes must be positive")
+        if self.log_sun_from > self.log_sun_until:
+            raise ValueError("log_sun_from must be <= log_sun_until")
+        return self
+
 
 class WorldState(Frozen):
     seed: int
@@ -319,15 +350,6 @@ class World(Protocol):
 
 # The owner's example is the meadow at 13:00.
 FROZEN_NOON_MINUTE = 13 * 60
-FROZEN_NOON_FACTS = (
-    FactName.AIR,
-    FactName.SUN,
-    FactName.NO_SEAT,
-    FactName.OAK_SHADE,
-    FactName.STREAM,
-    FactName.BREEZE,
-    FactName.BIRDSONG,
-)
 
 
 def _curve_value(curve: list[tuple[int, float]], minute: int) -> float:
@@ -340,21 +362,265 @@ def _curve_value(curve: list[tuple[int, float]], minute: int) -> float:
     return curve[-1][1]
 
 
+def air_at(config: WorldConfig, place: Place, minute: int) -> float:
+    """The air at a place in °C: the meadow's curve plus the place's offset."""
+    return _curve_value(config.air_curve, minute) + config.place_air_offset[place]
+
+
+def sun_at(config: WorldConfig, place: Place, minute: int) -> float:
+    """The sun at a place, 0 to 1: the open sun's curve times the place's share of it."""
+    return _curve_value(config.sun_curve, minute) * config.place_sun[place]
+
+
+def log_shaded_at(config: WorldConfig, minute: int) -> bool:
+    """The oak's log is in the sun from `log_sun_from` until (not including) `log_sun_until`."""
+    return not config.log_sun_from <= minute < config.log_sun_until
+
+
+def _air_bearing(config: WorldConfig, place: Place, minute: int) -> float:
+    return (air_at(config, place, minute) - config.air_neutral_c) / config.air_scale_c
+
+
 def _fact(name: FactName, bearing: dict[Channel, float]) -> Fact:
     return Fact(name=name, kind=FACT_KIND[name], about=FACT_ABOUT[name], bearing=bearing)
 
 
+def facts_at(
+    config: WorldConfig, place: Place, minute: int, stream_full: bool, looked: bool
+) -> list[Fact]:
+    """The facts of a place at a minute, in `FactName` order. `looked` matters only at the
+    meadow, where it shows whether the oak's log is shaded."""
+    air = _air_bearing(config, place, minute)
+    warm = air_at(config, place, minute) >= config.air_neutral_c
+    sun = sun_at(config, place, minute)
+    shaded = log_shaded_at(config, minute)
+    present: dict[FactName, dict[Channel, float]] = {
+        FactName.AIR if warm else FactName.COOL_AIR: {Channel.HEAT: air},
+        FactName.BREEZE: dict(config.bearings[FactName.BREEZE]),
+        FactName.BIRDSONG: dict(config.bearings[FactName.BIRDSONG]),
+    }
+    if sun >= config.sun_fact_min:
+        present[FactName.SUN] = {Channel.HEAT: sun}
+    named: list[FactName] = []
+    match place:
+        case Place.MEADOW:
+            named += [FactName.NO_SEAT, FactName.STREAM]
+            if not looked:
+                named.append(FactName.OAK_SHADE)
+            else:
+                named.append(FactName.OAK_LOG_SHADED if shaded else FactName.OAK_LOG_SUNLIT)
+        case Place.OAK:
+            named += [FactName.SHADE, FactName.STREAM, FactName.LOG if shaded else FactName.LOG_SUN]
+        case Place.STREAM:
+            named += [FactName.NO_SEAT, FactName.OAK_SHADE_FAR]
+            named.append(FactName.WATER if stream_full else FactName.TRICKLE)
+    if place is not Place.MEADOW and sun_at(config, Place.MEADOW, minute) >= config.sun_fact_min:
+        named.append(FactName.MEADOW_SUN)
+    for name in named:
+        present[name] = dict(config.bearings[name])
+    return [_fact(name, present[name]) for name in FactName if name in present]
+
+
 def frozen_noon_facts() -> list[Fact]:
     """The seven facts of the owner's example, the meadow at 13:00, from the default config."""
-    config = WorldConfig()
-    here = Place.MEADOW
-    air_c = _curve_value(config.air_curve, FROZEN_NOON_MINUTE) + config.place_air_offset[here]
-    sun = _curve_value(config.sun_curve, FROZEN_NOON_MINUTE) * config.place_sun[here]
-    computed = {
-        FactName.AIR: {Channel.HEAT: (air_c - config.air_neutral_c) / config.air_scale_c},
-        FactName.SUN: {Channel.HEAT: sun},
-    }
+    return facts_at(WorldConfig(), Place.MEADOW, FROZEN_NOON_MINUTE, stream_full=True, looked=False)
+
+
+def _offers_at(place: Place) -> list[Action]:
+    """The walks to the other places, drinking only at the stream, resting and looking always."""
     return [
-        _fact(name, computed[name] if name in computed else dict(config.bearings[name]))
-        for name in FROZEN_NOON_FACTS
+        action
+        for action in Action
+        if (action not in GO_TARGET or GO_TARGET[action] is not place)
+        and (action is not Action.DRINK or place is Place.STREAM)
     ]
+
+
+def _pace(config: WorldConfig, a: Place, b: Place) -> float:
+    """The pace between two places; `paces` may name a pair in either order."""
+    key = f"{a.value}-{b.value}"
+    return config.paces[key] if key in config.paces else config.paces[f"{b.value}-{a.value}"]
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    return min(max(value, low), high)
+
+
+class ClearingWorld:
+    """One forest clearing (meadow, oak, stream), a daytime clock and a true body.
+
+    All state is in one `WorldState`; there is no stored generator (every draw comes from
+    `derive_rng(seed, ...)`), so a restored world continues exactly as the original would.
+    """
+
+    def __init__(self, config: WorldConfig, seed: int, body: BodyState, place: Place) -> None:
+        from surprise_loop.config import derive_rng  # config imports this module
+
+        self._config = config
+        stream_full = derive_rng(seed, "stream").random() < config.stream_full_probability
+        history = [body.water] * config.body.water_delay
+        signal, _ = self._signal(seed, 0, body, history)
+        minute = config.start_minute
+        observation = Observation(
+            step=0,
+            minute=minute,
+            place=place,
+            last_action=None,
+            event=Event.START,
+            facts=facts_at(config, place, minute, stream_full, looked=False),
+            signal=signal,
+            offers=_offers_at(place),
+        )
+        self._state = WorldState(
+            seed=seed,
+            step=0,
+            minute=minute,
+            place=place,
+            body=body,
+            water_history=history,
+            stream_full=stream_full,
+            forced_rest_left=0,
+            last_observation=observation,
+        )
+
+    @classmethod
+    def restore(cls, config: WorldConfig, state: WorldState) -> "ClearingWorld":
+        """The world `config` would be in at `state` (a snapshot)."""
+        world = cls.__new__(cls)
+        world._config = config
+        world._state = state
+        return world
+
+    @property
+    def done(self) -> bool:
+        return self._state.minute >= self._config.end_minute
+
+    def observe(self) -> Observation:
+        return self._state.last_observation
+
+    def snapshot(self) -> WorldState:
+        return self._state
+
+    def step(self, action: Action) -> Outcome:
+        if self.done:
+            raise WorldDone("the day has ended")
+        s = self._state
+        if action not in s.last_observation.offers:
+            raise ValueError(f"{action.value} is not offered at the {s.place.value}")
+        config, p = self._config, self._config.body
+        heat, water, energy, gut = s.body.heat, s.body.water, s.body.energy, s.body.gut
+        place, forced_rest_left = s.place, s.forced_rest_left
+        collapsed = forced_rest_left > 0
+        stumbled = looked = False
+
+        # 1. the action
+        done_action = Action.REST if collapsed else action
+        if collapsed:
+            forced_rest_left -= 1
+        if done_action in GO_TARGET:
+            if energy < p.stumble_energy:
+                event, stumbled = Event.STUMBLED, True
+                energy -= p.stumble_cost
+            else:
+                pace = _pace(config, place, GO_TARGET[done_action])
+                event, place = Event.ARRIVED, GO_TARGET[done_action]
+                energy -= p.walk_energy * pace * (1 + p.hot_walk_factor * max(0, heat))
+                heat += p.walk_heat * pace * sun_at(config, Place.MEADOW, s.minute)
+        elif done_action is Action.DRINK:
+            event = Event.DRANK
+            gut += p.drink_amount * (1 if s.stream_full else config.trickle_factor)
+        elif done_action is Action.REST:
+            event = Event.RESTED
+            on_log = place is Place.OAK and log_shaded_at(config, s.minute)
+            energy += p.rest_gain * (1 if on_log else p.ground_rest_quality)
+        else:
+            event, looked = Event.LOOKED, True
+        if collapsed:
+            event = Event.COLLAPSED
+
+        # 2. the clock
+        minute = s.minute + config.tick_minutes
+        # 3. heat moves toward what the place pushes it to
+        target = p.air_gain * _air_bearing(config, place, minute) + p.sun_gain * sun_at(
+            config, place, minute
+        )
+        heat += p.heat_rate * (target - heat)
+        # 4. sweat
+        if heat > p.sweat_threshold:
+            sweat = p.sweat_rate * (heat - p.sweat_threshold)
+            heat -= p.sweat_cooling * sweat
+            water -= p.sweat_water * sweat
+        # 5. drain
+        water -= p.water_drain
+        energy -= p.base_energy
+        # 6. absorption
+        absorbed = gut * p.absorb_rate
+        water += absorbed
+        gut -= absorbed
+        # 7. limits
+        heat = _clamp(heat, p.heat_cold_limit, p.heat_hot_limit)
+        water, energy = _clamp(water, 0, 1), _clamp(energy, 0, 1)
+        at_limit = (
+            heat in (p.heat_cold_limit, p.heat_hot_limit)
+            or water <= p.water_floor
+            or energy <= p.energy_floor
+        )
+        if at_limit and forced_rest_left == 0:
+            forced_rest_left = p.collapse_ticks
+        body = BodyState(heat=heat, water=water, energy=energy, gut=gut)
+
+        # 8. the signal
+        step = s.step + 1
+        signal, history = self._signal(s.seed, step, body, s.water_history)
+        observation = Observation(
+            step=step,
+            minute=minute,
+            place=place,
+            last_action=action,
+            event=event,
+            facts=facts_at(config, place, minute, s.stream_full, looked),
+            signal=signal,
+            offers=_offers_at(place),
+        )
+        info = StepInfo(
+            step=step,
+            minute=minute,
+            place=place,
+            air_c=air_at(config, place, minute),
+            sun=sun_at(config, place, minute),
+            log_shaded=log_shaded_at(config, minute),
+            stream_full=s.stream_full,
+            body=body,
+            stumbled=stumbled,
+            collapsed=collapsed,
+        )
+        self._state = s.model_copy(
+            update={
+                "step": step,
+                "minute": minute,
+                "place": place,
+                "body": body,
+                "water_history": history,
+                "forced_rest_left": forced_rest_left,
+                "last_observation": observation,
+            }
+        )
+        return Outcome(observation=observation, info=info)
+
+    def _signal(
+        self, seed: int, step: int, body: BodyState, history: list[float]
+    ) -> tuple[Levels, list[float]]:
+        """The body signal at `step` and the water history after it. Water is read
+        `water_delay` steps late: the oldest value in the history."""
+        from surprise_loop.config import derive_rng  # config imports this module
+
+        p = self._config.body
+        waters = [*history, body.water]
+        true = Levels(heat=body.heat, water=waters[0], energy=body.energy)
+        signal = true
+        for c in Channel:
+            noisy = true.of(c) + derive_rng(seed, "signal", step, c.value).gauss(
+                0, p.signal_noise[c]
+            )
+            signal = signal.replace(c, round(noisy / p.signal_step[c]) * p.signal_step[c])
+        return signal, waters[1:]
