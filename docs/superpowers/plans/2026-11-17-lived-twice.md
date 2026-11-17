@@ -136,12 +136,12 @@ The constant bearings of this table are config: `WorldConfig.bearings: dict[Fact
 
 A fact list is always in `FactName` order. At the meadow at 13:00 with default config the list is exactly AIR (+1.0), SUN (+1.0), NO_SEAT, OAK_SHADE, STREAM, BREEZE, BIRDSONG: the owner's example.
 
-**WorldConfig defaults** (Task 10 may retune any of them):
+**WorldConfig defaults** (as tuned in Task 10):
 
 ```
 start_minute 360; end_minute 1200; tick_minutes 10
-air_curve [(360, 18.0), (780, 30.0), (960, 30.0), (1200, 22.0)]     # meadow °C, linear between points
-place_air_offset {meadow: 0.0, oak: -3.0, stream: -1.5}
+air_curve [(360, 23.0), (780, 30.0), (960, 30.0), (1200, 23.0)]     # meadow °C, linear between points
+place_air_offset {meadow: 0.0, oak: -7.0, stream: -3.0}
 air_neutral_c 25.0; air_scale_c 5.0
 sun_curve [(360, 0.2), (660, 1.0), (900, 1.0), (1200, 0.1)]         # linear between points
 place_sun {meadow: 1.0, oak: 0.0, stream: 0.6}; sun_fact_min 0.3
@@ -150,16 +150,16 @@ stream_full_probability 0.6; trickle_factor 0.35
 paces {"meadow-oak": 1.0, "meadow-stream": 4.0, "oak-stream": 5.0}
 ```
 
-**BodyParams defaults:**
+**BodyParams defaults** (as tuned in Task 10):
 
 ```
-heat_rate 0.25; air_gain 0.5; sun_gain 0.5; walk_heat 0.03
+heat_rate 0.2; air_gain 0.7; sun_gain 0.7; walk_heat 0.04
 sweat_threshold 0.3; sweat_rate 0.5; sweat_cooling 0.2; sweat_water 0.03
-water_drain 0.004; base_energy 0.004; walk_energy 0.01; hot_walk_factor 0.5
-rest_gain 0.03; ground_rest_quality 0.5; drink_amount 0.25; absorb_rate 0.4
+water_drain 0.012; base_energy 0.015; walk_energy 0.005; hot_walk_factor 0.5
+rest_gain 0.12; ground_rest_quality 0.5; drink_amount 0.25; absorb_rate 0.4
 stumble_energy 0.08; stumble_cost 0.005
 heat_hot_limit 1.2; heat_cold_limit -1.0; water_floor 0.05; energy_floor 0.03; collapse_ticks 3
-signal_noise {heat: 0.02, water: 0.02, energy: 0.02}; signal_step {heat: 0.05, water: 0.05, energy: 0.05}; water_delay 2
+signal_noise {heat: 0.005, water: 0.005, energy: 0.005}; signal_step {heat: 0.01, water: 0.01, energy: 0.01}; water_delay 2
 ```
 
 **One world step** (`step(action)`), in this order:
@@ -328,12 +328,12 @@ def forecast(belief: Levels, pull: float, action: Action, p: StubModelParams) ->
 def reactive_choice(scene: FeltScene, offers: list[Action], p: DeliberateParams) -> Action
 ```
 
-- **Word bands**, in change of felt strength: MUCH_LESS `(None, -much]`, BIT_LESS `[-much, -bit]`, SAME `[-bit, +bit]`, BIT_MORE `[bit, much]`, MUCH_MORE `[much, None)`. The band is added to the present felt strength and converted to channel units: heat `setpoint + f / tightness`; water and energy `setpoint - f / tightness` (so lo and hi swap). `ExpectationParams` defaults: bit 0.25, much 1.0, stub_tolerance {heat 0.05, water 0.03, energy 0.03}. `bands_from_forecast` is forecast ± tolerance.
+- **Word bands**, in change of felt strength: MUCH_LESS `(None, -much]`, BIT_LESS `[-much, -bit]`, SAME `[-bit, +bit]`, BIT_MORE `[bit, much]`, MUCH_MORE `[much, None)`. The band is added to the present felt strength and converted to channel units: heat `setpoint + f / tightness`; water and energy `setpoint - f / tightness` (so lo and hi swap). `ExpectationParams` defaults: bit 0.25, much 1.0, stub_tolerance {heat 0.12, water 0.06, energy 0.03} (as tuned in Task 10). `bands_from_forecast` is forecast ± tolerance.
 - **compare.** (a) per channel: 0 inside the band, else signal minus the nearest edge; `body_felt` is that times tightness for heat and times minus tightness for water and energy. (b) only when the event is ARRIVED and `QUESTION_OF[action]` is set and `expectation.world` is not None: the truth is read from the arrival's facts (LOG present means the log is shaded; WATER present means the stream is full); mismatch is `expectation.world != truth`. (c) `better = discomfort(nearest(signal, bands)) - discomfort(signal)`. `size = sum |body_felt| + world_weight * [mismatch]`. `MonitorParams` default: world_weight 1.0.
 - **updated_belief.** Per channel `edge = nearest`; `k = trust / (trust + expectation_weight)`; `belief = edge + k * (signal - edge)`. `BeliefParams` default: expectation_weight {heat 0.5, water 0.5, energy 0.5}.
 - **serving_actions.** HEAT too much: at the oak `[REST]`, elsewhere `[GO_OAK]`. HEAT too little: at the meadow `[REST]`, elsewhere `[GO_MEADOW]`. WATER: at the stream `[DRINK]`, elsewhere `[GO_STREAM]`. ENERGY: `[REST]`.
 - **reactive_choice** (the ten-line rule): needs are `scene.felt` with water and energy clipped at 0; the place is `scene.place`. Take the channels whose `|need|` is at least `act_threshold`, loudest first (ties in `Channel` order). For each, take `serving_actions`; choose the first that is offered and whose target is noticed (a GO action needs a noticed fact about its target place; DRINK needs a noticed WATER or TRICKLE; REST always qualifies). If no channel yields one, LOOK.
-- **forecast** is the stubs' private one-step model of their own body: heat moves by `heat_rate` toward `pull * heat_per_bearing`, where `pull` is `heat_pull` of the place the action ends in (for a GO action `heat_pull(facts, target)`, else `heat_pull(facts, None)`; in a chain of steps the pull of the place last reached is kept); water falls by `water_drain`, more by `sweat_water * max(0, heat)`, and rises by `drink_water` for DRINK; energy falls by `walk_energy` for a GO, rises by `rest_energy` for REST. `StubModelParams` defaults: heat_rate 0.25, heat_per_bearing 0.5, water_drain 0.004, sweat_water 0.01, drink_water 0.08, walk_energy 0.03, rest_energy 0.02.
+- **forecast** is the stubs' private one-step model of their own body: heat moves by `heat_rate` toward `pull * heat_per_bearing`, where `pull` is `heat_pull` of the place the action ends in (for a GO action `heat_pull(facts, target)`, else `heat_pull(facts, None)`; in a chain of steps the pull of the place last reached is kept); water falls by `water_drain`, more by `sweat_water * max(0, heat)`, and rises by `drink_water` for DRINK; energy falls by `walk_energy` for a GO, rises by `rest_energy` for REST. `StubModelParams` defaults (as tuned in Task 10): heat_rate 0.1, heat_per_bearing 0.5, water_drain 0.012, sweat_water 0.01, drink_water 0.04, walk_energy 0.03, rest_energy 0.05.
 
 ### `config.py`
 
@@ -342,7 +342,7 @@ class LensParams, FeelingParams, ExpectationParams, MonitorParams, BeliefParams,
 class MemoryParams(Frozen): retrieval_k: int = 4; base_salience: Unit = 0.2; salience_gain: float = 0.3; retrieval: Literal["last_k", "salient_k"] = "last_k"
 class EvaluateParams(Frozen): window: int = 4; score_scale: float = 1.0; helped: float = 0.25
 class PullParams(Frozen): rate: Unit = 0.5; speak: float = 0.2
-class OverrideParams(Frozen): enabled: bool = True; urgent_felt: float = 2.0; worse_margin: float = 0.5
+class OverrideParams(Frozen): enabled: bool = True; urgent_felt: float = 1.5; worse_margin: float = 0.2   # as tuned in Task 10
 class DeliberateParams(Frozen):
     stub: Literal["reactive", "lookahead", "blind"] = "reactive"
     act_threshold: float = 0.5; horizon: int = 6; model: StubModelParams = StubModelParams()
@@ -384,7 +384,7 @@ ilo:  body {heat: 0.99, water: 0.47, energy: 0.22}; belief {heat: 0.74, water: 0
       voiced {channel: heat, worse: true}
 tavi: body {heat: 0.02, water: 0.84, energy: 0.76}; belief {heat: 0.0, water: 0.85, energy: 0.75}; arousal 0.20
 # daytime start (world start_minute 360, start_place meadow)
-ilo:  body = belief {heat: -0.1, water: 0.60, energy: 0.50}; arousal 0.3
+ilo:  body = belief {heat: -0.1, water: 0.75, energy: 0.60}; arousal 0.3      # as tuned in Task 10
 tavi: body = belief {heat: 0.0, water: 0.85, energy: 0.80}; arousal 0.2
 # the ordinary pair (a preset on the lens page; 13:00 meadow facts)
 ilo:  belief {heat: 0.40, water: 0.78, energy: 0.66}; arousal 0.4      # felt heat 1.5, grade 2
@@ -550,7 +550,8 @@ Protocol: spec appendix B and section 9. Seven levels of believed skin temperatu
 
 The gate, on stubs over seeds 1 to 10 with `experiments/clearing_day.yaml` (both agents) unless stated:
 
-- No run has more than 6 collapsed steps. Every run visits all three places.
+- With the `reactive` and the `lookahead` stub, no run has more than 6 collapsed steps and every run visits all three places. (The `blind` stub is a control and is exempt: a chooser that reads nothing runs dry.)
+- With the `reactive` stub, every run has at least 8 walks and no single action on more than 60% of its passes.
 - With the `reactive` stub, every run has at least 3 passes with a non-zero body error (the delays and the two changing facts make expectations wrong) and no run has more than half its passes with one.
 - With the `reactive` stub at least 3 of the 10 Ilo runs have an override, and no run has two-pass ticks on more than a quarter of its ticks.
 - `lookahead` spends fewer uncomfortable steps (the three counts summed) than `reactive`, by at least 10% on the mean over the 20 runs. If no setting achieves this, stop and report: the world is then not asking for anticipation, and the spec says that is fixed before anything else.
