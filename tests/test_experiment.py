@@ -2,8 +2,10 @@
 
 import asyncio
 import csv
+import errno
 import io
 import math
+import os
 import shutil
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -555,3 +557,62 @@ def test_stability_of_a_constant_metric_is_nan(results: list[RunResult]) -> None
     rows = list(csv.DictReader(io.StringIO(stability_csv(relabelled))))
     assert all(r["icc1"] == "nan" for r in rows)
     assert all((r["n_agents"], r["n_seeds"]) == ("2", "2") for r in rows)
+
+
+# --- write errors ---------------------------------------------------------------------------
+
+
+def test_tables_that_cannot_be_written_fail_with_one_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    (runs_dir / "exp").write_text("a file where the tables go")
+    config = write_config(tmp_path, **{"ticks: null": "ticks: 3"})
+    code, err = experiment(config, runs_dir, capsys)
+    assert code == 2
+    assert "Traceback" not in err
+    assert error_lines(err) == [f"error: {runs_dir / 'exp'}: cannot write: File exists"]
+    assert err.splitlines()[-1] == error_lines(err)[0]
+
+
+def test_a_failed_run_with_a_file_where_the_tables_go_reports_the_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    (runs_dir / "exp").write_text("a file where the tables go")
+
+    async def failing(config, run_dir, **kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("boom")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(cli, "run", failing)
+        code, err = experiment(write_config(tmp_path), runs_dir, capsys)
+    assert code == 1
+    assert "Traceback" not in err
+    assert len(error_lines(err)) == 4
+    assert (runs_dir / "exp").read_text() == "a file where the tables go"
+
+
+def test_a_tick_file_that_cannot_be_written_fails_that_run_with_one_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs_dir = tmp_path / "runs"
+    blocked = runs_dir / "exp-tavi-s2" / "tick_000002.json"
+    real_replace = os.replace
+
+    def replace(src: str | Path, dst: str | Path) -> None:
+        if Path(dst) == blocked:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", replace)
+    config = write_config(tmp_path, **{"ticks: null": "ticks: 3"})
+    code, err = experiment(config, runs_dir, capsys, "--jobs", "2")
+    assert code == 1
+    assert "Traceback" not in err
+    assert error_lines(err) == [
+        f"error: exp-tavi-s2 failed: RunError: {blocked}: cannot write: No space left on device"
+    ]
+    assert not (runs_dir / "exp").exists()

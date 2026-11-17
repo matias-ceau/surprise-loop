@@ -1,6 +1,7 @@
 """Tick files, resume and replay."""
 
 import asyncio
+import errno
 import os
 import pickle
 from collections.abc import Awaitable, Callable
@@ -563,3 +564,42 @@ def test_replay_mismatch_pickles() -> None:
     copy = pickle.loads(pickle.dumps(error))
     assert type(copy) is ReplayMismatch
     assert (copy.tick, copy.run_dir, str(copy)) == (7, Path("runs/x"), str(error))
+
+
+# --- write errors -------------------------------------------------------------------------------
+
+
+def fail_replace_of(name: str, error: OSError) -> Callable[[str | Path, str | Path], None]:
+    """`os.replace` that raises `error` when renaming into a file called `name`."""
+    real_replace = os.replace
+
+    def replace(src: str | Path, dst: str | Path) -> None:
+        if Path(dst).name == name:
+            raise error
+        real_replace(src, dst)
+
+    return replace
+
+
+@pytest.mark.parametrize(
+    ("name", "error", "reason"),
+    [
+        (
+            "tick_000003.json",
+            OSError(errno.ENOSPC, "No space left on device"),
+            "No space left on device",
+        ),
+        ("config.json", OSError(errno.EACCES, "Permission denied"), "Permission denied"),
+        ("tick_000001.json", OSError("disk on fire"), "disk on fire"),  # no strerror
+    ],
+)
+def test_a_run_file_that_cannot_be_written_is_a_run_error_naming_it(
+    name: str, error: OSError, reason: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os, "replace", fail_replace_of(name, error))
+    run_dir = tmp_path / "run"
+    with pytest.raises(RunError) as info:
+        asyncio.run(run(make_config(ticks=5), run_dir))
+    message = str(info.value)
+    assert message == f"{run_dir / name}: cannot write: {reason}"
+    assert "\n" not in message

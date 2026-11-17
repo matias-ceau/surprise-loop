@@ -130,6 +130,15 @@ def write_atomic(path: Path, text: str) -> None:
     os.replace(temp, path)
 
 
+def _write_run_file(path: Path, text: str) -> None:
+    """`write_atomic` for a file of a run (a tick dump, config.json): an `OSError` becomes a
+    `RunError` naming the path, so the command reports it in one line."""
+    try:
+        write_atomic(path, text)
+    except OSError as e:
+        raise RunError(f"{path}: cannot write: {e.strerror or e}") from None
+
+
 def _dump_name(tick: int) -> str:
     return f"tick_{tick:06d}.json"
 
@@ -144,7 +153,7 @@ def _dump(config: RunConfig, agent: AgentState, world: ClearingWorld, rec: TickR
 def write_dump(run_dir: Path, dump: TickDump) -> Path:
     """Write `dump` to `run_dir/tick_<tick>.json` atomically and return its path."""
     path = Path(run_dir) / _dump_name(dump.tick)
-    write_atomic(path, dump.model_dump_json())
+    _write_run_file(path, dump.model_dump_json())
     return path
 
 
@@ -282,7 +291,7 @@ async def _run(
                 run_dir.mkdir(parents=True, exist_ok=True)
             except OSError as e:
                 raise RunError(f"{run_dir}: cannot create: {_reason(e)}") from None
-            write_atomic(run_dir / CONFIG_FILE, config.model_dump_json())
+            _write_run_file(run_dir / CONFIG_FILE, config.model_dump_json())
 
     rt = Runtime(config=config, world=world, model=model)
     async with AsyncExitStack() as stack:

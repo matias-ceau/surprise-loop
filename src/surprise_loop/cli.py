@@ -383,21 +383,29 @@ def _experiment(args: argparse.Namespace) -> int:
     out_dir = args.runs_dir / experiment.name
     if failed:
         # tables from an earlier invocation would no longer match the run directories
-        for name in TABLE_FILES:
-            (out_dir / name).unlink(missing_ok=True)
+        if out_dir.is_dir():
+            _write_tables(out_dir, {})
         raise ExperimentFailed(failed, len(plan))
 
     results = [o for o in outcomes if isinstance(o, RunResult)]
-    tables = experiment_tables(results)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    for name in TABLE_FILES:
-        if name in tables:
-            write_atomic(out_dir / name, tables[name])
-        else:
-            # e.g. a stability.csv from an earlier invocation with more seeds
-            (out_dir / name).unlink(missing_ok=True)
+    _write_tables(out_dir, experiment_tables(results), create=True)
     print(f"tables: {out_dir}", file=sys.stderr)
     return 0
+
+
+def _write_tables(out_dir: Path, tables: dict[str, str], *, create: bool = False) -> None:
+    """Write `tables` into `out_dir` atomically and remove every other table an earlier
+    invocation may have left there (e.g. a stability.csv from a run with more seeds)."""
+    try:
+        if create:
+            out_dir.mkdir(parents=True, exist_ok=True)
+        for name in TABLE_FILES:
+            if name in tables:
+                write_atomic(out_dir / name, tables[name])
+            else:
+                (out_dir / name).unlink(missing_ok=True)
+    except OSError as e:
+        raise CommandError(f"{out_dir}: cannot write: {e.strerror or e}") from None
 
 
 def _metrics(args: argparse.Namespace) -> int:

@@ -1,7 +1,9 @@
 """`surprise-loop run`, `metrics` and `replay`, and the one-line errors of the run commands."""
 
+import errno
 import io
 import json
+import os
 import shutil
 import subprocess
 from contextlib import redirect_stderr, redirect_stdout
@@ -298,3 +300,21 @@ def test_console_script_is_wired() -> None:
     assert result.returncode == 0, result.stderr
     for command in ("run", "experiment", "metrics", "replay", "lens-page", "ladder-check"):
         assert command in result.stdout
+
+
+def test_a_tick_file_that_cannot_be_written_fails_with_one_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_replace = os.replace
+
+    def replace(src: str | Path, dst: str | Path) -> None:
+        if Path(dst).name == "tick_000002.json":
+            raise OSError(errno.ENOSPC, "No space left on device")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", replace)
+    assert main(["run", str(AFTERNOON), "--runs-dir", str(tmp_path)]) == 2
+    line = assert_one_line_error(capsys)
+    assert line == (
+        f"error: {tmp_path / RUN_ID / 'tick_000002.json'}: cannot write: No space left on device"
+    )

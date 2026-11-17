@@ -11,7 +11,7 @@ from surprise_loop.config import MetricsParams, RunConfig, load_config
 from surprise_loop.loop import RunResult, run
 from surprise_loop.metrics import RunMetrics, flatten, icc1, opposite_value_steps, summarize
 from surprise_loop.state import Comparison, FeltFact, Override, PassRecord, TickRecord
-from surprise_loop.world import Action, BodyState, Channel, FactName
+from surprise_loop.world import Action, BodyState, Channel, FactName, Levels
 
 ROOT = Path(__file__).resolve().parents[1]
 AFTERNOON = ROOT / "experiments" / "clearing_afternoon.yaml"
@@ -198,11 +198,39 @@ def test_comfort_counts_at_exactly_comfort_felt(hand_built: RunResult) -> None:
     assert summarize(hand_built.model_copy(update={"config": config})).uncomfortable_heat == 0
 
 
-def test_metrics_read_the_true_body_not_the_belief(hand_built: RunResult) -> None:
-    passes = flatten(hand_built.records)
-    calm = [p.model_copy(update={"belief_after": hand_built.agent.belief}) for p in passes]
-    other = with_ticks(hand_built, [[calm[0]], [calm[1]], [calm[2], calm[3]]], valence=-0.3)
-    assert summarize(other) == summarize(hand_built)
+def test_comfort_follows_the_true_body_not_the_belief_or_the_scene(
+    ilo_afternoon: RunResult,
+) -> None:
+    """Under Ilo's temperament the body (0.3, 0.6, 0.5) feels 1.2 on every channel and the
+    setpoint (-0.1, 0.8, 0.7) feels nothing. Pass 0's true body strains while its belief and its
+    scene feel nothing; pass 1 is the reverse."""
+    b = ilo_afternoon.records[0].passes[0]
+    strained, setpoint = (
+        Levels(heat=0.3, water=0.6, energy=0.5),
+        Levels(heat=-0.1, water=0.8, energy=0.7),
+    )
+    loud = {c: 1.2 for c in Channel}
+    hidden = make_pass(
+        b, action=Action.LOOK, body=(0.3, 0.6, 0.5), comparison=comparison(), arousal=0.2
+    ).model_copy(update={"belief_after": setpoint})
+    imagined = make_pass(
+        b, action=Action.LOOK, body=(-0.1, 0.8, 0.7), comparison=comparison(), arousal=0.2
+    )
+    imagined = imagined.model_copy(
+        update={"belief_after": strained, "scene": imagined.scene.model_copy(update={"felt": loud})}
+    )
+    metrics = summarize(with_ticks(ilo_afternoon, [[hidden], [imagined]], valence=0.0))
+    assert (
+        metrics.uncomfortable_heat,
+        metrics.uncomfortable_water,
+        metrics.uncomfortable_energy,
+    ) == (1, 1, 1)
+    only_hidden = summarize(with_ticks(ilo_afternoon, [[hidden]], valence=0.0))
+    assert only_hidden.uncomfortable_heat == only_hidden.uncomfortable_water == 1
+    assert only_hidden.uncomfortable_energy == 1
+    only_imagined = summarize(with_ticks(ilo_afternoon, [[imagined]], valence=0.0))
+    assert only_imagined.uncomfortable_heat == only_imagined.uncomfortable_water == 0
+    assert only_imagined.uncomfortable_energy == 0
 
 
 def test_a_run_with_no_passes_is_all_zeros(ilo_afternoon: RunResult) -> None:
