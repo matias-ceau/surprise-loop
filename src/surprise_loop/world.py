@@ -426,7 +426,7 @@ def frozen_noon_facts() -> list[Fact]:
     return facts_at(WorldConfig(), Place.MEADOW, FROZEN_NOON_MINUTE, stream_full=True, looked=False)
 
 
-def _offers_at(place: Place) -> list[Action]:
+def offers_at(place: Place) -> list[Action]:
     """The walks to the other places, drinking only at the stream, resting and looking always."""
     return [
         action
@@ -469,7 +469,7 @@ class ClearingWorld:
             event=Event.START,
             facts=facts_at(config, place, minute, stream_full, looked=False),
             signal=signal,
-            offers=_offers_at(place),
+            offers=offers_at(place),
         )
         self._state = WorldState(
             seed=seed,
@@ -580,7 +580,7 @@ class ClearingWorld:
             event=event,
             facts=facts_at(config, place, minute, s.stream_full, looked),
             signal=signal,
-            offers=_offers_at(place),
+            offers=offers_at(place),
         )
         info = StepInfo(
             step=step,

@@ -17,7 +17,7 @@ from surprise_loop.phases.heuristics import (
     rule_choice,
 )
 from surprise_loop.state import Decision, Expectation, Sureness, Temperament, Workspace
-from surprise_loop.world import GO_TARGET, Action, Fact, Levels, Place, _offers_at
+from surprise_loop.world import GO_TARGET, Action, Fact, Levels, Place, offers_at
 
 STUB_WHY = "A rule chose this."
 
@@ -48,7 +48,7 @@ def lookahead_choice(
         for step in range(p.horizon):
             if step > 0:
                 need = clipped(felt(b, t))
-                action = rule_choice(need, place, _offers_at(place), lambda _: True, p)
+                action = rule_choice(need, place, offers_at(place), lambda _: True, p)
             place = _ends_in(action, place)
             b = forecast(b, _pull(facts, here, place), action, p.model)
             total += discomfort(b, t)

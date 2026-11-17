@@ -482,6 +482,14 @@ def test_an_already_judged_episode_or_a_look_is_not_judged(first: Episode) -> No
     assert after.feedback == Feedback(judged_step=None, score=None, line="")
 
 
+@pytest.mark.parametrize("event", [Event.STUMBLED, Event.COLLAPSED])
+def test_a_stumbled_or_collapsed_episode_is_not_judged(event: Event) -> None:
+    first = episode(1, Action.GO_OAK, need_before={HEAT: 2.5, WATER: 0, ENERGY: 0})
+    first = first.model_copy(update={"event": event})
+    _, after = evaluated([first, *[episode(s) for s in range(2, 5)]])
+    assert after.feedback == Feedback(judged_step=None, score=None, line="")
+
+
 def test_evaluate_changes_only_the_feedback() -> None:
     eps = [episode(s, Action.REST, need_before={HEAT: 0, WATER: 0, ENERGY: 2.0})
            for s in range(1, 6)]  # fmt: skip

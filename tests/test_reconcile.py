@@ -7,7 +7,7 @@ from test_phases import PARAMS, agent_with, base_ws, episode, make_rt, rememberi
 
 from surprise_loop.config import Runtime
 from surprise_loop.feeling import feel, needs
-from surprise_loop.phases import reconcile
+from surprise_loop.phases import evaluate, reconcile
 from surprise_loop.phases.heuristics import compare, updated_belief
 from surprise_loop.phases.perceive import build_percept
 from surprise_loop.state import (
@@ -25,7 +25,7 @@ from surprise_loop.state import (
     SurpriseNote,
     Workspace,
 )
-from surprise_loop.world import Action, BodyState, Channel, Levels, OpenQuestion, Place
+from surprise_loop.world import Action, BodyState, Channel, Event, Levels, OpenQuestion, Place
 
 HEAT, WATER, ENERGY = Channel.HEAT, Channel.WATER, Channel.ENERGY
 OPEN = Band(lo=None, hi=None)
@@ -221,6 +221,24 @@ def test_without_a_judgement_no_pull_moves_and_no_episode_changes() -> None:
     )
     out = run(reconcile, ready(rt, Action.REST, agent=agent), rt)
     assert out.agent.memory.episodes[:5] == eps
+    assert out.agent.pulls == agent.pulls
+
+
+@pytest.mark.parametrize("event", [Event.STUMBLED, Event.COLLAPSED])
+def test_a_stumbled_or_collapsed_episode_and_every_pull_stay_as_they_were(event: Event) -> None:
+    rt = make_rt()
+    eps = [episode(s) for s in range(1, 6)]
+    eps[1] = episode(2, Action.GO_OAK, need_before={HEAT: 2.5, WATER: 0, ENERGY: 0})
+    eps[1] = eps[1].model_copy(update={"event": event})  # 5 episodes, window 4: index 1
+    agent = remembering(rt, eps).model_copy(
+        update={"pulls": pulls_with(Place.MEADOW, Action.GO_OAK, 0.2)}
+    )
+    ws = ready(rt, Action.REST, agent=agent)
+    ws = run(evaluate, ws.model_copy(update={"feedback": None}), rt)
+    assert ws.feedback == NO_FEEDBACK
+    out = run(reconcile, ws, rt)
+    assert out.agent.memory.episodes[:5] == eps
+    assert out.agent.memory.episodes[1].score is None
     assert out.agent.pulls == agent.pulls
 
 

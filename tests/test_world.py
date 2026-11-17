@@ -19,6 +19,7 @@ from surprise_loop.world import (
     facts_at,
     frozen_noon_facts,
     log_shaded_at,
+    offers_at,
     sun_at,
 )
 
@@ -255,6 +256,7 @@ def test_paces_may_name_a_pair_in_either_order() -> None:
     ],
 )
 def test_offers_per_place(place: Place, offers: list[Action]) -> None:
+    assert offers_at(place) == offers
     assert ClearingWorld(WorldConfig(), 0, BODY, place).observe().offers == offers
 
 
