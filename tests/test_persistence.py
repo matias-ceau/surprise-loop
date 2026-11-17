@@ -46,6 +46,8 @@ QUIET = Params(override=OverrideParams(enabled=False))
 URGENT = Params(override=OverrideParams(enabled=True, urgent_felt=0.5, worse_margin=0.0))
 INJECTED = Override(channel=Channel.ENERGY, actions=[Action.REST], detail="injected")
 CUT = 15
+# with URGENT the afternoon's first fifteen ticks take two passes, so cut inside them
+OVERRIDE_CUT = 10
 
 
 def make_config(
@@ -278,22 +280,22 @@ def test_interrupted_and_resumed_run_with_real_overrides_is_byte_identical(tmp_p
     whole, split = tmp_path / "whole", tmp_path / "split"
 
     uninterrupted = asyncio.run(run(config, whole))
-    first = asyncio.run(run(config, split, stop_after_tick=CUT))
-    assert len(first.records) == CUT
-    assert len(list(split.glob("tick_*.json"))) == CUT
+    first = asyncio.run(run(config, split, stop_after_tick=OVERRIDE_CUT))
+    assert len(first.records) == OVERRIDE_CUT
+    assert len(list(split.glob("tick_*.json"))) == OVERRIDE_CUT
     resumed = asyncio.run(run(config, split, resume=True))
 
     # The override fired, and on both sides of the cut.
     two_pass = [r.tick for r in uninterrupted.records if len(r.passes) == 2]
-    assert any(t <= CUT for t in two_pass)
-    assert any(t > CUT for t in two_pass)
+    assert any(t <= OVERRIDE_CUT for t in two_pass)
+    assert any(t > OVERRIDE_CUT for t in two_pass)
     overrides = [r.passes[0].override for r in uninterrupted.records if r.tick in two_pass]
     assert None not in overrides
     assert run_files(split) == run_files(whole)
     assert every_file(split) == every_file(whole)
     assert resumed == uninterrupted
     assert [r.tick for r in resumed.records] == list(range(1, len(uninterrupted.records) + 1))
-    assert len(resumed.records) > CUT
+    assert len(resumed.records) > OVERRIDE_CUT
     # The run went to the end of the day: every world step was taken.
     w = config.world
     steps = (w.end_minute - w.start_minute) // w.tick_minutes

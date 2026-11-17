@@ -100,7 +100,7 @@ class ExpectationParams(Frozen):
     much: Positive = 1.0
     # half the width of a stub's band around its forecast, in channel units
     stub_tolerance: dict[Channel, NonNegative] = Field(
-        default_factory=lambda: _per_channel(0.05, 0.03, 0.03)
+        default_factory=lambda: _per_channel(0.12, 0.06, 0.03)
     )
 
     @field_validator("stub_tolerance")
@@ -136,15 +136,15 @@ class StubModelParams(Frozen):
     """The stubs' private one-step model of their own body."""
 
     # heat moves by heat_rate toward the place's heat pull times heat_per_bearing
-    heat_rate: Unit = 0.25
+    heat_rate: Unit = 0.1
     heat_per_bearing: float = 0.5
     # water falls by water_drain, more by sweat_water per unit of heat, rises by drink_water
-    water_drain: NonNegative = 0.004
+    water_drain: NonNegative = 0.012
     sweat_water: NonNegative = 0.01
-    drink_water: NonNegative = 0.08
+    drink_water: NonNegative = 0.04
     # energy falls by walk_energy for a walk, rises by rest_energy for a rest
     walk_energy: NonNegative = 0.03
-    rest_energy: NonNegative = 0.02
+    rest_energy: NonNegative = 0.05
 
 
 class MemoryParams(Frozen):
@@ -175,8 +175,8 @@ class PullParams(Frozen):
 class OverrideParams(Frozen):
     enabled: bool = True
     # a need at least this loud after the update, and at least worse_margin worse than expected
-    urgent_felt: NonNegative = 2.0
-    worse_margin: NonNegative = 0.5
+    urgent_felt: NonNegative = 1.5
+    worse_margin: NonNegative = 0.2
 
 
 class DeliberateParams(Frozen):

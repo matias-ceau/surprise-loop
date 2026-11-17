@@ -262,7 +262,7 @@ def test_a_stub_afternoon_has_no_world_expectation_and_follows_the_rule(
     result = (ilo_afternoon, tavi_afternoon)[agent]
     passes = flatten(result.records)
     metrics = summarize(result)
-    assert metrics.steps == len(passes) and metrics.ticks == len(result.records) == 42
+    assert metrics.steps == len(passes) == 42 and metrics.ticks == len(result.records)
     assert metrics.truncated is False
     # the stubs never commit to an answer about the world: nothing to compare, nothing divided
     assert metrics.world_expectations == 0 and metrics.world_held == 0

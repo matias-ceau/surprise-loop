@@ -234,19 +234,19 @@ def _every_key[K, V](value: dict[K, V], keys: type[StrEnum], what: str) -> dict[
 
 
 class BodyParams(Frozen):
-    heat_rate: NonNegative = 0.25
-    air_gain: NonNegative = 0.5
-    sun_gain: NonNegative = 0.5
-    walk_heat: NonNegative = 0.03
+    heat_rate: NonNegative = 0.2
+    air_gain: NonNegative = 0.7
+    sun_gain: NonNegative = 0.7
+    walk_heat: NonNegative = 0.04
     sweat_threshold: float = 0.3
     sweat_rate: NonNegative = 0.5
     sweat_cooling: NonNegative = 0.2
     sweat_water: NonNegative = 0.03
-    water_drain: NonNegative = 0.004
-    base_energy: NonNegative = 0.004
-    walk_energy: NonNegative = 0.01
+    water_drain: NonNegative = 0.012
+    base_energy: NonNegative = 0.015
+    walk_energy: NonNegative = 0.005
     hot_walk_factor: NonNegative = 0.5
-    rest_gain: NonNegative = 0.03
+    rest_gain: NonNegative = 0.12
     ground_rest_quality: NonNegative = 0.5
     drink_amount: NonNegative = 0.25
     # the share of the gut absorbed per step: some, at most all
@@ -259,14 +259,14 @@ class BodyParams(Frozen):
     energy_floor: Annotated[float, Field(ge=0, lt=1)] = 0.03
     collapse_ticks: int = Field(default=3, ge=1)
     signal_noise: dict[Channel, NonNegative] = {
-        Channel.HEAT: 0.02,
-        Channel.WATER: 0.02,
-        Channel.ENERGY: 0.02,
+        Channel.HEAT: 0.005,
+        Channel.WATER: 0.005,
+        Channel.ENERGY: 0.005,
     }
     signal_step: dict[Channel, Annotated[float, Field(gt=0)]] = {
-        Channel.HEAT: 0.05,
-        Channel.WATER: 0.05,
-        Channel.ENERGY: 0.05,
+        Channel.HEAT: 0.01,
+        Channel.WATER: 0.01,
+        Channel.ENERGY: 0.01,
     }
     # how many steps late the water signal is
     water_delay: int = Field(default=2, ge=0)
@@ -311,8 +311,8 @@ class WorldConfig(Frozen):
     end_minute: int = 1200
     tick_minutes: int = 10
     # meadow air in °C, linear between points
-    air_curve: list[tuple[int, float]] = [(360, 18.0), (780, 30.0), (960, 30.0), (1200, 22.0)]
-    place_air_offset: dict[Place, float] = {Place.MEADOW: 0.0, Place.OAK: -3.0, Place.STREAM: -1.5}
+    air_curve: list[tuple[int, float]] = [(360, 23.0), (780, 30.0), (960, 30.0), (1200, 23.0)]
+    place_air_offset: dict[Place, float] = {Place.MEADOW: 0.0, Place.OAK: -7.0, Place.STREAM: -3.0}
     air_neutral_c: float = 25.0
     air_scale_c: float = Field(default=5.0, gt=0)
     # open sun from 0 to 1, linear between points

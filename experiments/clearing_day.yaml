@@ -13,8 +13,8 @@ agents:
       trust: {heat: 0.5, water: 0.3, energy: 0.5}
       habit: {burden: 0.6, relief: 0.2, ambient: 0.1}
       baseline: -0.1
-    body: {heat: -0.1, water: 0.60, energy: 0.50}
-    belief: {heat: -0.1, water: 0.60, energy: 0.50}
+    body: {heat: -0.1, water: 0.75, energy: 0.60}
+    belief: {heat: -0.1, water: 0.75, energy: 0.60}
     arousal: 0.3
   - name: tavi
     temperament:

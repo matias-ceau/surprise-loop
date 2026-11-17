@@ -19,7 +19,7 @@ from surprise_loop.state import TickDump
 ROOT = Path(__file__).resolve().parent.parent
 AFTERNOON = ROOT / "experiments" / "clearing_afternoon.yaml"
 RUN_ID = "clearing_afternoon-ilo-s1"
-TICKS = 42  # 13:00 to 20:00 in ten-minute ticks
+STEPS = 42  # 13:00 to 20:00 in ten-minute world steps; a tick with an override takes two
 
 
 def assert_one_line_error(capsys: pytest.CaptureFixture[str]) -> str:
@@ -63,15 +63,16 @@ def afternoon_copy(tmp_path: Path, **replacements: str) -> Path:
 def test_run_writes_a_tick_dump_per_tick_and_the_config(afternoon_run: tuple[Path, str]) -> None:
     run_dir, _ = afternoon_run
     ticks = sorted(p.name for p in run_dir.glob("tick_*.json"))
-    assert len(ticks) == TICKS
-    assert ticks[0] == "tick_000001.json" and ticks[-1] == f"tick_{TICKS:06d}.json"
+    result = load_result(run_dir)
+    assert sum(len(record.passes) for record in result.records) == STEPS
+    assert ticks == [f"tick_{n:06d}.json" for n in range(1, len(result.records) + 1)]
     assert {p.name for p in run_dir.iterdir()} == {*ticks, "config.json"}
 
 
 def test_run_prints_only_the_metrics_json(afternoon_run: tuple[Path, str]) -> None:
     run_dir, out = afternoon_run
     assert json.loads(out) == json.loads(summarize(load_result(run_dir)).model_dump_json())
-    assert json.loads(out)["ticks"] == TICKS
+    assert json.loads(out)["steps"] == STEPS
 
 
 def test_run_reports_the_run_directory_on_stderr(
@@ -133,7 +134,8 @@ def test_replay_verifies_every_tick(
     run_dir, _ = afternoon_run
     assert main(["replay", str(run_dir)]) == 0
     out, err = capsys.readouterr()
-    assert out.splitlines() == [f"replay of {run_dir}: {TICKS} ticks verified"]
+    ticks = len(load_result(run_dir).records)
+    assert out.splitlines() == [f"replay of {run_dir}: {ticks} ticks verified"]
     assert err == ""
 
 

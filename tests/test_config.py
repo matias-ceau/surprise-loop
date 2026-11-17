@@ -266,7 +266,7 @@ def test_day_file_starts_at_the_world_default_with_belief_equal_to_body() -> Non
     assert config.name == "clearing_day"
     assert config.world == WorldConfig()
     ilo, tavi = config.agents
-    assert ilo.belief == Levels(heat=-0.1, water=0.60, energy=0.50)
+    assert ilo.belief == Levels(heat=-0.1, water=0.75, energy=0.60)
     assert ilo.arousal == 0.3
     assert tavi.belief == Levels(heat=0.0, water=0.85, energy=0.80)
     assert tavi.arousal == 0.2
@@ -372,7 +372,7 @@ def test_params_defaults_are_the_contract_values() -> None:
     assert p.expectation == ExpectationParams(
         bit=0.25,
         much=1.0,
-        stub_tolerance={Channel.HEAT: 0.05, Channel.WATER: 0.03, Channel.ENERGY: 0.03},
+        stub_tolerance={Channel.HEAT: 0.12, Channel.WATER: 0.06, Channel.ENERGY: 0.03},
     )
     assert p.monitor == MonitorParams(world_weight=1.0)
     assert p.belief == BeliefParams(
@@ -383,19 +383,19 @@ def test_params_defaults_are_the_contract_values() -> None:
     )
     assert p.evaluate == EvaluateParams(window=4, score_scale=1.0, helped=0.25)
     assert p.pulls == PullParams(rate=0.5, speak=0.2)
-    assert p.override == OverrideParams(enabled=True, urgent_felt=2.0, worse_margin=0.5)
+    assert p.override == OverrideParams(enabled=True, urgent_felt=1.5, worse_margin=0.2)
     assert p.deliberate == DeliberateParams(
         stub="reactive",
         act_threshold=0.5,
         horizon=6,
         model=StubModelParams(
-            heat_rate=0.25,
+            heat_rate=0.1,
             heat_per_bearing=0.5,
-            water_drain=0.004,
+            water_drain=0.012,
             sweat_water=0.01,
-            drink_water=0.08,
+            drink_water=0.04,
             walk_energy=0.03,
-            rest_energy=0.02,
+            rest_energy=0.05,
         ),
     )
     assert p.reconcile == ReconcileParams(voice_threshold=0.5)

@@ -39,7 +39,11 @@ CONFIG = (
 )
 RUN_IDS = ["exp-ilo-s1", "exp-ilo-s2", "exp-tavi-s1", "exp-tavi-s2"]
 CSV_FILES = ["results.csv", "stability.csv", "trace.csv"]
-TICKS = 42
+STEPS = 42  # world steps of an afternoon; a tick with an override takes two
+
+
+def steps(result: RunResult) -> int:
+    return sum(len(record.passes) for record in result.records)
 
 
 def write_config(tmp_path: Path, text: str = CONFIG, **replacements: str) -> Path:
@@ -115,7 +119,7 @@ def test_writes_one_run_dir_per_agent_and_seed_and_the_three_csvs(reference: Pat
     assert sorted(p.name for p in (reference / "exp").iterdir()) == CSV_FILES
     for run_id in RUN_IDS:
         result = load_result(reference / run_id)
-        assert len(result.records) == TICKS and is_complete(result)
+        assert steps(result) == STEPS and is_complete(result)
 
 
 def test_results_csv_has_one_row_per_run_in_config_order(reference: Path) -> None:
@@ -133,7 +137,7 @@ def test_results_csv_has_one_row_per_run_in_config_order(reference: Path) -> Non
         for field, value in metrics.model_dump().items():
             assert row[field] == format_cell(value), (run_id, field)
         assert row["truncated"] == "False"
-        assert row["ticks"] == str(TICKS)
+        assert row["steps"] == str(STEPS)
 
 
 def test_trace_csv_has_one_row_per_world_step(reference: Path) -> None:
@@ -369,7 +373,7 @@ def test_a_failing_run_lets_the_others_finish_exits_1_and_writes_no_csvs(
     assert error_lines(err) == ["error: exp-ilo-s2 failed: RuntimeError: boom; second line"]
     assert not (runs_dir / "exp").exists()
     for run_id in set(RUN_IDS) - {"exp-ilo-s2"}:
-        assert len(load_result(runs_dir / run_id).records) == TICKS
+        assert steps(load_result(runs_dir / run_id)) == STEPS
     assert len(load_result(runs_dir / "exp-ilo-s2").records) == 7
 
     # Rerunning resumes the failed run and gives the same files as a run that never failed.
