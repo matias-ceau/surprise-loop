@@ -127,6 +127,8 @@ def log_shaded_at(config: WorldConfig, minute: int) -> bool
 | BREEZE | relief | none | always | heat −0.3 |
 | BIRDSONG | ambient | none | always | none |
 
+The constant bearings of this table are config: `WorldConfig.bearings: dict[FactName, dict[Channel, float]]` defaults to them (AIR and SUN are computed, so they have no entry), and `frozen_noon_facts()` is built from `WorldConfig()`.
+
 A fact list is always in `FactName` order. At the meadow at 13:00 with default config the list is exactly AIR (+1.0), SUN (+1.0), NO_SEAT, OAK_SHADE, STREAM, BREEZE, BIRDSONG: the owner's example.
 
 **WorldConfig defaults** (Task 10 may retune any of them):
@@ -218,7 +220,7 @@ class Offer(Frozen): action: Action; phrase: str
 class Appraisal(Frozen): reading: str; about: Channel | None
 class Decision(Frozen): action: Action; expectation: Expectation; why: str = ""
 class Feedback(Frozen): judged_step: int | None; score: Signed | None; line: str = ""
-class Override(Frozen): channel: Channel; detail: str
+class Override(Frozen): channel: Channel; actions: list[Action]; detail: str   # actions: the offered actions that serve the channel
 class Episode(Frozen):
     tick: Count; step: Count; place: Place; action: Action; event: Event
     expectation: Expectation; comparison: Comparison
@@ -282,9 +284,9 @@ phrase    = FACT_PHRASES[name][sign][grade - 1], or the neutral phrase for sign 
             entry that high for that sign, the highest it has; when it has none for that sign, the neutral phrase
 ```
 
-Body lines: channels by `|felt|`, largest first (ties in `Channel` order); take the first `2 if arousal >= narrow_arousal else 3`; a channel speaks when its signed grade on `body_edges` has magnitude at least 2 and `BODY_PHRASES` has that grade. `extra` is 1 when `observation.event is Event.LOOKED`, else 0. The surprise sentence is `SURPRISE_PHRASES` looked up from `voiced`.
+Body lines: channels by `|felt|`, largest first (ties in `Channel` order); take the first `body_lines_narrow if arousal >= narrow_arousal else body_lines_wide`; a channel speaks when its signed grade on `body_edges` has magnitude at least `body_speak_grade` and `BODY_PHRASES` has that grade. `extra` is 1 when `observation.event is Event.LOOKED`, else 0. The surprise sentence is `SURPRISE_PHRASES` looked up from `voiced`.
 
-`LensParams` defaults: gain_base 0.5, gain_arousal 1.5, min_noticed 3, drop_per_arousal 4.0, attention_bonus 0.3, narrow_arousal 0.5, value_edges (0.25, 1.0, 2.0, 3.0), body_edges (0.5, 1.0, 2.0, 3.0).
+`LensParams` defaults: gain_base 0.5, gain_arousal 1.5, min_noticed 3, drop_per_arousal 4.0, attention_bonus 0.3, narrow_arousal 0.5, body_lines_narrow 2, body_lines_wide 3, body_speak_grade 2, value_edges (0.25, 1.0, 2.0, 3.0), body_edges (0.5, 1.0, 2.0, 3.0).
 
 `phrases.py` holds every string a model can read and nothing else:
 
@@ -342,7 +344,8 @@ class DeliberateParams(Frozen):
 class ReconcileParams(Frozen): voice_threshold: float = 0.5
 class MetricsParams(Frozen): comfort_felt: float = 1.0
 class LLMParams(Frozen): ...                      # as v0
-class Params(Frozen): lens; feeling; expectation; monitor; belief; memory; evaluate; pulls; override; deliberate; reconcile; metrics; llm
+class LadderParams(Frozen): ...                   # Task 5: levels, the swept body, both scenes, samples, the three pass marks
+class Params(Frozen): lens; feeling; expectation; monitor; belief; memory; evaluate; pulls; override; deliberate; reconcile; metrics; llm; ladder
 
 class Backends(Frozen): appraise: Literal["stub", "llm"] = "stub"; deliberate: Literal["stub", "llm"] = "stub"
 class AgentSpec(Frozen):
@@ -396,7 +399,10 @@ For the 13:00 meadow facts, with `attention=None`, `extra=0` and default `LensPa
 
 ```python
 # phases/<name>.py each export  async def <name>(ws: Workspace, rt: Runtime) -> Workspace
-# appraise and deliberate also export <name>_stub and (Task 12) <name>_llm; <name> dispatches on rt.config.backends
+# appraise and deliberate also export <name>_stub and (Task 12) <name>_llm; <name> dispatches on rt.config.backends.
+# Until Task 12 an "llm" backend raises ConfigError saying the model-backed phase is not built yet.
+# agents.py (created in Task 5, extended in Task 12) holds load_model(name) -> Model | None and model_settings(params),
+# ported from v0; ladder.py and loop.py both import them from there.
 # phases/perceive.py also exports  build_percept(observation, agent, params, offers: list[Action] | None = None) -> Percept
 ```
 
@@ -407,8 +413,8 @@ For the 13:00 meadow facts, with `attention=None`, `extra=0` and default `LensPa
 - **Monitor.** `ws.comparison = compare(decision, outcome.observation, temperament, params.monitor)`.
 - **Evaluate (code).** Let `n` be the number of stored episodes. If `n >= window`, take the episode at index `n - window`; if its `score` is None and `SERVES[action]` is a channel `c`: `now = |needs(outcome.observation.signal, t)[c]|`, `score = clamp((|need_before[c]| - now) / score_scale, -1, 1)`, `line = REGULATION_LINES[(action, +1 if score >= helped else -1 if score <= -helped else 0)]`, `Feedback(judged_step=episode.step, score, line)`. Otherwise `Feedback(judged_step=None, score=None, line="")`.
 - **Reconcile.** In order: new belief (`updated_belief`); new feeling (`feel` with the comparison); `attention = appraisal.about`; `voiced`: the channel with the largest `|body_felt|` if at least `reconcile.voice_threshold` (worse is `body_felt > 0`), else a world mismatch if there was one, else None; append the episode (salience `min(1, base_salience + salience_gain * size)`, `need_before` from the belief the decision was made on, `scene = percept.scene.text()`, `reading = appraisal.reading`); attach `feedback` to the judged episode (its `score` and `regulation`) and move that episode's pull: `v += rate * (score - v)`; decide the override; append the `PassRecord`.
-- **Override** (pass 0 only, `override.enabled`): the first channel in `Channel` order whose need after the update has magnitude at least `urgent_felt`, whose `body_felt` is at least `worse_margin`, and which `SERVES[action]` is not; and only if `serving_actions(channel, too_much, place_now)` contains an action offered now. Then `Override(channel, detail)`.
-- **`loop.py`.** As v0 with the new types. On an override and a world that is not done, pass 1 runs with `observation = outcome.observation`, `percept = build_percept(observation, agent, params, offers=<the serving actions that are offered>)`, the same appraisal, the override kept. Replay substitutes the recorded Appraise and Deliberate outputs; Evaluate runs as code. A run ends when the world is done or the `ticks` cap is reached.
+- **Override** (pass 0 only, `override.enabled`): the first channel in `Channel` order whose need after the update has magnitude at least `urgent_felt`, whose `body_felt` is at least `worse_margin`, and which `SERVES[action]` is not; and only if `serving_actions(channel, too_much, place_now)` contains an action offered now. Then `Override(channel, actions=<those offered serving actions>, detail)`.
+- **`loop.py`.** As v0 with the new types. On an override and a world that is not done, pass 1 runs with `observation = outcome.observation`, `percept = build_percept(observation, agent, params, offers=ws.override.actions)`, the same appraisal, the override kept. Replay substitutes the recorded Appraise and Deliberate outputs; Evaluate runs as code. A run ends when the world is done or the `ticks` cap is reached.
 
 ### Later modules
 
@@ -485,7 +491,7 @@ The page shows the 13:00 meadow for the config's two agents. Per body: a slider 
 
 ### Task 5: the ladder check
 
-**Files:** create `src/surprise_loop/ladder.py`; modify `src/surprise_loop/cli.py` (`ladder-check`), `src/surprise_loop/phrases.py`; create `tests/test_ladder.py`. The model is the config's `model` when `--config` is given and sets one, else `SURPRISE_LOOP_MODEL`; params are the config's, else the defaults.
+**Files:** create `src/surprise_loop/ladder.py`, `src/surprise_loop/agents.py` (`load_model`, `model_settings` only, ported from `v0-levers`); modify `src/surprise_loop/cli.py` (`ladder-check`), `src/surprise_loop/phrases.py`, `src/surprise_loop/config.py` (`LadderParams`, holding every number of the protocol below as its defaults); create `tests/test_ladder.py`. The model is the config's `model` when `--config` is given and sets one, else `SURPRISE_LOOP_MODEL`; params are the config's, else the defaults.
 
 Protocol: spec appendix B and section 9. Seven levels of believed skin temperature 21, 23, 25, 27, 30, 33, 36 °C, that is heat −0.4, −0.2, 0.0, 0.2, 0.5, 0.8, 1.1; set point heat 0.0, water 0.80, energy 0.70; tightness heat 3.0, water 5.0, energy 5.0; arousal 0.40; habit 0.3 for every kind; no voiced surprise. Scene A: water 0.80, energy 0.70. Scene B: water 0.50, energy 0.46. The prompt is the lens text, a blank line, "What do you do next?", and four lettered actions in the order given: shade ("Walk to the shade of the oak, a few steps away."), stream ("Walk to the stream, a longer walk across the open ground."), sit ("Sit down where you are."), look ("Stay standing and look around."). The order for answer `i` is a shuffle seeded by `i` alone. Instruction as in appendix B. One call per answer at `llm.temperature`, output `letter` then `why`. Answers are appended to `<out>/answers.jsonl`; a rerun skips answers already there. `summarize`: share by level, least-squares slope on the level index, range, `worst_drop = max(share[l] - share[l+1])`, `passed = slope >= 0.05 and range >= 0.5 and worst_drop < 0.25`. The command prints one table per scene and exits 0 only if both scenes pass. These four action strings and the instruction live in `phrases.py`.
 
@@ -560,7 +566,7 @@ The gate, on stubs over seeds 1 to 10 with `experiments/clearing_day.yaml` (both
 
 ### Task 12: Appraise and Deliberate on a model
 
-**Files:** create `src/surprise_loop/agents.py`, `tests/llm_helpers.py`, `tests/test_agents.py`, `experiments/clearing_afternoon_llm.yaml` (as the afternoon file, both backends `llm`, `model: null`); modify `src/surprise_loop/phases/{appraise,deliberate}.py` (`appraise_llm`, `deliberate_llm`), `src/surprise_loop/phrases.py` (instructions and prompt headings), `src/surprise_loop/ladder.py` and `src/surprise_loop/cli.py` (`ladder-check --deliberate`: the same sweep through the Deliberate agent and prompt, with the meadow's four offers and a neutral stub reading; an answer counts as shade when the action is GO_OAK), `src/surprise_loop/loop.py` only if model handling needs it. Port `run_agent`, `model_settings`, `OneLine` and the test helpers from `v0-levers`.
+**Files:** modify `src/surprise_loop/agents.py` (the two agents, output models, prompt builders, `run_agent`); create `tests/llm_helpers.py`, `tests/test_agents.py`, `experiments/clearing_afternoon_llm.yaml` (as the afternoon file, both backends `llm`, `model: null`); modify `src/surprise_loop/phases/{appraise,deliberate}.py` (`appraise_llm`, `deliberate_llm`), `src/surprise_loop/phrases.py` (instructions and prompt headings), `src/surprise_loop/ladder.py` and `src/surprise_loop/cli.py` (`ladder-check --deliberate`: the same sweep through the Deliberate agent and prompt, with the meadow's four offers and a neutral stub reading; an answer counts as shade when the action is GO_OAK), `src/surprise_loop/loop.py` only if model handling needs it. Port `run_agent`, `model_settings`, `OneLine` and the test helpers from `v0-levers`.
 
 - `AppraiseOutput(reading: OneLine, about: Literal["heat", "thirst", "tiredness", "nothing"])`. Prompt: the scene text, then one question.
 - `DeliberateOutput(letter: Literal["A", "B", "C", "D", "E"], heat: Literal[<the five heat phrases>], thirst: Literal[...], tiredness: Literal[...], expect: Literal["yes", "no", "no expectation"], sure: Literal["guessing", "fairly sure", "sure"], why: OneLine)`. The prompt shows, in this order: the scene text; the creature's reading; the offers lettered in an order shuffled by `derive_rng(seed, tick, pass_index, "offers")`, each with its phrase; the recalled episodes in words (what it did as the offer phrase's verb, what it expected as ladder phrases, the surprise sentence if any, the regulation line if any); the pull line if any; the override line on pass 1; the questions, including the open question for each offered action that has one. A letter beyond the offers is a validation error (retry, then stop). `bands_from_words` turns the phrases into bands; `expect` maps to `world` only when the chosen action has an open question.
@@ -583,4 +589,5 @@ The gate, on stubs over seeds 1 to 10 with `experiments/clearing_day.yaml` (both
 - The truth of a world expectation is read from the facts on arrival, not from the hidden step info.
 - Offers are shown lettered in a seeded shuffle, and the model answers with a letter.
 - The fifteen fact names and their bearings, and every default in Contracts.
+- Presentation constants of the viewer (slider grids, colours, timings) are not behaviour and live in the viewer module.
 - `salient_k` recall is kept as a config option, as in v0.
