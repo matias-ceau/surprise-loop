@@ -47,7 +47,7 @@ QUIET = dict(
     water_drain=0.0,
     base_energy=0.0,
     walk_energy=0.0,
-    absorb_rate=0.0,
+    absorb_rate=1.0,  # the gut is empty unless a test drinks; absorption must be positive
     heat_hot_limit=2.0,
     heat_cold_limit=-2.0,
     water_floor=0.0,
@@ -228,11 +228,95 @@ def test_the_log_is_in_the_sun_exactly_from_until() -> None:
         {"paces": {"meadow-oak": 1.0, "meadow-stream": 4.0, "oak-pond": 5.0}},
         {"paces": {"meadow-oak": 1.0, "meadow-stream": 4.0, "oak-oak": 5.0}},
         {"paces": {"meadow-oak": 1.0, "meadow-stream": 4.0, "oak-stream": 5.0, "x": 1.0}},
+        {"place_air_offset": {"meadow": 0.0, "oak": -3.0}},
+        {"place_sun": {"meadow": 1.0, "stream": 0.6}},
+        {"place_sun": {}},
+        {"air_scale_c": 0.0},
+        {"air_scale_c": -5.0},
     ],
 )
 def test_world_config_rejects(changes: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
         WorldConfig.model_validate(changes)
+
+
+def test_a_place_table_missing_a_place_names_it() -> None:
+    with pytest.raises(ValidationError, match="missing: stream"):
+        WorldConfig.model_validate({"place_sun": {"meadow": 1.0, "oak": 0.0}})
+
+
+# every rate and cost of the body; each must be zero or more
+BODY_RATES = [
+    "heat_rate",
+    "air_gain",
+    "sun_gain",
+    "walk_heat",
+    "sweat_rate",
+    "sweat_cooling",
+    "sweat_water",
+    "water_drain",
+    "base_energy",
+    "walk_energy",
+    "hot_walk_factor",
+    "rest_gain",
+    "ground_rest_quality",
+    "drink_amount",
+    "stumble_energy",
+    "stumble_cost",
+]
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        *({name: -0.01} for name in BODY_RATES),
+        {"absorb_rate": 0.0},
+        {"absorb_rate": -0.1},
+        {"absorb_rate": 1.01},
+        {"heat_cold_limit": 1.2, "heat_hot_limit": 1.2},
+        {"heat_cold_limit": 0.5, "heat_hot_limit": 0.0},
+        {"water_floor": -0.01},
+        {"water_floor": 1.0},
+        {"energy_floor": -0.01},
+        {"energy_floor": 1.0},
+        {"collapse_ticks": 0},
+        {"water_delay": -1},
+        {"water_delay": 1.5},
+        {"signal_step": {"heat": 0.05, "water": 0.0, "energy": 0.05}},
+        {"signal_step": {"heat": -0.05, "water": 0.05, "energy": 0.05}},
+        {"signal_step": {"heat": 0.05, "water": 0.05}},
+        {"signal_noise": {"heat": 0.02, "water": -0.02, "energy": 0.02}},
+        {"signal_noise": {"heat": 0.02, "energy": 0.02}},
+    ],
+)
+def test_body_params_reject(changes: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        BodyParams.model_validate(changes)
+
+
+def test_body_params_accept_the_edges() -> None:
+    edges = dict.fromkeys(BODY_RATES, 0.0) | {
+        "absorb_rate": 1.0,
+        "water_floor": 0.0,
+        "energy_floor": 0.0,
+        "collapse_ticks": 1,
+        "water_delay": 0,
+        "signal_noise": {c: 0.0 for c in Channel},
+    }
+    assert BodyParams.model_validate(edges).water_delay == 0
+
+
+def test_a_channel_table_missing_a_channel_names_it() -> None:
+    with pytest.raises(ValidationError, match="missing: energy"):
+        BodyParams.model_validate({"signal_step": {"heat": 0.05, "water": 0.05}})
+
+
+@pytest.mark.parametrize("delay", [1, 3])
+def test_restore_refuses_a_water_history_of_another_length(delay: int) -> None:
+    state = ClearingWorld(WorldConfig(), 0, BODY, Place.MEADOW).snapshot()
+    other = WorldConfig(body=BodyParams(water_delay=delay))
+    with pytest.raises(ValueError, match="water_delay"):
+        ClearingWorld.restore(other, state)
 
 
 def test_paces_may_name_a_pair_in_either_order() -> None:

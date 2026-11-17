@@ -12,7 +12,14 @@ tiredness); a negative bearing relieves it.
 from enum import StrEnum
 from typing import Annotated, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 
 class Frozen(BaseModel):
@@ -212,41 +219,70 @@ class Outcome(Frozen):
     info: StepInfo
 
 
+NonNegative = Annotated[float, Field(ge=0)]
+
+
+def _every_key[K, V](value: dict[K, V], keys: type[StrEnum], what: str) -> dict[K, V]:
+    """Raise unless `value` has an entry for every member of `keys`."""
+    missing = [k.value for k in keys if k not in value]
+    if missing:
+        raise ValueError(
+            f"{what} needs an entry for every {keys.__name__.lower()}; "
+            f"missing: {', '.join(missing)}"
+        )
+    return value
+
+
 class BodyParams(Frozen):
-    heat_rate: float = 0.25
-    air_gain: float = 0.5
-    sun_gain: float = 0.5
-    walk_heat: float = 0.03
+    heat_rate: NonNegative = 0.25
+    air_gain: NonNegative = 0.5
+    sun_gain: NonNegative = 0.5
+    walk_heat: NonNegative = 0.03
     sweat_threshold: float = 0.3
-    sweat_rate: float = 0.5
-    sweat_cooling: float = 0.2
-    sweat_water: float = 0.03
-    water_drain: float = 0.004
-    base_energy: float = 0.004
-    walk_energy: float = 0.01
-    hot_walk_factor: float = 0.5
-    rest_gain: float = 0.03
-    ground_rest_quality: float = 0.5
-    drink_amount: float = 0.25
-    absorb_rate: float = 0.4
-    stumble_energy: float = 0.08
-    stumble_cost: float = 0.005
+    sweat_rate: NonNegative = 0.5
+    sweat_cooling: NonNegative = 0.2
+    sweat_water: NonNegative = 0.03
+    water_drain: NonNegative = 0.004
+    base_energy: NonNegative = 0.004
+    walk_energy: NonNegative = 0.01
+    hot_walk_factor: NonNegative = 0.5
+    rest_gain: NonNegative = 0.03
+    ground_rest_quality: NonNegative = 0.5
+    drink_amount: NonNegative = 0.25
+    # the share of the gut absorbed per step: some, at most all
+    absorb_rate: Annotated[float, Field(gt=0, le=1)] = 0.4
+    stumble_energy: NonNegative = 0.08
+    stumble_cost: NonNegative = 0.005
     heat_hot_limit: float = 1.2
     heat_cold_limit: float = -1.0
-    water_floor: float = 0.05
-    energy_floor: float = 0.03
-    collapse_ticks: int = 3
-    signal_noise: dict[Channel, float] = {
+    water_floor: Annotated[float, Field(ge=0, lt=1)] = 0.05
+    energy_floor: Annotated[float, Field(ge=0, lt=1)] = 0.03
+    collapse_ticks: int = Field(default=3, ge=1)
+    signal_noise: dict[Channel, NonNegative] = {
         Channel.HEAT: 0.02,
         Channel.WATER: 0.02,
         Channel.ENERGY: 0.02,
     }
-    signal_step: dict[Channel, float] = {
+    signal_step: dict[Channel, Annotated[float, Field(gt=0)]] = {
         Channel.HEAT: 0.05,
         Channel.WATER: 0.05,
         Channel.ENERGY: 0.05,
     }
-    water_delay: int = 2
+    # how many steps late the water signal is
+    water_delay: int = Field(default=2, ge=0)
+
+    @field_validator("signal_noise", "signal_step")
+    @classmethod
+    def _every_channel(
+        cls, value: dict[Channel, float], info: ValidationInfo
+    ) -> dict[Channel, float]:
+        return _every_key(value, Channel, info.field_name or "")
+
+    @model_validator(mode="after")
+    def _limits(self) -> "BodyParams":
+        if self.heat_cold_limit >= self.heat_hot_limit:
+            raise ValueError("heat_cold_limit must be below heat_hot_limit")
+        return self
 
 
 # The constant bearings of the fact table. AIR, COOL_AIR and SUN are computed from the hour and
@@ -278,7 +314,7 @@ class WorldConfig(Frozen):
     air_curve: list[tuple[int, float]] = [(360, 18.0), (780, 30.0), (960, 30.0), (1200, 22.0)]
     place_air_offset: dict[Place, float] = {Place.MEADOW: 0.0, Place.OAK: -3.0, Place.STREAM: -1.5}
     air_neutral_c: float = 25.0
-    air_scale_c: float = 5.0
+    air_scale_c: float = Field(default=5.0, gt=0)
     # open sun from 0 to 1, linear between points
     sun_curve: list[tuple[int, float]] = [(360, 0.2), (660, 1.0), (900, 1.0), (1200, 0.1)]
     place_sun: dict[Place, float] = {Place.MEADOW: 1.0, Place.OAK: 0.0, Place.STREAM: 0.6}
@@ -300,6 +336,11 @@ class WorldConfig(Frozen):
         if any(m0 >= m1 for (m0, _), (m1, _) in zip(value, value[1:], strict=False)):
             raise ValueError("a curve's minutes must be strictly increasing")
         return value
+
+    @field_validator("place_air_offset", "place_sun")
+    @classmethod
+    def _every_place(cls, value: dict[Place, float], info: ValidationInfo) -> dict[Place, float]:
+        return _every_key(value, Place, info.field_name or "")
 
     @field_validator("paces")
     @classmethod
@@ -486,6 +527,11 @@ class ClearingWorld:
     @classmethod
     def restore(cls, config: WorldConfig, state: WorldState) -> "ClearingWorld":
         """The world `config` would be in at `state` (a snapshot)."""
+        if len(state.water_history) != config.body.water_delay:
+            raise ValueError(
+                f"the state holds {len(state.water_history)} past water values, but the "
+                f"config's water_delay is {config.body.water_delay}"
+            )
         world = cls.__new__(cls)
         world._config = config
         world._state = state
