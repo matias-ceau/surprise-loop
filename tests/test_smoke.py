@@ -1,6 +1,5 @@
-import importlib
+"""The package installs and imports."""
 
 
 def test_package_imports() -> None:
-    module = importlib.import_module("surprise_loop")
-    assert module.__name__ == "surprise_loop"
+    import surprise_loop  # noqa: F401

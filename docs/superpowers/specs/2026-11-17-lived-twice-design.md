@@ -1,7 +1,7 @@
 # Lived Twice: one clearing, two bodies
 
-Design for the redirect of surprise-loop. Status: **draft, waiting for the owner's approval**.
-Nothing in this document is built yet.
+Design for the redirect of surprise-loop. Status: **approved by the owner on 2026-11-17**.
+The build plan is `docs/superpowers/plans/2026-11-17-lived-twice.md`.
 
 Terms used throughout:
 

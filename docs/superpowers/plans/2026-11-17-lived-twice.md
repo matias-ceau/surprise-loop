@@ -479,7 +479,7 @@ Strictly sequential. Each ends with ruff and pytest green and a commit. Tests ar
 
 ### Task 4: the lens page
 
-**Files:** create `src/surprise_loop/viewer/__init__.py`, `src/surprise_loop/viewer/lens_page.py`, `src/surprise_loop/viewer/lens_page.html` (template with one data placeholder), `src/surprise_loop/cli.py` (`main(argv) -> int` with the `lens-page` command only; one-line errors as v0's `cli.py`), `tests/test_lens_page.py`.
+**Files:** create `src/surprise_loop/viewer/__init__.py`, `src/surprise_loop/viewer/lens_page.py`, `src/surprise_loop/viewer/lens_page.html` (template with one data placeholder), `src/surprise_loop/cli.py` (`main(argv) -> int` with the `lens-page` command only; one-line errors as v0's `cli.py`), `tests/test_lens_page.py`; modify `pyproject.toml` (restore `[project.scripts]` with `surprise-loop = "surprise_loop.cli:main"`, which Task 1 removed along with the old `cli.py`, then `uv lock`).
 
 **Interfaces.** Consumes `felt_scene`, `ExperimentConfig`, `frozen_noon_facts`. Produces `lens_page_html(config) -> str`.
 
