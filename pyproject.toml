@@ -10,6 +10,9 @@ dependencies = [
     "pyyaml",
 ]
 
+[project.scripts]
+surprise-loop = "surprise_loop.cli:main"
+
 [dependency-groups]
 dev = [
     "pytest",
