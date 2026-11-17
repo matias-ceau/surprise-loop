@@ -287,9 +287,22 @@ body's set points.
 ### The two bodies
 
 Ilo and Tavi. Each runs in its own copy of the world with the same seed. They differ in their
-starting body state (Ilo has had the harder morning) and in temperament (Ilo wants to be cooler
-and minds more). The contrast on screen comes mostly from the difference in state; a difference
-in temperament alone moves the wording by about one step (section 14).
+starting body state and in temperament (Ilo wants to be cooler and minds more). The contrast on
+screen comes mostly from the difference in state; a difference in temperament alone moves the
+wording by about one step (section 14).
+
+Starting states are config, one per run kind:
+
+- **Afternoon run (13:00).** The pair starts in the states of the worked example of section 15,
+  so the owner's forest example is the first frame. This is the **extreme pair**: Ilo at heat
+  grade 3 and tiredness grade 3, Tavi slightly cool and fresh.
+- **Daytime run (06:00).** Ilo starts short of water and energy (a poor night), Tavi rested.
+  How far apart they are by noon is then up to the day.
+
+An **ordinary pair**, used by the done-when list of section 16, is the same two temperaments in
+states two grades apart on one channel and no more than grade 1 on the others: Ilo at heat grade
+2 ("It is hot."), Tavi at heat grade 0. It is a preset on the lens page, and most moments of a
+film are of this kind.
 
 ## 8. The tick
 
@@ -317,9 +330,16 @@ All seven phases, every tick, in v0's order.
    This is written to state before the world moves and cannot be revised.
 4. **Act (world).** The clock and the true body move.
 5. **Monitor (code).** Three separate comparisons, defined below.
-6. **Evaluate (stub by default).** New job: a regulation check. Did discomfort fall for the need
-   this action serves? It returns a score and one line, and changes nothing itself, as now. The
-   line is shown in the next prompt.
+6. **Evaluate (code only in this milestone).** New job: a regulation check, "did what I did for
+   my body work?". Because effects arrive late, it does not judge the action just taken. It
+   judges the action taken a fixed number of ticks ago (the **window**, a config value of several
+   ticks), now that its effect has had time to arrive: how far has discomfort fallen, on the
+   channel that action serves, since just before it? It returns a score and one line from a small
+   template ("The water you drank has reached you.", "Resting there did not help much."), and
+   changes nothing itself, as now. Reconcile attaches both to the episode of the action judged;
+   the line is shown in the next prompt. In the first ticks of a run, and for "look around",
+   there is nothing to judge. A model-backed Evaluate (an outside observer's one line) is a later
+   option and is not built now.
 7. **Reconcile (code).** Sets the new belief from the committed expectation and the signal that
    arrived (the one place belief changes); updates feeling and mood; stores one episode; updates
    the gut pulls; decides re-entry.
@@ -331,8 +351,10 @@ as it was told, the reading, and the regulation line. Recall is the last K, as n
 **Re-entry, at most once per tick.** If an urgent channel came out clearly worse than committed
 and the action taken did not serve that channel, control returns to Deliberate with the offered
 list cut to the actions that do. The body overrules the plan. As in v0 this is a second pass with
-its own world step, so playback and metrics count world steps, not ticks. "Urgent", "clearly
-worse" and which channels each verb serves are config and a fixed table.
+its own world step, so playback and metrics count world steps, not ticks. "Urgent" and "clearly
+worse" are config thresholds. Which channel each verb serves is one fixed table, used here and by
+Evaluate: drink serves thirst; rest serves tiredness; going to the oak or the meadow serves heat;
+going to the stream serves thirst; looking around serves none.
 
 ### Prediction and surprise, precisely
 
@@ -402,16 +424,18 @@ phrase; the body sentences; the surprise sentence. The prompt text and the pictu
 derived from this object and from nothing else.
 
 A scratch version of this lens exists and produced the worked example in section 15. Its
-arithmetic and constants are in the appendix so the example can be made a fixed test.
+arithmetic and constants are in appendix A so the example can be made a fixed test.
 
 ### The gut pull
 
-The one slow thing switched on in this milestone. For each place and action, the average change in
-discomfort over the several ticks that followed the last few times this action was taken here. It
-is shown to Deliberate as a phrase, never a number ("Something in you leans toward the oak.",
-"Last time the walk to the stream cost more than it gave."). The window of several ticks is
-required: with a one-tick window and a delayed drink, a prototype learned that drinking does
-nothing. This takes the place of v0's dispositions.
+The one slow thing switched on in this milestone. For each place and action, the recency-weighted
+average of Evaluate's scores for the last few times this action was taken here. So there is one
+mechanism, not two: Evaluate judges an action once its effect has arrived, and the pull is the
+running memory of those judgements. It is shown to Deliberate as a phrase, never a number
+("Something in you leans toward the oak.", "Last time the walk to the stream cost more than it
+gave."). The window of several ticks is required: with a one-tick window and a delayed drink, a
+prototype learned that drinking does nothing. Other actions taken inside the window blur the
+judgement; that is accepted and stated. This takes the place of v0's dispositions.
 
 ### What the model is shown, in full
 
@@ -431,14 +455,14 @@ line). One line of gut pull. It is asked for one action and its expectations. No
   - *blind*: picks among the offered actions without reading anything. Differences between bodies
     that survive under the blind chooser are made by the update code alone and are not reported as
     findings.
-- **Evaluate stub:** as above.
+- **Evaluate:** code only, as above.
 
 ## 9. What is verified, and how
 
 Cheapest first. All but the last two run in the test suite with no model.
 
-- **The owner's example as fixed text.** The two forest texts of section 15, for the inputs in the
-  appendix, character for character.
+- **The owner's example as fixed text.** The two forest texts of section 15, for the inputs in
+  appendix A, character for character.
 - **No digit and no variable name** in any text a model reads, over a sweep of bodies and hours.
 - **One-way wording.** Sweeping one body number moves each fact's grade in one direction only.
 - **Picture equals prompt.** What the viewer marks as noticed is exactly what the text said.
@@ -449,10 +473,17 @@ Cheapest first. All but the last two run in the test suite with no model.
 - **Viewer:** the exported file contains every world step of both runs, and nothing in it needs
   the network.
 - **Ladder check (with the model, about 420 calls, about a cent).** The frozen-noon sweep of
-  section 6, run on the lens as built, with the action list carrying distances. Pass mark, fixed
-  before running: the lens text follows the body in both scenes, and no level sends more answers
-  to the shade than the next warmer one by more than sampling noise. It is rerun whenever the
-  phrase table changes. It is a command, not part of the test suite or CI.
+  section 6, rebuilt in the repo as the `ladder-check` command from the protocol in appendix B
+  (the test's own scripts stay throwaway). It runs the lens as built, lens text only, in both
+  scenes, with the four actions carrying distance in words, in a bare one-choice prompt so that
+  it can run at step 2 before the loop's prompts exist and its result can be set beside
+  section 6. Pass mark, fixed here: in both scenes the fitted slope of the shade share is at
+  least 0.05 per level and the share rises by at least 0.5 from the coolest level to the
+  hottest; and no level's share exceeds the next warmer level's by 0.25 or more (about two
+  standard errors at 30 answers). If it fails, the phrase table or the action phrases are
+  changed and it is rerun, before anything is built on the lens. It is rerun whenever the phrase
+  table changes, and once more at step 6 with the loop's own Deliberate prompt. It is a command,
+  not part of the test suite or CI.
 - **Rule baseline.** The share of the model's choices in the model-driven afternoon that the
   reactive stub would also have made, reported whatever it is.
 
@@ -502,11 +533,11 @@ runner; memory as a list of episodes with last-K recall.
 `state.py` (belief, temperament, feeling, felt scene, predictions as phrases);
 `phases/perceive.py` (belief update, then the lens); `phases/monitor.py` and
 `phases/reconcile.py` (the same shape: a deterministic comparison, then updates at different
-speeds); the three stubs; the three prompts and output models in `agents.py`; `metrics.py`;
-`config.py`; `cli.py`.
+speeds); the stubs; the prompts and output models for Appraise and Deliberate in `agents.py`
+(Evaluate's are removed); `metrics.py`; `config.py`; `cli.py`.
 
 **New:** `lens.py` (the lens and the phrase table); a viewer module with its HTML template and the
-two commands; experiment configs for the two bodies.
+two commands; a `ladder-check` command (section 9); experiment configs for the two bodies.
 
 **Removed:** reward, schedules, lever metrics, the lever plots and their script, the lever
 experiment configs.
@@ -524,7 +555,7 @@ pair of runs: the number of ticks where a fact both bodies noticed had opposite 
 ## 12. Cost
 
 With stubs: no model call. By default two calls per body per tick (Appraise and Deliberate;
-Evaluate is a stub), so four per tick for the pair, plus one on a tick where the body overrules
+Evaluate is code), so four per tick for the pair, plus one on a tick where the body overrules
 the plan. One afternoon for the pair is about 170 calls; one daytime about 340.
 
 Measured in the test of section 6 on the cheap OpenRouter model: about 390 input and 90 output
@@ -540,8 +571,8 @@ yes.
 
 (a) **The research question.** Proposed: *do bodies that differ in state and temperament come to
 perceive, predict and act differently in the same objective world, and does it matter how the
-model is told its body?* Evaluate gets the regulation check as its job and runs as a stub by
-default.
+model is told its body?* Evaluate gets the regulation check as its job and is plain code for now,
+so the model-backed phases are Appraise and Deliberate.
 
 (b) **Boundaries.** The World owns the environment and each body's true numbers. The agent owns
 its belief about its body, its temperament, feeling, mood, memory and gut pulls.
@@ -579,7 +610,7 @@ word.
 
 ## 15. Worked example (output of the scratch lens, no model)
 
-The objective facts, identical for both bodies (13:10, middle of the clearing): air 30.0 °C,
+The objective facts, identical for both bodies (13:00, in the meadow): air 30.0 °C,
 direct sun, no seat here, oak shade 15 m away, stream 60 m away and audible, light breeze,
 birdsong.
 
@@ -625,7 +656,9 @@ slip into a second week.
 **Done when:**
 
 - with captions hidden, the owner can tell which body is too hot and when one was surprised, for
-  an ordinary pair and not only an extreme one;
+  the ordinary pair of section 7 (on the lens page and in the film) and not only for the extreme
+  pair. This is the criterion most likely to need work on the picture: for a pair that differs
+  only in temperament, an earlier redraw gave two nearly identical panels;
 - at noon the two captions give the same facts opposite value;
 - the reactive and lookahead stubs have been compared on time spent outside the comfortable range,
   and the difference is written down (if looking ahead does not pay, the world is fixed before
@@ -655,13 +688,20 @@ to me.
 11. The lens page looks up a grid computed in Python, so the lens is written once.
 12. Appraise's reading is kept and feeds the next tick's attention.
 13. The names Ilo and Tavi.
+14. Evaluate is code only in this milestone, judges an action one window after it was taken, and
+    the gut pull is the running average of its scores.
+15. The ladder check uses a bare one-choice prompt, with the pass mark of section 9.
+16. What counts as the extreme pair and the ordinary pair, and that the afternoon film starts
+    from the worked example.
+17. The frozen-noon sweep is rebuilt in the repo as a command; the test's own scripts are not
+    kept.
 
 **Left to the builder:** every coefficient and threshold (as config defaults, tuned until the
 world tests and the done-when list hold); the phrase table beyond the worked example; how the
 picture is drawn; internal structure of the new modules; the exact prompt wording, within the rule
 of section 8 on what the model is shown.
 
-## Appendix: the scratch lens, for the fixed-text test
+## Appendix A: the scratch lens, for the fixed-text test
 
 Channels and felt strength (the scratch version measures heat as a skin temperature in °C):
 
@@ -730,3 +770,99 @@ Phrases used by the two texts (fact, sign, grade):
     heat      3   Your head is thick.
     surprise      It is hotter than you thought it would be.
     opening       You are standing in the middle of the forest clearing.
+
+## Appendix B: the frozen-noon sweep (the test of section 6, and the ladder check)
+
+**The call.** One call per answer, temperature 1.0, structured output: a letter A to D, then one
+short sentence saying why. The test of section 6 used `z-ai/glm-5.3-flash` through OpenRouter; the
+ladder check uses the run's configured model. The instruction, the same for every call:
+
+> You will be told where you are and what you can do. Choose the one thing you do next. Answer
+> with the letter of your choice and one short sentence saying why.
+
+Then the scene, a blank line, "What do you do next?", and the four actions lettered A to D. Their
+order is shuffled by a draw seeded with the answer's index only (0 to 29), so every cell sees the
+same 30 orders. 30 answers per cell.
+
+**The actions.** In the test: "Walk to the shade of the oak." / "Walk to the stream." / "Sit down
+where you are." / "Stay standing and look around." In the ladder check the first two carry their
+distance in words, in the builder's wording (the oak a few steps off, the stream a longer walk
+across open ground).
+
+**The swept body.** Set point: skin 25.0 °C, water 0.80, energy 0.70. Tightness: heat 0.30,
+water 0.5, energy 0.5. Arousal 0.40, no mood tint, habit 0.3 for every kind of fact, no surprise
+sentence. Believed skin temperature at seven levels:
+
+    level            0      1      2      3      4      5      6
+    name          chilled  cool  neutral  warm    hot  very hot burning
+    skin °C        21.0   23.0   25.0   27.0   30.0   33.0   36.0
+    heat strain    -1.2   -0.6    0.0   +0.6   +1.5   +2.4   +3.3
+
+- **Scene A:** believed water 0.80 and energy 0.70, so thirst and tiredness are 0.
+- **Scene B:** believed water 0.50 and energy 0.46, so thirst is 1.5 and tiredness 1.2 (both
+  grade 2). At level 4 heat strain equals thirst.
+
+With arousal 0.40 the lens lets 5 of the 7 facts through.
+
+**The five ways of telling in the test.** The ladder check runs only the fourth.
+
+1. *No body.* The objective text alone: "You are standing in the middle of a forest clearing. It
+   is early afternoon. The air temperature is 30 °C and the sun is direct. There is nothing to
+   sit on here. An oak casts shade 15 m away. A stream is audible 60 m to the west. There is a
+   light breeze. Birds are calling."
+2. *Numbers.* The objective text, then: "Your body state: heat +2.40 (0 is comfortable; above 0
+   is too hot, below 0 is too cold; 3 is severe). thirst 0.00, tiredness 0.00 (0 is none; 3 is
+   severe). valence -0.28 (-1 unpleasant .. +1 pleasant). arousal 0.40 (0 calm .. 1 agitated)."
+   Heat is the strain above; valence is minus tanh of 0.12 times the summed strains.
+3. *Plain adjectives.* The objective text, then one of: "You feel chilly." / "You feel slightly
+   cool." / "You feel neither hot nor cold." / "You feel slightly warm." / "You feel hot." /
+   "You feel very hot." / "You feel unbearably hot." In scene B, followed by "You feel thirsty.
+   You feel tired."
+4. *Lens text only.* The output of the lens of appendix A for the swept body.
+5. *Facts + lens text.* The objective text, then the lens text without its opening sentence.
+
+**Measures.** Per scene and way of telling: the share of the 30 answers choosing the shade at
+each level; the least-squares slope of the 0/1 shade indicator on the level index 0 to 6; the
+range, share at level 6 minus share at level 0. "Follows the body" means a slope of at least 0.05
+per level and a range of at least 0.5.
+
+## Appendix C: the scratch phrase table
+
+The starting point for the lens's phrase table, as used in the test. Grades 1 to 4 left to right;
+the neutral phrase is used when the value is between −0.25 and +0.25. The test showed that the
+low rungs for sun and air need rewriting (the neutral sun phrase reads hotter than grade 1), and
+the table has no phrases yet for the oak's log, the trickle, or the hours of the day.
+
+    air, bad       The air is warm. / It is hot. / It is really hot. / The heat is crushing.
+    air, good      The air is pleasantly warm. / The warmth is welcome. / The warmth soaks into
+                   you. / The warmth is exactly what you needed.
+    air, neutral   The air is warm.
+    sun, bad       The sun is bright. / The sun beats down. / The sun beats down on your head. /
+                   The sun is a weight on your skull.
+    sun, good      The sun sits on your shoulders. / The sun is good on your shoulders. / You
+                   turn your face to the sun. (grades 3 and 4)
+    sun, neutral   The clearing is in full sun.
+    no seat, bad   There is nothing to sit on here. / There is no place to sit. / There is no
+                   place to sit, and you need one. / There is nowhere to put this body down.
+    no seat, neutral   The ground is open.
+    oak, good      There is shade under the oak. / The oak's shade is close. / The one dark patch
+                   is under the oak, a few steps off. / Under the oak it is dark; nothing else
+                   matters.
+    oak, bad       It looks dim under the oak. / Under the oak it looks cold. (grades 2 to 4)
+    oak, neutral   An oak stands a few steps off.
+    stream, good   A stream runs somewhere to the west. / You can hear water to the west. /
+                   Water. You can hear it, west of here. / Water. West. You can hear it.
+    stream, bad or neutral   A stream runs somewhere to the west.
+    breeze, good   A light breeze moves the leaves. / A thin breeze touches your skin. / A thin
+                   breeze, not enough. (grades 3 and 4)
+    breeze, bad    The breeze is a little cool. / The breeze is cold. (grades 2 to 4)
+    breeze, neutral   A light breeze moves the leaves.
+    birdsong       Birds are calling. (neutral) / Birds are singing in the canopy. (good) /
+                   The birds will not stop. (bad)
+
+    heat, body     grade 2 You are warm under your skin. / 3 Your head is thick. / 4 Your skin
+                   burns and your head is thick. / −2 You are chilled. / −3 and −4 You are cold
+                   through.
+    thirst, body   grade 2 Your mouth is dry. / 3 Your tongue sticks. / 4 Your throat is closing.
+    tiredness, body   grade 2 Your legs are slow. / 3 Your legs are heavy. / 4 Your legs barely
+                   hold.
