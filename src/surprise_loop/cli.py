@@ -2,10 +2,10 @@
 
 `lens-page` writes the lens page of a config's two bodies as one self-contained HTML file.
 `ladder-check` runs the ladder check (see `ladder.py`) on the configured model, prints one table
-per scene and exits 0 only if both scenes pass; it exits 1 on a failed check, or when some cell
-is still short of answers after the run (no verdict then). Anything informational goes to stderr.
-A bad config, or a file that cannot be read or written, is reported as one `error: ...` line on
-stderr with exit code 2.
+per scene and exits 0 only if both scenes pass, 1 when the check ran to completion and a scene
+failed. Anything informational goes to stderr. A bad config, or a file that cannot be read or
+written, is reported as one `error: ...` line on stderr with exit code 2; so is a ladder check
+left with a cell short of answers (no verdict then).
 """
 
 import argparse
@@ -24,7 +24,7 @@ from surprise_loop.ladder import (
     ANSWERS_FILE,
     SCENES,
     SUMMARY_FILE,
-    cell_answers,
+    current_answers,
     ladder_table,
     read_answers,
     run_ladder,
@@ -118,23 +118,28 @@ def _ladder_check(args: argparse.Namespace) -> int:
         raise CommandError(str(e)) from None
     model = load_model(name)
     assert model is not None  # name is set
-    print(f"ladder: {len(done)} answers on disk in {args.out}; asking {name}", file=sys.stderr)
+    current, stale = current_answers(done, name, samples, params)
+    print(f"ladder: {len(current)} current answers in {args.out}; model {name}", file=sys.stderr)
+    if stale:
+        print(
+            f"ladder: ignored {stale} stale answers (another model, or a prompt that has "
+            "changed); their slots are asked again",
+            file=sys.stderr,
+        )
     pydantic_ai.BANNER_ENABLED = False
     try:
-        new = asyncio.run(run_ladder(model, samples, jobs, args.out, params, done))
+        new = asyncio.run(run_ladder(model, samples, jobs, args.out, params, done, name))
     except OSError as e:
         raise CommandError(f"{args.out}: cannot write: {e.strerror}") from None
     print(f"ladder: {len(new)} new answers", file=sys.stderr)
 
-    answers = cell_answers(done + new, samples, lp)
+    answers = current_answers(done + new, name, samples, params)[0]
     short = short_cells(answers, samples, lp)
     if short:
-        print(
-            f"ladder: no verdict, some cells are short of answers (rerun to ask for the rest): "
-            f"{'; '.join(short)}",
-            file=sys.stderr,
+        raise CommandError(
+            "no verdict, some cells are short of answers (rerun to ask for the rest): "
+            + "; ".join(short)
         )
-        return 1
 
     curves = summarize(answers, lp)
     summary = {

@@ -9,7 +9,10 @@ index, its range from the coolest level to the hottest, and its worst drop from 
 next warmer one. A hand-written phrase ladder with a step that runs backwards fails the last.
 
 Answers are appended to `answers.jsonl` as they arrive; a failed call is reported on stderr and
-left for a rerun, which asks only for what is missing.
+left for a rerun, which asks only for what is missing. Each answer carries the model name and the
+exact prompt it answered: a stored answer counts only while both match the current run, so a
+rerun after a change of wording or of model asks those slots again instead of counting the old
+answers.
 """
 
 import asyncio
@@ -95,6 +98,8 @@ class LadderAnswer(Frozen):
     letter: Letter
     action: str
     why: str
+    model: str  # the model name the answer came from
+    prompt: str  # the exact user prompt it answered
 
     @model_validator(mode="after")
     def _consistent(self) -> "LadderAnswer":
@@ -181,23 +186,41 @@ def read_answers(path: Path) -> list[LadderAnswer]:
     return answers
 
 
-def cell_answers(answers: list[LadderAnswer], samples: int, lp: LadderParams) -> list[LadderAnswer]:
-    """The answers that belong to a sweep of `samples` per cell: the first per scene, level and
-    index, for indices below `samples` and levels the params have."""
-    seen: set[tuple[str, int, int]] = set()
-    out = []
+def current_answers(
+    answers: list[LadderAnswer], name: str, samples: int, params: Params
+) -> tuple[list[LadderAnswer], int]:
+    """The stored answers that count for a sweep of `samples` per cell on model `name`, one per
+    slot (scene, level, index), and how many are stale.
+
+    An answer counts when its model is `name` and its prompt is the one the current code builds
+    for its slot; when several count for one slot, the last wins. Any other answer for a slot of
+    the sweep, or for a level the params no longer have, is stale. Answers at an index of
+    `samples` or above are outside this sweep: neither counted nor stale."""
+    lp = params.ladder
+    prompts: dict[tuple[str, int, int], str] = {}
+    slots: dict[tuple[str, int, int], LadderAnswer] = {}
+    stale = 0
     for a in answers:
+        if a.i >= samples:
+            continue
         key = (a.scene, a.level, a.i)
-        if a.i < samples and a.level < len(lp.heat_levels) and key not in seen:
-            seen.add(key)
-            out.append(a)
-    return out
+        if a.level >= len(lp.heat_levels):
+            stale += 1
+            continue
+        if key not in prompts:
+            prompts[key] = ladder_prompt(a.level, a.scene, answer_order(a.i), params.lens, lp)
+        if a.model == name and a.prompt == prompts[key] and a.order == answer_order(a.i):
+            slots[key] = a
+        else:
+            stale += 1
+    return list(slots.values()), stale
 
 
 def short_cells(answers: list[LadderAnswer], samples: int, lp: LadderParams) -> list[str]:
-    """The cells with fewer than `samples` answers, as "scene A level 3: 28 of 30"."""
+    """The cells with fewer than `samples` of `answers` (one per slot, as `current_answers`
+    gives them), as "scene A level 3: 28 of 30"."""
     counts = {(s, level): 0 for s in SCENES for level in range(len(lp.heat_levels))}
-    for a in cell_answers(answers, samples, lp):
+    for a in answers:
         counts[(a.scene, a.level)] += 1
     return [
         f"scene {s} level {level}: {n} of {samples}"
@@ -213,13 +236,14 @@ async def run_ladder(
     out_dir: Path,
     params: Params,
     done: list[LadderAnswer],
+    name: str,
 ) -> list[LadderAnswer]:
-    """Ask `model` for every answer of the sweep not in `done`, at most `jobs` at a time, cells
-    interleaved in a seeded shuffle. Each answer is appended to `out_dir/answers.jsonl` as it
-    arrives; a failed call is reported on stderr in one line and not written. Returns the new
-    answers."""
+    """Ask `model` (named `name`) for every answer of the sweep that `done` holds no current
+    answer for (see `current_answers`), at most `jobs` at a time, cells interleaved in a seeded
+    shuffle. Each answer is appended to `out_dir/answers.jsonl` as it arrives; a failed call is
+    reported on stderr in one line and not written. Returns the new answers."""
     lp = params.ladder
-    have = {(a.scene, a.level, a.i) for a in done}
+    have = {(a.scene, a.level, a.i) for a in current_answers(done, name, samples, params)[0]}
     todo = [
         (scene, level, i)
         for scene in SCENES
@@ -263,6 +287,8 @@ async def run_ladder(
             letter=choice.letter,
             action=order[LETTERS.index(choice.letter)],
             why=choice.why,
+            model=name,
+            prompt=prompt,
         )
         with path.open("a", encoding="utf-8") as f:
             f.write(answer.model_dump_json() + "\n")

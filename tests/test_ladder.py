@@ -16,7 +16,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from surprise_loop.agents import load_model, model_settings
 from surprise_loop.cli import main
-from surprise_loop.config import MODEL_ENV_VAR, LadderParams, LLMParams, Params
+from surprise_loop.config import MODEL_ENV_VAR, LadderParams, LLMParams, Params, Scene
 from surprise_loop.feeling import felt
 from surprise_loop.ladder import (
     ANSWERS_FILE,
@@ -24,6 +24,7 @@ from surprise_loop.ladder import (
     SCENES,
     LadderAnswer,
     answer_order,
+    current_answers,
     ladder_body,
     ladder_prompt,
     read_answers,
@@ -109,25 +110,31 @@ def test_the_order_depends_only_on_the_answer_index() -> None:
 # --- the pass mark ------------------------------------------------------------------------------
 
 
-def answers_with_shares(shares: list[float], n: int = 10, scene: str = "A") -> list[LadderAnswer]:
-    """`n` hand-built answers per level, the first `share * n` of them choosing the shade."""
-    out = []
-    order = ["shade", "stream", "sit", "look"]
-    for level, share in enumerate(shares):
-        for i in range(n):
-            action = "shade" if i < round(share * n) else "stream"
-            out.append(
-                LadderAnswer(
-                    scene=scene,
-                    level=level,
-                    i=i,
-                    order=order,
-                    letter=LETTERS[order.index(action)],
-                    action=action,
-                    why="Because.",
-                )
-            )
-    return out
+def answers_with_shares(
+    shares: list[float], n: int = 10, scene: Scene = "A", model: str = "test"
+) -> list[LadderAnswer]:
+    """`n` hand-built answers per level, the first `share * n` of them choosing the shade, each
+    with the order and prompt the current code builds for its slot."""
+    return [
+        answer(scene, level, i, "shade" if i < round(share * n) else "stream", model)
+        for level, share in enumerate(shares)
+        for i in range(n)
+    ]
+
+
+def answer(scene: Scene, level: int, i: int, action: str, model: str = "test") -> LadderAnswer:
+    order = answer_order(i)
+    return LadderAnswer(
+        scene=scene,
+        level=level,
+        i=i,
+        order=order,
+        letter=LETTERS[order.index(action)],
+        action=action,
+        why="Because.",
+        model=model,
+        prompt=ladder_prompt(level, scene, order, Params().lens, LP),
+    )
 
 
 def test_a_clean_step_at_level_three_passes() -> None:
@@ -202,9 +209,12 @@ def always(action: str, calls: list[str] | None = None) -> FunctionModel:
     return FunctionModel(answer)
 
 
-def sweep(model: FunctionModel, out: Path, samples: int = SAMPLES, jobs: int = 4) -> list:
+def sweep(
+    model: FunctionModel, out: Path, samples: int = SAMPLES, jobs: int = 4, name: str = "test"
+) -> list:
+    """One run of the sweep over what is stored in `out`, its answers recorded under `name`."""
     done = read_answers(out / ANSWERS_FILE)
-    return asyncio.run(run_ladder(model, samples, jobs, out, Params(), done))
+    return asyncio.run(run_ladder(model, samples, jobs, out, Params(), done, name))
 
 
 def test_a_sweep_writes_every_answer_and_a_rerun_adds_none(tmp_path: Path) -> None:
@@ -221,6 +231,8 @@ def test_a_sweep_writes_every_answer_and_a_rerun_adds_none(tmp_path: Path) -> No
     assert all(a.action == "shade" for a in stored)
     assert all(a.order[LETTERS.index(a.letter)] == "shade" for a in stored)
     assert all(a.why == "It is the obvious thing." for a in stored)
+    assert all(a.model == "test" for a in stored)
+    assert sorted(a.prompt for a in stored) == sorted(calls)
 
     again: list[str] = []
     assert sweep(always("shade", again), tmp_path) == []
@@ -338,7 +350,7 @@ def test_the_command_fails_on_flat_curves(
 ) -> None:
     sweep(always("shade"), tmp_path)
     monkeypatch.setenv(MODEL_ENV_VAR, "test")
-    assert run_command(tmp_path) != 0
+    assert run_command(tmp_path) == 1
     out = capsys.readouterr().out
     assert "scene A" in out and "scene B" in out
     assert "FAILED" in out
@@ -372,9 +384,10 @@ def test_the_command_names_short_cells_and_gives_no_verdict(
     monkeypatch.setenv(MODEL_ENV_VAR, "test")
     monkeypatch.setattr("surprise_loop.cli.load_model", lambda name: FunctionModel(_fail))
     code = main(["ladder-check", "--out", str(tmp_path), "--samples", str(SAMPLES + 1)])
-    assert code != 0
+    assert code == 2
     captured = capsys.readouterr()
-    assert "scene A level 0" in captured.err
+    last = captured.err.strip().splitlines()[-1]
+    assert last.startswith("error: no verdict") and "scene A level 0" in last
     assert "FAILED" not in captured.out and "passed" not in captured.out
     assert not (tmp_path / "summary.json").exists()
 
@@ -415,3 +428,66 @@ def test_the_configs_model_and_params_win(
     assert len(read_answers(out / ANSWERS_FILE)) == len(SCENES) * len(LEVELS)
     assert json.loads((out / "summary.json").read_text())["model"] == "test"
     capsys.readouterr()
+
+
+# --- stale answers ------------------------------------------------------------------------------
+
+
+def test_answers_from_another_model_are_ignored_and_asked_again(tmp_path: Path) -> None:
+    sweep(always("stream"), tmp_path, name="other:model")
+    calls: list[str] = []
+    new = sweep(always("shade", calls), tmp_path, name="test")
+    every = len(SCENES) * len(LEVELS) * SAMPLES
+    assert len(new) == len(calls) == every
+    stored = read_answers(tmp_path / ANSWERS_FILE)
+    assert len(stored) == 2 * every  # stale lines stay in the file
+    current, stale = current_answers(stored, "test", SAMPLES, Params())
+    assert stale == every
+    assert len(current) == every and all(a.action == "shade" for a in current)
+    assert summarize(current, LP)["A"].share == [1.0] * 7
+
+
+def test_answers_to_a_changed_prompt_are_ignored_and_asked_again(tmp_path: Path) -> None:
+    sweep(always("shade"), tmp_path)
+    path = tmp_path / ANSWERS_FILE
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    for row in rows:
+        if row["level"] == 4:
+            row["prompt"] = row["prompt"].replace("It is hot.", "The air is warm.")
+            row["action"], row["letter"] = "look", "ABCD"[row["order"].index("look")]
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    assert current_answers(read_answers(path), "test", SAMPLES, Params())[1] == 2 * SAMPLES
+
+    calls: list[str] = []
+    new = sweep(always("shade", calls), tmp_path)
+    assert {(a.scene, a.level) for a in new} == {(s, 4) for s in SCENES}
+    assert len(calls) == len(SCENES) * SAMPLES
+    current, stale = current_answers(read_answers(path), "test", SAMPLES, Params())
+    assert stale == len(SCENES) * SAMPLES
+    assert all(a.action == "shade" for a in current)
+
+
+def test_the_last_current_answer_for_a_slot_wins() -> None:
+    first, last = answer("A", 2, 0, "sit"), answer("A", 2, 0, "look")
+    current, stale = current_answers([first, last], "test", SAMPLES, Params())
+    assert current == [last]
+    assert stale == 0
+
+
+def test_answers_outside_the_sweep_are_neither_counted_nor_stale() -> None:
+    beyond = answer("A", 2, SAMPLES, "sit")
+    assert current_answers([beyond], "test", SAMPLES, Params()) == ([], 0)
+
+
+def test_the_command_reports_stale_answers_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sweep(always("shade"), tmp_path, name="other:model")
+    monkeypatch.setenv(MODEL_ENV_VAR, "test")
+    assert run_command(tmp_path) == 1  # TestModel always answers A: flat curves
+    err = capsys.readouterr().err
+    every = len(SCENES) * len(LEVELS) * SAMPLES
+    stale_lines = [line for line in err.splitlines() if "stale answers" in line]
+    assert len(stale_lines) == 1 and f"ignored {every} stale answers" in stale_lines[0]
+    summary = json.loads((tmp_path / "summary.json").read_text())
+    assert summary["scenes"]["A"]["share"] != [1.0] * 7  # the other model's answers do not count
