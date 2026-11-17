@@ -197,6 +197,7 @@ const NAMES = {
   air: "the air", sun: "the sun", no_seat: "no seat here", oak_shade: "the oak's shade",
   stream: "the stream", breeze: "the breeze", birdsong: "the birds",
 };
+const FELT_ZERO = 0.005;            /* below this a felt strength shows as 0.00 */
 const CHANNEL_WORDS = {
   heat: ["too cool", "too hot"], water: ["over-full", "thirsty"], energy: ["restless", "tired"],
 };
@@ -417,7 +418,8 @@ function bodyWhy(entry, channel) {
   const line = entry.body.find(b => b.channel === channel);
   const felt = entry.felt[channel];
   const words = CHANNEL_WORDS[channel] || ["", ""];
-  const way = felt >= 0 ? words[1] : words[0];
+  /* at a strength that shows as zero there is no direction to name */
+  const way = Math.abs(felt) < FELT_ZERO ? "where this body wants it" : felt > 0 ? words[1] : words[0];
   const head = `<div class="title">the body: ${channel}</div>`;
   const state = line ? `speaks, at grade ${Math.abs(line.grade)}`
     : `<span class="muted">silent now</span>`;
@@ -532,10 +534,12 @@ function buildBody(agent, k) {
 }
 
 function leaveExact(body) {
-  /* a slider moved: every body leaves its preset's exact entry for the grid */
-  bodies.forEach(b => { b.exact = null; });
+  /* this body's own control moved: it alone leaves its preset's exact entry for the grid;
+     the other body keeps what it shows, and no preset is highlighted any more */
+  body.exact = null;
   activePreset = -1;
-  renderAll();
+  render(body);
+  markPresets();
 }
 
 function current(body) {
@@ -585,9 +589,13 @@ function render(body) {
   else if (key.startsWith("body:")) why.innerHTML = bodyWhy(entry, key.slice(5));
 }
 
+function markPresets() {
+  document.querySelectorAll(".preset").forEach((b, i) => b.setAttribute("aria-pressed", String(i === activePreset)));
+}
+
 function renderAll() {
   bodies.forEach(render);
-  document.querySelectorAll(".preset").forEach((b, i) => b.setAttribute("aria-pressed", String(i === activePreset)));
+  markPresets();
 }
 
 function choosePreset(p) {

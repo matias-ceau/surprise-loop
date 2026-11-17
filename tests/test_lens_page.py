@@ -226,3 +226,26 @@ def test_cli_missing_config_is_one_line(tmp_path: Path, capsys: pytest.CaptureFi
     assert err.startswith("error: ") and "file not found" in err
     assert "Traceback" not in err
     assert not out.exists()
+
+
+def _script_function(page: str, name: str) -> str:
+    """The source of one top-level function in the page's script, up to its closing brace."""
+    match = re.search(rf"^function {name}\(.*?^\}}", page, flags=re.S | re.M)
+    assert match is not None, f"no function {name} in the page"
+    return match.group(0)
+
+
+def test_one_bodys_control_leaves_only_that_bodys_preset(page: str) -> None:
+    leave = _script_function(page, "leaveExact")
+    assert "body.exact = null" in leave
+    assert "bodies" not in leave  # no loop over both bodies
+    assert "renderAll" not in leave  # only this body is redrawn
+    assert "render(body)" in leave
+    assert "activePreset = -1" in leave
+
+
+def test_a_zero_felt_strength_names_no_direction(page: str) -> None:
+    why = _script_function(page, "bodyWhy")
+    assert "felt >= 0" not in why
+    assert "FELT_ZERO" in why
+    assert "const FELT_ZERO = 0.005;" in page  # half the last shown decimal of signed(felt, 2)
