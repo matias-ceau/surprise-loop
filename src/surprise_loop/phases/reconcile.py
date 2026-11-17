@@ -1,0 +1,181 @@
+"""Reconcile: apply one pass's outcome to mental state. The only phase that changes the agent.
+
+In order: the belief moves from the expectation toward the signal; the feeling follows the new
+belief and the comparison; attention goes where the reading was; the loudest surprise is voiced
+for the next scene; the episode is stored; the judged episode gets its score and its pull moves;
+and on pass 0 an urgent need that came out worse than expected, and that the action did not
+serve, sends control back to Deliberate once (the override). Reconcile never changes
+`agent.tick`; `tick()` does.
+"""
+
+from surprise_loop.config import Params, Runtime
+from surprise_loop.feeling import feel, needs
+from surprise_loop.phases.evaluate import judged_index
+from surprise_loop.phases.heuristics import (
+    loudest,
+    require,
+    serving_actions,
+    too_much,
+    updated_belief,
+    world_truth,
+)
+from surprise_loop.state import (
+    Comparison,
+    Episode,
+    Feedback,
+    Memory,
+    Override,
+    PassRecord,
+    Pulls,
+    SurpriseNote,
+    Temperament,
+    Workspace,
+)
+from surprise_loop.world import QUESTION_OF, SERVES, Action, Channel, Levels, Outcome
+
+
+def voiced_note(
+    action: Action, comparison: Comparison, outcome: Outcome, params: Params
+) -> SurpriseNote | None:
+    """The loudest body error if it reaches `voice_threshold`, else a world mismatch, else None."""
+    felt_error = comparison.body_felt
+    top = loudest(felt_error)[0]
+    if abs(felt_error[top]) >= params.reconcile.voice_threshold:
+        return SurpriseNote(channel=top, worse=felt_error[top] > 0)
+    question = QUESTION_OF[action]
+    if comparison.world and question is not None:
+        return SurpriseNote(
+            question=question, actual=world_truth(question, outcome.observation.facts)
+        )
+    return None
+
+
+def judged(
+    episodes: list[Episode], pulls: Pulls, feedback: Feedback, params: Params
+) -> tuple[list[Episode], Pulls]:
+    """The episodes with the judged one scored, and the pulls with its pull moved."""
+    if feedback.judged_step is None or feedback.score is None:
+        return episodes, pulls
+    i = judged_index(len(episodes), params.evaluate.window)
+    if i is None or episodes[i].step != feedback.judged_step:
+        raise ValueError(
+            f"feedback judged step {feedback.judged_step}, which is not the episode "
+            f"{params.evaluate.window} back"
+        )
+    episode = episodes[i]
+    scored = episode.model_copy(update={"score": feedback.score, "regulation": feedback.line})
+    v = pulls.values[episode.place][episode.action]
+    moved = v + params.pulls.rate * (feedback.score - v)
+    values = {place: dict(per_action) for place, per_action in pulls.values.items()}
+    values[episode.place][episode.action] = moved
+    return [*episodes[:i], scored, *episodes[i + 1 :]], Pulls(values=values)
+
+
+def override_for(
+    action: Action,
+    belief: Levels,
+    t: Temperament,
+    comparison: Comparison,
+    outcome: Outcome,
+    params: Params,
+) -> Override | None:
+    """The first channel, in `Channel` order, whose need is urgent after the update, came out
+    worse than expected by `worse_margin`, and is not served by the action; an override only if
+    an action serving it is offered now."""
+    p = params.override
+    if not p.enabled:
+        return None
+    need = needs(belief, t)
+    channel = next(
+        (
+            c
+            for c in Channel
+            if abs(need[c]) >= p.urgent_felt
+            and comparison.body_felt[c] >= p.worse_margin
+            and SERVES[action] is not c
+        ),
+        None,
+    )
+    if channel is None:
+        return None
+    observation = outcome.observation
+    serving = serving_actions(channel, too_much(channel, need[channel]), observation.place)
+    actions = [a for a in observation.offers if a in serving]
+    if not actions:
+        return None
+    return Override(
+        channel=channel,
+        actions=actions,
+        detail=(
+            f"{channel.value} need {need[channel]:.2f} is at least {p.urgent_felt:.2f} and came "
+            f"out {comparison.body_felt[channel]:.2f} worse than expected; "
+            f"{action.value} does not serve it"
+        ),
+    )
+
+
+async def reconcile(ws: Workspace, rt: Runtime) -> Workspace:
+    percept = require(ws.percept, "percept", "reconcile")
+    appraisal = require(ws.appraisal, "appraisal", "reconcile")
+    decision = require(ws.decision, "decision", "reconcile")
+    outcome = require(ws.outcome, "outcome", "reconcile")
+    comparison = require(ws.comparison, "comparison", "reconcile")
+    feedback = require(ws.feedback, "feedback", "reconcile")
+    params = rt.config.params
+    agent = ws.agent
+    t = agent.temperament
+    action = decision.action
+
+    belief = updated_belief(
+        outcome.observation.signal, decision.expectation.bands, t, params.belief
+    )
+    feeling = feel(belief, t, agent.feeling, comparison, params.feeling)
+    voiced = voiced_note(action, comparison, outcome, params)
+
+    salience = min(1, params.memory.base_salience + params.memory.salience_gain * comparison.size)
+    episode = Episode(
+        tick=agent.tick + 1,
+        step=outcome.observation.step,
+        place=ws.observation.place,
+        action=action,
+        event=outcome.observation.event,
+        expectation=decision.expectation,
+        comparison=comparison,
+        need_before=needs(agent.belief, t),
+        salience=salience,
+        scene=percept.scene.text(),
+        reading=appraisal.reading,
+    )
+    stored, pulls = judged(agent.memory.episodes, agent.pulls, feedback, params)
+
+    override = None
+    if ws.pass_index == 0:
+        override = override_for(action, belief, t, comparison, outcome, params)
+
+    record = PassRecord(
+        tick=agent.tick + 1,
+        pass_index=ws.pass_index,
+        scene=percept.scene,
+        offers=[o.action for o in percept.offers],
+        decision=decision,
+        outcome=outcome,
+        comparison=comparison,
+        feedback=feedback,
+        belief_after=belief,
+        feeling_after=feeling,
+        override=override,
+    )
+    new_agent = agent.model_copy(
+        update={
+            "belief": belief,
+            "feeling": feeling,
+            "attention": appraisal.about,
+            "voiced": voiced,
+            "memory": Memory(episodes=[*stored, episode]),
+            "pulls": pulls,
+        }
+    )
+    update: dict[str, object] = {"agent": new_agent, "passes": (*ws.passes, record)}
+    if ws.pass_index == 0:
+        update["override"] = override
+    return ws.model_copy(update=update)

@@ -118,7 +118,8 @@ class Comparison(Frozen):
 
 
 class SurpriseNote(Frozen):
-    """The last surprise worth voicing: a body surprise or a world surprise."""
+    """The last surprise worth voicing: a body surprise or a world surprise. No surprise is no
+    note (None), never an empty one."""
 
     channel: Channel | None = None
     worse: bool | None = None
@@ -126,18 +127,14 @@ class SurpriseNote(Frozen):
     actual: bool | None = None
 
     @model_validator(mode="after")
-    def _one_pair_or_none(self) -> "SurpriseNote":
+    def _one_pair(self) -> "SurpriseNote":
         body = (self.channel, self.worse)
         world = (self.question, self.actual)
         unset = (None, None)
-        if not (
-            body == world == unset
-            or (None not in body and world == unset)
-            or (None not in world and body == unset)
-        ):
+        if not ((None not in body and world == unset) or (None not in world and body == unset)):
             raise ValueError(
-                "a surprise note is a body pair (channel, worse), a world pair "
-                "(question, actual), or empty"
+                "a surprise note is a body pair (channel, worse) or a world pair "
+                "(question, actual); no surprise is no note"
             )
         return self
 

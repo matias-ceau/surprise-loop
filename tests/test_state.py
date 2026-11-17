@@ -376,13 +376,12 @@ def test_text_fields_default_to_empty() -> None:
 @pytest.mark.parametrize(
     "fields",
     [
-        {},
         {"channel": Channel.WATER, "worse": False},
         {"question": OpenQuestion.STREAM_FULL, "actual": False},
     ],
-    ids=["none", "body", "world"],
+    ids=["body", "world"],
 )
-def test_surprise_note_holds_one_pair_or_none(fields: dict[str, Any]) -> None:
+def test_surprise_note_holds_one_pair(fields: dict[str, Any]) -> None:
     SurpriseNote(**fields)
 
 
@@ -401,11 +400,12 @@ def test_surprise_note_holds_one_pair_or_none(fields: dict[str, Any]) -> None:
         {"worse": True},
         {"question": OpenQuestion.LOG_SHADED},
         {"actual": False},
+        {},
     ],
     ids=["body+question", "body+actual", "both pairs", "channel only", "worse only",
-         "question only", "actual only"],
+         "question only", "actual only", "empty"],
 )  # fmt: skip
-def test_surprise_note_rejects_mixed_or_half_pairs(fields: dict[str, Any]) -> None:
+def test_surprise_note_rejects_mixed_half_or_empty_pairs(fields: dict[str, Any]) -> None:
     with pytest.raises(ValidationError, match="surprise"):
         SurpriseNote(**fields)
 
