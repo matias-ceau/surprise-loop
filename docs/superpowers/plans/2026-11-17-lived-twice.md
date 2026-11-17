@@ -57,8 +57,8 @@ class Action(StrEnum):  GO_MEADOW="go_meadow"; GO_OAK="go_oak"; GO_STREAM="go_st
 class Event(StrEnum):   START="start"; ARRIVED="arrived"; STUMBLED="stumbled"; DRANK="drank"; RESTED="rested"; LOOKED="looked"; COLLAPSED="collapsed"
 class FactKind(StrEnum): BURDEN="burden"; RELIEF="relief"; AMBIENT="ambient"
 class FactName(StrEnum):                         # this order is the canonical order of a fact list
-    AIR="air"; SUN="sun"; SHADE="shade"; NO_SEAT="no_seat"; LOG="log"; LOG_SUN="log_sun"
-    OAK_SHADE="oak_shade"; OAK_LOG_SHADED="oak_log_shaded"; OAK_LOG_SUNLIT="oak_log_sunlit"
+    AIR="air"; COOL_AIR="cool_air"; SUN="sun"; SHADE="shade"; NO_SEAT="no_seat"; LOG="log"; LOG_SUN="log_sun"
+    OAK_SHADE="oak_shade"; OAK_SHADE_FAR="oak_shade_far"; OAK_LOG_SHADED="oak_log_shaded"; OAK_LOG_SUNLIT="oak_log_sunlit"
     WATER="water"; TRICKLE="trickle"; STREAM="stream"; MEADOW_SUN="meadow_sun"; BREEZE="breeze"; BIRDSONG="birdsong"
 class OpenQuestion(StrEnum): LOG_SHADED="log_shaded"; STREAM_FULL="stream_full"
 
@@ -111,13 +111,15 @@ def log_shaded_at(config: WorldConfig, minute: int) -> bool
 
 | Fact | Kind | About | Present | Bearing |
 |---|---|---|---|---|
-| AIR | burden | none | always | heat `(air_here − air_neutral_c) / air_scale_c` |
+| AIR | burden | none | when `air_here ≥ air_neutral_c` | heat `(air_here − air_neutral_c) / air_scale_c` (zero or positive) |
+| COOL_AIR | relief | none | when `air_here < air_neutral_c` | heat `(air_here − air_neutral_c) / air_scale_c` (negative) |
 | SUN | burden | none | when `sun_at ≥ sun_fact_min` | heat `sun_at` |
 | SHADE | relief | none | at the oak | heat −1.0 |
 | NO_SEAT | burden | none | meadow, stream | energy +1.0 |
 | LOG | relief | none | at the oak, log shaded | energy −1.0 |
 | LOG_SUN | burden | none | at the oak, log in the sun | energy +0.5 |
-| OAK_SHADE | relief | oak | meadow, stream; replaced as below | heat −1.0 |
+| OAK_SHADE | relief | oak | meadow; replaced as below | heat −1.0 |
+| OAK_SHADE_FAR | relief | oak | stream | heat −1.0 |
 | OAK_LOG_SHADED | relief | oak | meadow only, after `look`, log shaded | heat −1.0, energy −0.6 |
 | OAK_LOG_SUNLIT | relief | oak | meadow only, after `look`, log in the sun | heat −1.0 |
 | WATER | relief | none | at the stream, running full | water −1.0, heat −0.3 |
@@ -127,7 +129,9 @@ def log_shaded_at(config: WorldConfig, minute: int) -> bool
 | BREEZE | relief | none | always | heat −0.3 |
 | BIRDSONG | ambient | none | always | none |
 
-The constant bearings of this table are config: `WorldConfig.bearings: dict[FactName, dict[Channel, float]]` defaults to them (AIR and SUN are computed, so they have no entry), and `frozen_noon_facts()` is built from `WorldConfig()`.
+A phrase is chosen by fact name, sign and grade only, so a fact whose wording depends on which way it points or on where it is seen from is split into two names: warm air and cool air, the oak's shade from the meadow ("a few steps off") and from the stream (no distance in the wording).
+
+The constant bearings of this table are config: `WorldConfig.bearings: dict[FactName, dict[Channel, float]]` defaults to them (AIR, COOL_AIR and SUN are computed, so they have no entry), and `frozen_noon_facts()` is built from `WorldConfig()`.
 
 A fact list is always in `FactName` order. At the meadow at 13:00 with default config the list is exactly AIR (+1.0), SUN (+1.0), NO_SEAT, OAK_SHADE, STREAM, BREEZE, BIRDSONG: the owner's example.
 
@@ -588,6 +592,6 @@ The gate, on stubs over seeds 1 to 10 with `experiments/clearing_day.yaml` (both
 - The world emits offered actions; their phrases are added on the agent's side from `phrases.py`, so that every model-facing string lives in one file.
 - The truth of a world expectation is read from the facts on arrival, not from the hidden step info.
 - Offers are shown lettered in a seeded shuffle, and the model answers with a letter.
-- The fifteen fact names and their bearings, and every default in Contracts.
+- The seventeen fact names and their bearings, and every default in Contracts.
 - Presentation constants of the viewer (slider grids, colours, timings) are not behaviour and live in the viewer module.
 - `salient_k` recall is kept as a config option, as in v0.
