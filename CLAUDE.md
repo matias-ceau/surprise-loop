@@ -65,7 +65,9 @@ src/surprise_loop/
   feeling.py      # the definitions of felt strength, discomfort, tone and arousal, in one place
   lens.py         # facts + belief -> FeltScene
   phrases.py      # every string a model can read
-  phases/         # perceive, appraise, deliberate, act, monitor, evaluate, reconcile
+  config.py       # every number that shapes behaviour, the experiment files' schema, the seeded RNG
+  phases/         # perceive, appraise, deliberate, act, monitor, evaluate, reconcile;
+                  # heuristics.py holds the rules the code phases and the stubs share
   loop.py         # tick() and run(), tick files, resume, replay
   agents.py       # pydantic-ai agent definitions and output models
   ladder.py       # the frozen-noon sweep that checks the phrase table against a model

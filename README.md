@@ -112,15 +112,19 @@ Share of shade answers by level, coolest first:
 | plain | "chilly" | 0.00 0.40 0.83 0.90 1.00 1.00 1.00 | 0.00 0.27 0.67 0.83 0.97 0.97 1.00 | passed |
 | Deliberate | "chilly" | 0.00 0.93 0.90 1.00 1.00 1.00 1.00 | 0.00 0.43 0.23 0.60 0.83 0.80 0.83 | passed (fall of 0.20) |
 
-The plain prompt is the scene text, a question and four actions. The Deliberate prompt is the one
-the agent really uses, with the reading, the lettered offers and the questions about what it
-expects.
+The plain prompt is the scene text, a question and four actions. The Deliberate prompt is built
+by the code the agent really uses, with the lettered offers and the questions about what it
+expects. One part of it is not what a running agent would see: the reading above the offers is
+always the neutral line "Nothing presses on me just now", even for a burning body. That may hold
+the shade share down at the hot levels (scene B tops out at 0.83).
 
 The first run through the Deliberate prompt failed. A cool body was told "It looks dim under the
 oak", and the model took that as an invitation ("the oak already looks dim so its log should be
 shaded"). The sentence was changed to "It looks chilly under the oak", and both checks were run
-again (in the Deliberate check only the 60 answers whose prompt had changed were asked again). All
-four curves then pass.
+again (the plain check in full; in the Deliberate check only the 60 answers whose prompt had
+changed were asked again). All four curves then pass, the Deliberate curve of scene B only just: a
+fall of 0.20 against a mark of 0.25, with 30 answers a level. That is a pass by about one
+standard error, not a settled result.
 
 The second rung is still weak in the Deliberate prompt. A cool body with no other need walks to
 the shade in 28 of 30 answers, and gives reasons such as "the oak looks chilly, so its shade should
@@ -142,7 +146,7 @@ water and energy that is out of range, so a day has 252):
 |---|---|---|---|---|---|
 | reactive | 65.1 | 0 | 21.7 | 1.1 | 13.5 |
 | lookahead | 21.2 | 0 | 33.3 | 0.2 | 29.0 |
-| blind | 140.4 | 12.7 | 41.0 | 85.6 | 39.3 |
+| blind | 141.4 | 12.1 | 42.5 | 86.4 | 39.7 |
 
 Looking ahead cuts Ilo's uncomfortable channel-steps to about a third of the reactive rule's. The
 reactive rule falls into a trap around noon: it shuttles Ilo between the oak and the stream and
@@ -158,14 +162,16 @@ model.
 
 `experiments/clearing_afternoon_llm.yaml`, seed 1, 13:00 to 20:00, 42 steps for each body, 166
 model calls (82 readings and 84 choices). Both runs replay. The rule rows are the same
-afternoon and seed with a rule in place of the model.
+afternoon and seed with a rule in place of the model. "Reactive rule predicts" is the share of
+steps, among those where at least two actions were offered, on which the chooser did what the
+reactive rule would have done with the same scene.
 
 | body | chooser | uncomfortable heat / water / energy | collapsed steps | expectation held heat / water / energy | mean size of miss | reactive rule predicts |
 |---|---|---|---|---|---|---|
-| Ilo | model | 27 / 9 / 31 | 3 | 0.69 / 0.52 / 0.57 | 0.46 | 43% |
+| Ilo | model | 27 / 9 / 31 | 3 | 0.69 / 0.52 / 0.57 | 0.46 | 40% |
 | Ilo | reactive | 22 / 11 / 17 | 0 | 0.81 / 0.86 / 0.83 | 0.17 | 100% |
 | Ilo | lookahead | 18 / 16 / 10 | 0 | 0.90 / 0.81 / 0.93 | 0.11 | 31% |
-| Ilo | blind | 36 / 35 / 42 | 6 | 0.83 / 0.76 / 0.79 | 0.21 | 36% |
+| Ilo | blind | 30 / 36 / 29 | 6 | 0.76 / 0.79 / 0.71 | 0.28 | 29% |
 | Tavi | model | 1 / 0 / 0 | 0 | 0.64 / 0.57 / 0.50 | 0.42 | 24% |
 | Tavi | reactive | 0 / 1 / 1 | 0 | 0.81 / 0.88 / 0.98 | 0.09 | 100% |
 | Tavi | lookahead | 2 / 0 / 0 | 0 | 0.81 / 0.90 / 0.98 | 0.06 | 21% |
@@ -179,8 +185,8 @@ What that says, and what it does not:
 
 - **The model kept the hot body worse than a ten-line rule did,** and far better than a chooser
   that reads nothing. It is one afternoon and one seed; the size of the gap is not established.
-- **The model is not the reactive rule.** The rule predicts 43% of Ilo's choices and 24% of
-  Tavi's, about what it predicts of the blind chooser (36% and 26%). In the frozen scene of
+- **The model is not the reactive rule.** The rule predicts 40% of Ilo's choices and 24% of
+  Tavi's, not far from what it predicts of the blind chooser (29% and 26%). In the frozen scene of
   result 1 a rule predicted three quarters. A living afternoon with memory in the prompt is a
   different situation, and here the model's choices are its own. They are also not better.
 - **Its expectations failed more often than the rules' forecasts,** and that is the point of the
@@ -223,9 +229,14 @@ What that says, and what it does not:
 - **The cool rung of the ladder does not carry** in the prompt the agent really uses (result 2).
 - **It is still reactive.** Every expectation looks one step ahead, for the chosen action only.
   The honest label is homeostasis with an inner narrator.
-- **The rules' forecast is biased.** The rules count the lens's value for the oak's shade into
-  their heat forecast, which the world's heat rule does not have. A slow forecast and a wide band
-  keep it from showing as error. The rules never commit an expectation about the world.
+- **The rules' forecast is biased.** For the heat a place will give, the rules add up the
+  authored bearings of the facts about it (the oak's shade, the breeze, the stream's water),
+  which the world's heat rule does not have, and the same place gets a different pull depending
+  on where it is seen from. A slow forecast and a wide band keep it from showing as error. The
+  rules never commit an expectation about the world.
+- **Evaluate mixes two sources.** It compares the need as believed before the action with the
+  need as sensed afterwards. A body that starts out believing it is better off than it is can
+  have an early action judged as not helping when it did.
 - **The body signal is nearly exact.** Surprise comes from the world's delays and changing facts
   (water that arrives late, a log that moves into the sun), not from noisy senses.
 - **Small leaks of realism in what a model reads.** Every scene opens "You are standing",
@@ -243,7 +254,7 @@ What that says, and what it does not:
   the builder's own look says the ordinary pair is hard to tell apart in the morning.
 - *At noon the two captions give the same facts opposite value.* Yes: the two texts above. Over
   the afternoon a fact noticed by both bodies had opposite value on 7 steps of 42 under the
-  reactive rule and on 6 under the model.
+  reactive rule and on 6 under the model (`pairs.csv` in the experiment's table directory).
 - *The reactive and lookahead rules have been compared on time outside the comfortable range.*
   Yes: result 3. Looking ahead pays.
 - *The README states the ladder-check result and the share of the model's choices that the
