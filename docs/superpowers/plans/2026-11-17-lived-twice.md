@@ -339,7 +339,8 @@ def reactive_choice(scene: FeltScene, offers: list[Action], p: DeliberateParams)
 
 ```python
 class LensParams, FeelingParams, ExpectationParams, MonitorParams, BeliefParams, StubModelParams   # as above
-class MemoryParams(Frozen): retrieval_k: int = 4; base_salience: Unit = 0.2; salience_gain: float = 0.3; retrieval: Literal["last_k", "salient_k"] = "last_k"
+class MemoryParams(Frozen): retrieval_k: int = 5; base_salience: Unit = 0.2; salience_gain: float = 0.3; retrieval: Literal["last_k", "salient_k"] = "last_k"
+# retrieval_k is one more than EvaluateParams.window, so the episode just judged is still recalled and its regulation line is read once
 class EvaluateParams(Frozen): window: int = 4; score_scale: float = 1.0; helped: float = 0.25
 class PullParams(Frozen): rate: Unit = 0.5; speak: float = 0.2
 class OverrideParams(Frozen): enabled: bool = True; urgent_felt: float = 1.5; worse_margin: float = 0.2   # as tuned in Task 10
@@ -428,7 +429,8 @@ For the 13:00 meadow facts, with `attention=None`, `extra=0` and default `LensPa
 def ladder_body(level: int, scene: Literal["A", "B"], lp: LadderParams) -> tuple[Levels, Temperament, float]   # belief, temperament, arousal
 def ladder_prompt(...) -> str                                             # lens text, question, four lettered actions
 class LadderAnswer(Frozen): scene; level; i; order; letter; action; why; model: str; prompt: str
-    # an answer counts only for the model and the exact prompt it was given to; anything else is stale and asked again
+    # `prompt` holds everything the model read as text: the instructions, a blank line, the user prompt.
+    # An answer counts only for the model and that exact text; anything else is stale and asked again.
 class CurveSummary(Frozen): share: list[float]; slope: float; range: float; worst_drop: float; passed: bool
 def summarize(answers: list[LadderAnswer], lp: LadderParams) -> dict[str, CurveSummary]    # keyed by scene
 async def run_ladder(...) -> list[LadderAnswer]                           # takes the whole Params; see ladder.py
@@ -599,3 +601,7 @@ The gate, on stubs over seeds 1 to 10 with `experiments/clearing_day.yaml` (both
 - The seventeen fact names and their bearings, and every default in Contracts.
 - Presentation constants of the viewer (slider grids, colours, timings) are not behaviour and live in the viewer module.
 - `salient_k` recall is kept as a config option, as in v0.
+- Recall holds one episode more than the judging window (5 against 4), so the episode Evaluate has just judged is still recalled and its regulation line is read once, in the next prompt.
+- In a Deliberate prompt the phrases to choose from are listed in the text, not only in the output schema; a recalled surprise is told in the past tense; on the second pass the reading is headed "a moment ago".
+- A ladder answer is tied to the instructions as well as the user prompt.
+- The film and the lens page share one drawing; the lens page's sun now stands where the clock puts it.
