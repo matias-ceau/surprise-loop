@@ -156,6 +156,8 @@ def voiced_note(
 ) -> SurpriseNote | None:
     """What a pass's surprise voices: the loudest body error if it reaches `voice_threshold`,
     else a world mismatch (what turned out true is the opposite of `expected_world`), else None.
+    A body note's `worse` is set when the felt error is above zero: hotter than expected for heat
+    (whichever way the body's need points), more need than expected for water and energy.
     Reconcile voices it in the next scene; a recalled episode is told with it."""
     felt_error = comparison.body_felt
     top = loudest(felt_error)[0]

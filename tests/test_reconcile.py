@@ -5,11 +5,18 @@ import pytest
 from bodies import ILO
 from test_phases import PARAMS, agent_with, base_ws, episode, make_rt, remembering, run
 
-from surprise_loop.config import Runtime
+from surprise_loop.config import Params, Runtime
 from surprise_loop.feeling import feel, needs
 from surprise_loop.phases import evaluate, reconcile
-from surprise_loop.phases.heuristics import compare, updated_belief
+from surprise_loop.phases.heuristics import (
+    compare,
+    loudest,
+    serving_actions,
+    too_much,
+    updated_belief,
+)
 from surprise_loop.phases.perceive import build_percept
+from surprise_loop.phases.reconcile import override_for
 from surprise_loop.state import (
     AgentState,
     Appraisal,
@@ -253,17 +260,23 @@ def test_feedback_for_a_step_that_is_not_window_back_is_refused() -> None:
 # --- the override -------------------------------------------------------------------------------
 
 
+def hot_rt(params: Params = PARAMS) -> Runtime:
+    """Ilo hot in the meadow, but neither thirsty nor tired: heat is the loudest need."""
+    return make_rt(params, body=HOT_BODY)
+
+
 def urgent_heat(rt: Runtime, action: Action = Action.REST, **kw: object) -> Workspace:
     """Ilo, hot in the meadow, rests; heat came out much hotter than the band said."""
     ws = ready(rt, action, heat_band(0.4, 0.5), **kw)
     belief = updated_belief(ws.outcome.observation.signal, heat_band(0.4, 0.5), ILO, PARAMS.belief)
+    assert loudest(needs(belief, ILO))[0] is HEAT
     assert needs(belief, ILO)[HEAT] >= PARAMS.override.urgent_felt
     assert ws.comparison.body_felt[HEAT] >= PARAMS.override.worse_margin
     return ws
 
 
 def test_override_fires_when_an_urgent_need_came_out_worse_and_was_not_served() -> None:
-    rt = make_rt()
+    rt = hot_rt()
     out = run(reconcile, urgent_heat(rt), rt)
     assert out.override is not None
     assert out.override.channel is HEAT
@@ -274,7 +287,7 @@ def test_override_fires_when_an_urgent_need_came_out_worse_and_was_not_served() 
 
 def test_override_actions_are_the_serving_offers_in_offer_order() -> None:
     # thirsty in the meadow, resting; water came out much lower than the band said
-    body = BodyState(heat=0.99, water=0.3, energy=0.22)
+    body = BodyState(heat=-0.1, water=0.3, energy=0.7)
     rt = make_rt(belief=Levels(heat=0.7, water=0.2, energy=0.7), body=body)
     bands = OPEN_BANDS | {WATER: Band(lo=0.5, hi=0.6)}
     ws = ready(rt, Action.REST, bands)
@@ -288,7 +301,7 @@ def test_override_actions_are_the_serving_offers_in_offer_order() -> None:
 
 
 def test_no_override_on_pass_one_and_the_pass_zero_override_is_kept() -> None:
-    rt = make_rt()
+    rt = hot_rt()
     kept = Override(channel=WATER, actions=[Action.GO_STREAM], detail="from pass zero")
     ws = urgent_heat(rt, pass_index=1).model_copy(update={"override": kept})
     out = run(reconcile, ws, rt)
@@ -296,32 +309,83 @@ def test_no_override_on_pass_one_and_the_pass_zero_override_is_kept() -> None:
     assert out.passes[-1].override is None
 
 
+def override_with(ws: Workspace, params: Params, action: Action | None = None) -> Override | None:
+    """`override_for` on a workspace filled up to Reconcile, under `params`, for `action` in place
+    of the one decided: the other side of a test's one condition."""
+    belief = updated_belief(
+        ws.outcome.observation.signal, ws.decision.expectation.bands, ILO, params.belief
+    )
+    return override_for(
+        action or ws.decision.action,
+        ws.observation.place,
+        belief,
+        ILO,
+        ws.comparison,
+        ws.outcome,
+        params,
+    )
+
+
 def test_no_override_when_disabled() -> None:
     params = PARAMS.model_copy(
         update={"override": PARAMS.override.model_copy(update={"enabled": False})}
     )
-    rt = make_rt(params)
-    assert run(reconcile, urgent_heat(rt), rt).override is None
+    rt = hot_rt(params)
+    ws = urgent_heat(rt)  # loudest, urgent, worse, not served
+    assert run(reconcile, ws, rt).override is None
+    enabled = override_with(ws, PARAMS)
+    assert enabled is not None
+    assert enabled.channel is HEAT
 
 
 def test_no_override_when_the_need_is_not_urgent() -> None:
     params = PARAMS.model_copy(
         update={"override": PARAMS.override.model_copy(update={"urgent_felt": 10.0})}
     )
-    rt = make_rt(params)
-    assert run(reconcile, ready(rt, Action.REST, heat_band(0.4, 0.5)), rt).override is None
+    rt = hot_rt(params)
+    ws = urgent_heat(rt)  # loudest, worse and not served; urgent at 2.0
+    belief = updated_belief(ws.outcome.observation.signal, heat_band(0.4, 0.5), ILO, params.belief)
+    assert needs(belief, ILO)[HEAT] < params.override.urgent_felt
+    assert run(reconcile, ws, rt).override is None
+    urgent = override_with(ws, PARAMS)
+    assert urgent is not None
+    assert urgent.channel is HEAT
 
 
 def test_no_override_when_the_need_came_out_as_expected() -> None:
-    rt = make_rt()
-    assert run(reconcile, ready(rt, Action.REST), rt).override is None
+    rt = hot_rt()
+    ws = ready(rt, Action.REST)
+    belief = updated_belief(ws.outcome.observation.signal, OPEN_BANDS, ILO, PARAMS.belief)
+    need = needs(belief, ILO)
+    assert loudest(need)[0] is HEAT
+    assert need[HEAT] >= PARAMS.override.urgent_felt
+    assert ws.comparison.body_felt[HEAT] == 0
+    assert run(reconcile, ws, rt).override is None
+    # with no margin to clear, the same outcome counts as worse than expected
+    no_margin = PARAMS.model_copy(
+        update={"override": PARAMS.override.model_copy(update={"worse_margin": 0.0})}
+    )
+    worse = override_with(ws, no_margin)
+    assert worse is not None
+    assert worse.channel is HEAT
 
 
 def test_no_override_when_the_action_served_the_channel() -> None:
-    rt = make_rt()
+    p = URGENT_AT_DEFAULT
+    rt = hot_rt(p)
     ws = ready(rt, Action.GO_OAK, heat_band(0.0, 0.1))
-    assert ws.comparison.body_felt[HEAT] >= PARAMS.override.worse_margin
+    belief = updated_belief(ws.outcome.observation.signal, heat_band(0.0, 0.1), ILO, p.belief)
+    need = needs(belief, ILO)
+    assert loudest(need)[0] is HEAT
+    assert need[HEAT] >= p.override.urgent_felt
+    assert ws.comparison.body_felt[HEAT] >= p.override.worse_margin
+    assert Action.GO_OAK in serving_actions(HEAT, True, Place.MEADOW)
     assert run(reconcile, ws, rt).override is None
+    assert override_with(ws, p) is None
+    # the same outcome after an action that does not serve heat is overruled
+    unserved = override_with(ws, p, Action.LOOK)
+    assert unserved is not None
+    assert unserved.channel is HEAT
 
 
 COLD_BODY = BodyState(heat=-1.0, water=0.8, energy=0.7)
@@ -358,6 +422,11 @@ def test_a_cold_body_that_came_out_colder_is_overridden_toward_warmth() -> None:
         channel=HEAT, actions=[Action.GO_MEADOW], detail=out.override.detail
     )
     assert f"came out {-ws.comparison.body_felt[HEAT]:.2f} worse" in out.override.detail
+    # the size of the need, not its sign, against the threshold
+    belief = out.agent.belief
+    size = abs(needs(belief, ILO)[HEAT])
+    threshold = URGENT_AT_DEFAULT.override.urgent_felt
+    assert out.override.detail.startswith(f"heat need {size:.2f} is at least {threshold:.2f}")
 
 
 def test_a_cold_body_that_came_out_warmer_is_not_overridden() -> None:
@@ -381,8 +450,69 @@ def test_a_hot_body_walking_out_from_the_oak_is_overridden_back() -> None:
     )
 
 
+def loud_and_thirsty(
+    body: BodyState, action: Action, bands: dict[Channel, Band]
+) -> tuple[Workspace, Runtime, dict[Channel, float]]:
+    """A body in the meadow after `action`, at the shipped urgent_felt; its needs after the
+    update, which the override reads."""
+    rt = make_rt(URGENT_AT_DEFAULT, body=body, belief=Levels(
+        heat=body.heat, water=body.water, energy=body.energy))  # fmt: skip
+    ws = ready(rt, action, bands)
+    belief = updated_belief(ws.outcome.observation.signal, bands, ILO, URGENT_AT_DEFAULT.belief)
+    return ws, rt, needs(belief, ILO)
+
+
+def qualifies(ws: Workspace, need: dict[Channel, float], c: Channel) -> bool:
+    """Whether channel `c` alone meets every condition of the override: urgent, worse than
+    expected by the margin, and not served by the action taken."""
+    p = URGENT_AT_DEFAULT.override
+    served = serving_actions(c, too_much(c, need[c]), ws.observation.place)
+    worse = ws.comparison.body_felt[c] * (1 if too_much(c, need[c]) else -1)
+    return (abs(need[c]) >= p.urgent_felt and worse >= p.worse_margin
+            and ws.decision.action not in served)  # fmt: skip
+
+
+THIRSTY_BAND = {WATER: Band(lo=0.6, hi=0.65)}  # water came out much lower than this
+
+
+def test_no_override_for_a_quieter_need_when_the_loudest_was_served() -> None:
+    # hot and thirsty in the meadow, walks to the oak: the walk serves heat, the loudest need
+    body = BodyState(heat=0.99, water=0.4, energy=0.7)
+    ws, rt, need = loud_and_thirsty(body, Action.GO_OAK, OPEN_BANDS | THIRSTY_BAND)
+    assert loudest(need)[0] is HEAT
+    assert Action.GO_OAK in serving_actions(HEAT, True, Place.MEADOW)
+    assert qualifies(ws, need, WATER)
+    assert Action.GO_STREAM in ws.outcome.observation.offers
+    assert run(reconcile, ws, rt).override is None
+
+
+def test_the_override_is_for_the_loudest_need_not_the_first_in_channel_order() -> None:
+    # tired and thirsty in the meadow, looks around: both came out worse and neither was served
+    body = BodyState(heat=-0.1, water=0.4, energy=0.2)
+    bands = OPEN_BANDS | THIRSTY_BAND | {ENERGY: Band(lo=0.5, hi=0.55)}
+    ws, rt, need = loud_and_thirsty(body, Action.LOOK, bands)
+    assert loudest(need)[0] is ENERGY
+    assert qualifies(ws, need, ENERGY)
+    assert qualifies(ws, need, WATER)
+    out = run(reconcile, ws, rt)
+    assert out.override == Override(
+        channel=ENERGY, actions=[Action.REST], detail=out.override.detail
+    )
+
+
+def test_no_override_when_the_loudest_need_came_out_as_expected() -> None:
+    # tired and thirsty in the meadow, looks around: tiredness is as expected, thirst is worse
+    body = BodyState(heat=-0.1, water=0.4, energy=0.2)
+    ws, rt, need = loud_and_thirsty(body, Action.LOOK, OPEN_BANDS | THIRSTY_BAND)
+    assert loudest(need)[0] is ENERGY
+    assert abs(need[ENERGY]) >= URGENT_AT_DEFAULT.override.urgent_felt
+    assert ws.comparison.body_felt[ENERGY] == 0
+    assert qualifies(ws, need, WATER)
+    assert run(reconcile, ws, rt).override is None
+
+
 def test_no_override_and_no_crash_when_nothing_offered_serves_the_need() -> None:
-    rt = make_rt()
+    rt = hot_rt()
     ws = urgent_heat(rt)
     obs = ws.outcome.observation.model_copy(update={"offers": [Action.REST, Action.LOOK]})
     ws = ws.model_copy(update={"outcome": ws.outcome.model_copy(update={"observation": obs})})
@@ -395,7 +525,7 @@ def test_no_override_and_no_crash_when_nothing_offered_serves_the_need() -> None
 
 
 def test_the_pass_record_holds_what_deliberate_saw_and_the_state_after() -> None:
-    rt = make_rt()
+    rt = hot_rt()
     other = make_rt()
     earlier = run(reconcile, ready(other, Action.LOOK), other).passes[0]
     ws = urgent_heat(rt).model_copy(update={"passes": (earlier,)})

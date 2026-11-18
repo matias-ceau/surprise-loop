@@ -223,6 +223,17 @@ def test_config_file_that_is_not_utf8_raises_config_error(tmp_path: Path) -> Non
         load_config(path)
 
 
+def test_a_read_error_without_strerror_is_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(*args: object, **kwargs: object) -> str:
+        raise OSError("the disk went away")  # an OSError with no errno: its strerror is None
+
+    monkeypatch.setattr(Path, "read_text", fail)
+    with pytest.raises(ConfigError, match="cannot read: the disk went away$"):
+        load_config(tmp_path / "exp.yaml")
+
+
 def test_config_error_is_a_value_error() -> None:
     assert issubclass(ConfigError, ValueError)
 
@@ -355,7 +366,7 @@ def test_params_defaults_are_the_contract_values() -> None:
         narrow_arousal=0.5,
         body_lines_narrow=2,
         body_lines_wide=3,
-        body_speak_grade=2,
+        body_speak_grade={Channel.HEAT: 1, Channel.WATER: 2, Channel.ENERGY: 2},
         value_edges=(0.25, 1.0, 2.0, 3.0),
         body_edges=(0.5, 1.0, 2.0, 3.0),
     )
@@ -413,7 +424,6 @@ BAD_PARAMS: list[tuple[type[BaseModel], str, list[Any]]] = [
     (LensParams, "narrow_arousal", [-0.1, 1.1]),
     (LensParams, "body_lines_narrow", [-1]),
     (LensParams, "body_lines_wide", [-1]),
-    (LensParams, "body_speak_grade", [0]),
     (FeelingParams, "tone_gain", [-0.1]),
     (FeelingParams, "phasic_gain", [-0.1]),
     (FeelingParams, "phasic_decay", [-0.1, 1.1]),
@@ -482,6 +492,16 @@ def test_per_channel_params_cover_every_channel_and_reject_bad_values(
     for bad in (-0.1, math.nan, math.inf):
         with pytest.raises(ValidationError):
             model.model_validate({field: full | {Channel.HEAT: bad}})
+
+
+def test_body_speak_grade_covers_every_channel_and_is_at_least_one() -> None:
+    full = {Channel.HEAT: 1, Channel.WATER: 2, Channel.ENERGY: 2}
+    assert LensParams(body_speak_grade=full).body_speak_grade == full
+    with pytest.raises(ValidationError, match="water"):
+        LensParams(body_speak_grade={Channel.HEAT: 1, Channel.ENERGY: 2})
+    for bad in (0, -1, 1.5, math.nan, math.inf):
+        with pytest.raises(ValidationError, match="body_speak_grade"):
+            LensParams.model_validate({"body_speak_grade": full | {Channel.ENERGY: bad}})
 
 
 def test_expectation_weight_must_be_positive() -> None:

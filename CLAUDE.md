@@ -32,7 +32,7 @@ One tick = one pass through seven phases. Each phase is a plain async function o
    - pulls (slow): a gut pull per place and action, from Evaluate's judgements
    - temperament (slowest): set points, how much a deviation is minded, attention habits. Switched off in the first milestone.
 
-   If an urgent need came out clearly worse than expected and the action did not serve it, Reconcile may send control back to Deliberate, at most once per tick, with the choices cut to actions that serve that need.
+   If the body's loudest need is urgent, came out clearly worse than expected, and the action did not serve it, Reconcile may send control back to Deliberate, at most once per tick, with the choices cut to actions that serve that need.
 
 ## Boundaries
 

@@ -637,6 +637,12 @@ run through the full Deliberate prompt showed that the model took "dim" as an in
 cool body walked to the shade more often than a neutral one. The sentence now says "chilly".
 The README gives both runs.
 
+*Changed again on 2026-11-18.* The lens now also tells this body "You are a little cool." at the
+end of the text. With the mild leaning told only through the adjectives above, a cool body still
+walked to the shade in 28 of 30 answers of the ladder check; with the sentence, in 2 of 30. The
+override of section 8 was changed the same day to consider only the body's loudest need. The
+README gives the runs.
+
 Air, sun and oak appear in both with opposite value, from one formula. "No place to sit" exists
 only for Ilo; the birds exist only for Tavi. Ilo's thirst goes unspoken, crowded out by heat and
 tiredness.

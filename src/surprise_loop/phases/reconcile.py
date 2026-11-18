@@ -3,8 +3,8 @@
 In order: the belief moves from the expectation toward the signal; the feeling follows the new
 belief and the comparison; attention goes where the reading was; the loudest surprise is voiced
 for the next scene; the episode is stored; the judged episode gets its score and its pull moves;
-and on pass 0 an urgent need that came out worse than expected, and that the action did not
-serve, sends control back to Deliberate once (the override). Reconcile never changes
+and on pass 0 the loudest need, if it is urgent, came out worse than expected, and the action did
+not serve it, sends control back to Deliberate once (the override). Reconcile never changes
 `agent.tick`; `tick()` does.
 """
 
@@ -12,6 +12,7 @@ from surprise_loop.config import Params, Runtime
 from surprise_loop.feeling import feel, needs
 from surprise_loop.phases.evaluate import judged_index
 from surprise_loop.phases.heuristics import (
+    loudest,
     require,
     serving_actions,
     too_much,
@@ -29,7 +30,7 @@ from surprise_loop.state import (
     Temperament,
     Workspace,
 )
-from surprise_loop.world import Action, Channel, Levels, Outcome, Place
+from surprise_loop.world import Action, Levels, Outcome, Place
 
 
 def judged(
@@ -62,9 +63,10 @@ def override_for(
     outcome: Outcome,
     params: Params,
 ) -> Override | None:
-    """The first channel, in `Channel` order, whose need is urgent after the update, came out
-    worse than expected by `worse_margin`, and is not served by the action taken at `place` (the
-    place before the step); an override only if an action serving it is offered now.
+    """An override for the loudest need after the update (ties in `Channel` order), and for no
+    other: only if it is urgent, came out worse than expected by `worse_margin`, and is not served
+    by the action taken at `place` (the place before the step); and only if an action serving it
+    is offered now.
 
     Worse is signed by the need's direction: for a need of too much (too hot, thirsty, tired)
     `body_felt` above zero is worse; for too little (too cold) below zero is."""
@@ -72,24 +74,17 @@ def override_for(
     if not p.enabled:
         return None
     need = needs(belief, t)
-
-    def worse(c: Channel) -> float:
-        return comparison.body_felt[c] * (1 if too_much(c, need[c]) else -1)
-
-    channel = next(
-        (
-            c
-            for c in Channel
-            if abs(need[c]) >= p.urgent_felt
-            and worse(c) >= p.worse_margin
-            and action not in serving_actions(c, too_much(c, need[c]), place)
-        ),
-        None,
-    )
-    if channel is None:
+    channel = loudest(need)[0]
+    excess = too_much(channel, need[channel])
+    worse = comparison.body_felt[channel] * (1 if excess else -1)
+    if (
+        abs(need[channel]) < p.urgent_felt
+        or worse < p.worse_margin
+        or action in serving_actions(channel, excess, place)
+    ):
         return None
     observation = outcome.observation
-    serving = serving_actions(channel, too_much(channel, need[channel]), observation.place)
+    serving = serving_actions(channel, excess, observation.place)
     actions = [a for a in observation.offers if a in serving]
     if not actions:
         return None
@@ -97,8 +92,8 @@ def override_for(
         channel=channel,
         actions=actions,
         detail=(
-            f"{channel.value} need {need[channel]:.2f} is at least {p.urgent_felt:.2f} and came "
-            f"out {worse(channel):.2f} worse than expected; "
+            f"{channel.value} need {abs(need[channel]):.2f} is at least {p.urgent_felt:.2f} and "
+            f"came out {worse:.2f} worse than expected; "
             f"{action.value} does not serve it"
         ),
     )

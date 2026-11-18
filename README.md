@@ -38,7 +38,8 @@ the worked example:
 
 > **Tavi** (comfortable, a little cool): You are standing in the middle of the forest clearing.
 > The air is pleasantly warm. The sun sits on your shoulders. It looks chilly under the oak. Birds
-> are calling. A stream runs somewhere to the west. A light breeze moves the leaves.
+> are calling. A stream runs somewhere to the west. A light breeze moves the leaves. You are a
+> little cool.
 
 Each tick runs seven phases. Perceive builds that text. Appraise gives one line of the creature's
 own reading. Deliberate picks one offered action and commits an expectation: for each of heat,
@@ -46,7 +47,8 @@ thirst and tiredness a phrase from a fixed ladder ("a bit cooler", "much less th
 the action will settle an open fact, a yes or no ("will the log be in the shade?"). Act moves the
 world. Monitor compares what came back with what was expected. Evaluate checks whether an action
 taken a few steps ago eased the need it serves. Reconcile updates belief, feeling, memory and pulls,
-and may send control back to Deliberate once when an urgent need came out worse than expected.
+and may send control back to Deliberate once when the body's loudest need is urgent and came out
+worse than expected (the override).
 Appraise and Deliberate can run on a model or on a rule; everything else is code.
 
 Every tick is written to `runs/<run_id>/tick_<n>.json`. A run can be resumed, and replayed byte for
@@ -105,12 +107,16 @@ walk to the oak's shade rises with heat: a slope of at least 0.05 per level, a r
 
 Share of shade answers by level, coolest first:
 
-| prompt | wording | scene A | scene B | result |
+| prompt | the cool body is told | scene A | scene B | result |
 |---|---|---|---|---|
-| plain | "dim" | 0.00 0.83 0.83 0.97 1.00 1.00 1.00 | 0.00 0.63 0.67 0.67 1.00 0.97 1.00 | passed |
-| Deliberate | "dim" | 0.00 1.00 0.90 1.00 1.00 1.00 1.00 | 0.00 0.57 0.23 0.60 0.83 0.80 0.83 | **failed** (fall of 0.33) |
-| plain | "chilly" | 0.00 0.40 0.83 0.90 1.00 1.00 1.00 | 0.00 0.27 0.67 0.83 0.97 0.97 1.00 | passed |
-| Deliberate | "chilly" | 0.00 0.93 0.90 1.00 1.00 1.00 1.00 | 0.00 0.43 0.23 0.60 0.83 0.80 0.83 | passed (fall of 0.20) |
+| plain | "It looks dim under the oak" | 0.00 0.83 0.83 0.97 1.00 1.00 1.00 | 0.00 0.63 0.67 0.67 1.00 0.97 1.00 | passed |
+| Deliberate | "It looks dim under the oak" | 0.00 1.00 0.90 1.00 1.00 1.00 1.00 | 0.00 0.57 0.23 0.60 0.83 0.80 0.83 | **failed** (fall of 0.33) |
+| plain | "It looks chilly under the oak" | 0.00 0.40 0.83 0.90 1.00 1.00 1.00 | 0.00 0.27 0.67 0.83 0.97 0.97 1.00 | passed |
+| Deliberate | "It looks chilly under the oak" | 0.00 0.93 0.90 1.00 1.00 1.00 1.00 | 0.00 0.43 0.23 0.60 0.83 0.80 0.83 | passed (fall of 0.20) |
+| plain | also "You are a little cool." | 0.00 0.00 0.83 1.00 1.00 1.00 1.00 | 0.00 0.00 0.67 0.77 0.97 0.97 1.00 | passed |
+| Deliberate | also "You are a little cool." | 0.00 0.07 0.90 1.00 1.00 1.00 1.00 | 0.00 0.13 0.23 0.57 0.83 0.80 0.83 | passed (fall of 0.03) |
+
+The last two rows are the lens as it is now.
 
 The plain prompt is the scene text, a question and four actions. The Deliberate prompt is built
 by the code the agent really uses, with the lettered offers and the questions about what it
@@ -118,21 +124,31 @@ expects. One part of it is not what a running agent would see: the reading above
 always the neutral line "Nothing presses on me just now", even for a burning body. That may hold
 the shade share down at the hot levels (scene B tops out at 0.83).
 
-The first run through the Deliberate prompt failed. A cool body was told "It looks dim under the
-oak", and the model took that as an invitation ("the oak already looks dim so its log should be
-shaded"). The sentence was changed to "It looks chilly under the oak", and both checks were run
-again (the plain check in full; in the Deliberate check only the 60 answers whose prompt had
-changed were asked again). All four curves then pass, the Deliberate curve of scene B only just: a
-fall of 0.20 against a mark of 0.25, with 30 answers a level. That is a pass by about one
-standard error, not a settled result.
+The wording was changed twice, each time for a stated reason, and every run is in the table.
 
-The second rung is still weak in the Deliberate prompt. A cool body with no other need walks to
-the shade in 28 of 30 answers, and gives reasons such as "the oak looks chilly, so its shade should
-cool me". The model reads "pleasantly warm" and "the sun sits on your shoulders" as something to
-cool down from. The bottom rung, where the text has a sentence about the body itself ("You are
-chilled"), works: no answer walks to the shade. So a body's mild liking for warmth, told only
-through adjectives on the facts, does not reach this model's choice; a sentence about the body
-does.
+1. The first run through the Deliberate prompt failed. A cool body was told "It looks dim under
+   the oak", and the model took that as an invitation ("the oak already looks dim so its log
+   should be shaded"). The sentence became "It looks chilly under the oak". The check then
+   passed, in scene B only just (a fall of 0.20 against a mark of 0.25, with 30 answers a level),
+   and the second rung stayed wrong: a cool body with no other need still walked to the shade in
+   28 of 30 answers, for reasons such as "the oak looks chilly, so its shade should cool me". The
+   model read "pleasantly warm" and "the sun sits on your shoulders" as something to cool down
+   from.
+2. The bottom rung had always worked, and it is the one where the text has a sentence about the
+   body itself ("You are chilled"). So the lens now says a mild sentence about heat one grade
+   earlier: "You are a little cool." or "You are a little warm." The mark was set before the run:
+   in the Deliberate prompt the cool rung's share must fall to or below the neutral rung's in
+   both scenes, and all four curves must pass. They do. A cool body with no other need now walks
+   to the shade in 2 of 30 answers, and with a thirst and a tiredness competing in 4 of 30.
+
+After the first change the plain check was asked again in full and the Deliberate check only
+for the 60 answers whose prompt text had changed. After the second, only the cool and the warm
+rung were asked again (240 answers over both prompts). Every other cell keeps the earlier answers
+to the identical text.
+
+What this shows about telling a model its body: a mild leaning told only through adjectives on
+the facts did not reach this model's choice, and one plain sentence about the body did. That is
+the same thing the frozen-scene test found for strong states (result 1), now for a mild one.
 
 ### 3. A day on rules: looking ahead pays
 
@@ -144,14 +160,17 @@ water and energy that is out of range, so a day has 252):
 
 | rule | Ilo uncomfortable | Ilo collapsed steps | Ilo walks | Tavi uncomfortable | Tavi walks |
 |---|---|---|---|---|---|
-| reactive | 65.1 | 0 | 21.7 | 1.1 | 13.5 |
+| reactive | 52.3 | 0 | 21.9 | 1.1 | 13.5 |
 | lookahead | 21.2 | 0 | 33.3 | 0.2 | 29.0 |
-| blind | 141.4 | 12.1 | 42.5 | 86.4 | 39.7 |
+| blind | 137.1 | 11.2 | 39.9 | 86.1 | 39.3 |
 
-Looking ahead cuts Ilo's uncomfortable channel-steps to about a third of the reactive rule's. The
-reactive rule falls into a trap around noon: it shuttles Ilo between the oak and the stream and
-arrives hot at the water, where the body overrules it and sends it back (3.5 overrides a day; the
-lookahead rule has almost none, because it drinks before noon).
+Looking ahead cuts Ilo's uncomfortable channel-steps to about two fifths of the reactive rule's.
+The reactive rule is overruled by the body about twice a day (2.1 overrides); the lookahead rule
+almost never (0.05), because it drinks before noon.
+
+The override rule itself was changed once after the first model run (see result 4). Under the
+first rule the reactive row read 65.1, a quarter more, with 3.5 overrides a day: that rule could
+send a body away from what served its loudest need. The lookahead row is the same under both.
 
 The blind row matters for reading everything else. Two bodies come out different even under a
 chooser that reads nothing, because the world and the update code treat different bodies
@@ -160,61 +179,70 @@ model.
 
 ### 4. One afternoon on a model
 
-`experiments/clearing_afternoon_llm.yaml`, seed 1, 13:00 to 20:00, 42 steps for each body, 166
-model calls (82 readings and 84 choices). Both runs replay. The rule rows are the same
-afternoon and seed with a rule in place of the model. "Reactive rule predicts" is the share of
-steps, among those where at least two actions were offered, on which the chooser did what the
-reactive rule would have done with the same scene.
+`experiments/clearing_afternoon_llm.yaml`, seed 1, 13:00 to 20:00, 42 steps for each body, 165
+model calls (81 readings and 84 choices). Both runs replay. The rule rows are the same afternoon
+and seed with a rule in place of the model. "Reactive rule predicts" is the share of steps, among
+those where at least two actions were offered, on which the chooser did what the reactive rule
+would have done with the same scene.
 
 | body | chooser | uncomfortable heat / water / energy | collapsed steps | expectation held heat / water / energy | mean size of miss | reactive rule predicts |
 |---|---|---|---|---|---|---|
-| Ilo | model | 27 / 9 / 31 | 3 | 0.69 / 0.52 / 0.57 | 0.46 | 40% |
-| Ilo | reactive | 22 / 11 / 17 | 0 | 0.81 / 0.86 / 0.83 | 0.17 | 100% |
+| Ilo | model | 26 / 4 / 26 | 0 | 0.55 / 0.45 / 0.48 | 0.73 | 28% |
+| Ilo | reactive | 19 / 8 / 15 | 0 | 0.88 / 0.83 / 0.88 | 0.15 | 100% |
 | Ilo | lookahead | 18 / 16 / 10 | 0 | 0.90 / 0.81 / 0.93 | 0.11 | 31% |
-| Ilo | blind | 30 / 36 / 29 | 6 | 0.76 / 0.79 / 0.71 | 0.28 | 29% |
-| Tavi | model | 1 / 0 / 0 | 0 | 0.64 / 0.57 / 0.50 | 0.42 | 24% |
+| Ilo | blind | 38 / 26 / 38 | 6 | 0.90 / 0.74 / 0.71 | 0.20 | 19% |
+| Tavi | model | 4 / 0 / 0 | 0 | 0.57 / 0.81 / 0.55 | 0.27 | 36% |
 | Tavi | reactive | 0 / 1 / 1 | 0 | 0.81 / 0.88 / 0.98 | 0.09 | 100% |
 | Tavi | lookahead | 2 / 0 / 0 | 0 | 0.81 / 0.90 / 0.98 | 0.06 | 21% |
 | Tavi | blind | 20 / 0 / 27 | 0 | 0.71 / 0.90 / 0.95 | 0.07 | 26% |
 
-Model minus reactive rule, same seed: Ilo spent 17 more channel-steps outside its comfortable
-range (5 more for heat, 2 fewer for water, 14 more for energy) and collapsed on 3 steps where the
-rule never did. Tavi was comfortable under both.
+Model minus reactive rule, same seed: Ilo spent 14 more channel-steps outside its comfortable
+range (7 more for heat, 4 fewer for water, 11 more for energy). Tavi spent 2 more.
 
 What that says, and what it does not:
 
 - **The model kept the hot body worse than a ten-line rule did,** and far better than a chooser
   that reads nothing. It is one afternoon and one seed; the size of the gap is not established.
-- **The model is not the reactive rule.** The rule predicts 40% of Ilo's choices and 24% of
-  Tavi's, not far from what it predicts of the blind chooser (29% and 26%). In the frozen scene of
+- **The model is not the reactive rule.** The rule predicts 28% of Ilo's choices and 36% of
+  Tavi's, not far from what it predicts of the blind chooser (19% and 26%). In the frozen scene of
   result 1 a rule predicted three quarters. A living afternoon with memory in the prompt is a
   different situation, and here the model's choices are its own. They are also not better.
 - **Its expectations failed more often than the rules' forecasts,** and that is the point of the
-  loop: the misses are real. The largest ones were the same for both bodies: drinking. The world
-  delivers water two steps late, the model expected to be "much less thirsty" at once, and it
-  said so afterwards ("Drinking three times has not eased my thirst, so resting in the pleasant
-  spot is the sensible choice"). Ilo's first step was also a miss: it walked to the oak expecting
+  loop: the misses are real. Most of the large ones were about drinking. The world delivers water
+  two steps late, and the model expected to be "much less thirsty" at once. Afterwards it said so,
+  and lowered what it expected: "Thirst is still the loudest thing even after two drinks, so I
+  drink again and this time expect less relief than I hoped for" (Ilo, 13:50), and "Drinking has
+  helped less than I expected twice, but a third drink at the cool stream should still ease my
+  thirst somewhat" (Tavi, 14:00). Ilo's first step was a miss too: it walked to the oak expecting
   the log to be in the shade, and at 13:00 it is in the sun.
-- **It committed expectations about the world,** which the rules never do: Ilo 7 (4 held), Tavi 5
-  (4 held).
-- **The two bodies read their moments differently.** Ilo's 40 readings were about tiredness 17
-  times, heat 7, thirst 7 and nothing 9; Tavi's 42 were about nothing 32 times. Ilo at 13:00: "The
-  sun is hammering down on me, and all I can think about is that patch of shade under the oak".
-  Tavi at 13:00: "The warmth settles on me like a friendly hand". These texts are downstream of
-  the lens's authored phrases, so that they differ is true by construction; what the model adds
-  is the reading and the choice.
-- **The overrides did not help.** Ilo was overruled twice, on its first two ticks. At 13:00 it
-  walked to the shade, which serves heat. Its thirst came out worse than it had expected (it had
-  said "about the same", and the worked example starts Ilo believing it is less thirsty than it
-  is), the override cut its choices to the stream, and it crossed the open ground at the hottest
-  time of day. At the stream it drank, expecting to be "a bit less tired" as well; tiredness came
-  out worse, and the override made it sit on the bank in the sun. Neither first choice was a bad
-  one. The rule fires when an urgent need comes out worse than expected, and it cannot tell "the
-  world answered worse" from "my belief, or my hope, was off". That is a weakness of the rule as
-  designed, and it is left as it is for now.
-- **No planning ahead was seen.** Later, exhausted at the stream, Ilo chose to drink five times
-  in a row; on three of those steps its body gave way instead. It then rested on the bank until
-  evening. Nothing in the afternoon looks like drinking before being thirsty.
+- **It committed expectations about the world,** which the rules never do: Ilo 5 (3 held), Tavi 7
+  (6 held).
+- **The two bodies read their moments differently.** Ilo's 39 readings were about heat 14 times,
+  tiredness 11, thirst 6 and nothing 8; Tavi's 42 were about nothing 26 times, heat 12 and thirst
+  4. Ilo at 13:00: "The sun is crushing me — heavy legs, thick head, everything narrowed to
+  getting into that shade." Tavi at 13:00: "The sun on my shoulders feels good, but I'm a little
+  cool", and it stayed in the sun. In the evening Tavi left the oak because "the shade is chilling
+  me". These texts are downstream of the lens's authored phrases, so that they differ is true by
+  construction; what the model adds is the reading and the choice.
+- **The body overruled the plan three times, each time for tiredness.** Tiredness was Ilo's
+  loudest need each time, and each time the model had expected to be "a bit less tired" after
+  something that does not rest it: the walk to the oak at 13:00, then two drinks at the stream.
+  The override made it rest. Whether that helped cannot be told from one run. The rule still
+  cannot tell "the world answered worse" from "my hope was off"; it now at least never pulls a
+  body away from what serves its loudest need.
+- **No planning ahead was seen.** At 13:20, after one rest in the shade, Ilo chose to cross the
+  open ground to the stream at the hottest time of day. Nothing in the afternoon looks like drinking
+  before being thirsty.
+
+**An earlier run, and why the override rule changed.** The first model afternoon was run under
+the first override rule and before the lens said mild heat sentences. Ilo's numbers then were 27
+/ 9 / 31 uncomfortable and 3 collapsed steps; the rule predicted 40% of its choices and 24% of
+Tavi's. In that run the override went to the first need in a fixed order that met its conditions.
+At 13:00 Ilo walked into the shade, its thirst came out worse than expected, and the override
+sent it across the open ground to the stream, although its heat and its tiredness were both
+louder. The override now considers only the loudest need. The two model afternoons are one run
+each of a model that samples its answers, so the difference between them is not evidence about
+the rule; the evidence for the change is the rule-driven days of result 3.
 
 ## What was not shown
 
@@ -226,7 +254,11 @@ What that says, and what it does not:
   not been checked by anyone but the builder.
 - **The differences in the text are authored.** The phrase table is written by hand, so two
   bodies giving two texts is true by construction.
-- **The cool rung of the ladder does not carry** in the prompt the agent really uses (result 2).
+- **The mild heat sentences are checked on one frozen scene only** (result 2), and only heat has
+  them. Whether a mild thirst or tiredness needs the same has not been tested.
+- **The override still fires on a dashed hope.** A model that expects rest from a drink is
+  overruled when its tiredness is the loudest need; the rule cannot tell that from the world
+  answering worse.
 - **It is still reactive.** Every expectation looks one step ahead, for the chosen action only.
   The honest label is homeostasis with an inner narrator.
 - **The rules' forecast is biased.** For the heat a place will give, the rules add up the
@@ -253,8 +285,8 @@ What that says, and what it does not:
   the ordinary pair and not only the extreme pair.* Not established. It is the owner's call, and
   the builder's own look says the ordinary pair is hard to tell apart in the morning.
 - *At noon the two captions give the same facts opposite value.* Yes: the two texts above. Over
-  the afternoon a fact noticed by both bodies had opposite value on 7 steps of 42 under the
-  reactive rule and on 6 under the model (`pairs.csv` in the experiment's table directory).
+  the afternoon a fact noticed by both bodies had opposite value on 8 steps of 42 under the
+  reactive rule and on 8 under the model (`pairs.csv` in the experiment's table directory).
 - *The reactive and lookahead rules have been compared on time outside the comfortable range.*
   Yes: result 3. Looking ahead pays.
 - *The README states the ladder-check result and the share of the model's choices that the

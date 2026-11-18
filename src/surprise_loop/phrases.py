@@ -222,9 +222,11 @@ FACT_PHRASES: dict[FactName, dict[Sign, list[str] | str]] = {
 # Signed body grade -> sentence. Only the grades listed here speak.
 BODY_PHRASES: dict[Channel, dict[int, str]] = {
     Channel.HEAT: {
+        1: "You are a little warm.",
         2: "You are warm under your skin.",
         3: "Your head is thick.",
         4: "Your skin burns and your head is thick.",
+        -1: "You are a little cool.",
         -2: "You are chilled.",
         -3: "You are cold through.",
         -4: "You are cold through.",
@@ -241,7 +243,8 @@ BODY_PHRASES: dict[Channel, dict[int, str]] = {
     },
 }
 
-# (channel, worse): worse is more strain than expected.
+# (channel, worse): worse is hotter than expected for heat, and more need than expected for
+# water and energy.
 SURPRISE_PHRASES: dict[tuple[Channel, bool], str] = {
     (Channel.HEAT, True): "It is hotter than you thought it would be.",
     (Channel.HEAT, False): "It is cooler than you thought it would be.",

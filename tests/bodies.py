@@ -39,5 +39,5 @@ ILO_TEXT = (
 TAVI_TEXT = (
     "You are standing in the middle of the forest clearing. The air is pleasantly warm. The sun "
     "sits on your shoulders. It looks chilly under the oak. Birds are calling. A stream runs "
-    "somewhere to the west. A light breeze moves the leaves."
+    "somewhere to the west. A light breeze moves the leaves. You are a little cool."
 )
