@@ -109,7 +109,7 @@ FACT_PHRASES: dict[FactName, dict[Sign, list[str] | str]] = {
             "Under the oak it is dark; nothing else matters.",
         ],
         "-": [
-            "It looks dim under the oak.",
+            "It looks chilly under the oak.",
             "Under the oak it looks cold.",
         ],
         "0": "An oak stands a few steps off.",
@@ -124,7 +124,7 @@ FACT_PHRASES: dict[FactName, dict[Sign, list[str] | str]] = {
             "Under the oak it is dark; nothing else matters.",
         ],
         "-": [
-            "It looks dim under the oak.",
+            "It looks chilly under the oak.",
             "Under the oak it looks cold.",
         ],
         "0": "An oak stands at the edge of the clearing.",
@@ -137,7 +137,7 @@ FACT_PHRASES: dict[FactName, dict[Sign, list[str] | str]] = {
             "Shade and a seat, under the oak. Nothing else matters.",
         ],
         "-": [
-            "It looks dim under the oak, by the log.",
+            "It looks chilly under the oak, by the log.",
             "Under the oak it looks cold, even on the log.",
         ],
         "0": "Under the oak a log lies in the shade.",
@@ -150,7 +150,7 @@ FACT_PHRASES: dict[FactName, dict[Sign, list[str] | str]] = {
             "Under the oak it is dark, if you stand.",
         ],
         "-": [
-            "It looks dim under the oak.",
+            "It looks chilly under the oak.",
             "Under the oak it looks cold.",
         ],
         "0": "Under the oak the log lies in the sun.",

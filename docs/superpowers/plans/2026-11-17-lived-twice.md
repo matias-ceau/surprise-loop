@@ -399,7 +399,7 @@ For the 13:00 meadow facts, with `attention=None`, `extra=0` and default `LensPa
 - Ilo's afternoon-start belief, temperament, arousal 0.70 and `voiced=(heat, worse)` give exactly:
   `You are standing in the middle of the forest clearing. There is no place to sit, and you need one. It is really hot. The sun beats down on your head. The one dark patch is under the oak, a few steps off. Your legs are heavy. Your head is thick. It is hotter than you thought it would be.`
 - Tavi's afternoon-start belief, temperament, arousal 0.20 and no voiced surprise give exactly:
-  `You are standing in the middle of the forest clearing. The air is pleasantly warm. The sun sits on your shoulders. It looks dim under the oak. Birds are calling. A stream runs somewhere to the west. A light breeze moves the leaves.`
+  `You are standing in the middle of the forest clearing. The air is pleasantly warm. The sun sits on your shoulders. It looks chilly under the oak. Birds are calling. A stream runs somewhere to the west. A light breeze moves the leaves.`
 
 ### Phases and loop
 
