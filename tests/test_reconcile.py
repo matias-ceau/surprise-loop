@@ -16,6 +16,7 @@ from surprise_loop.phases.heuristics import (
     updated_belief,
 )
 from surprise_loop.phases.perceive import build_percept
+from surprise_loop.phases.reconcile import override_for
 from surprise_loop.state import (
     AgentState,
     Appraisal,
@@ -308,12 +309,33 @@ def test_no_override_on_pass_one_and_the_pass_zero_override_is_kept() -> None:
     assert out.passes[-1].override is None
 
 
+def override_with(ws: Workspace, params: Params, action: Action | None = None) -> Override | None:
+    """`override_for` on a workspace filled up to Reconcile, under `params`, for `action` in place
+    of the one decided: the other side of a test's one condition."""
+    belief = updated_belief(
+        ws.outcome.observation.signal, ws.decision.expectation.bands, ILO, params.belief
+    )
+    return override_for(
+        action or ws.decision.action,
+        ws.observation.place,
+        belief,
+        ILO,
+        ws.comparison,
+        ws.outcome,
+        params,
+    )
+
+
 def test_no_override_when_disabled() -> None:
     params = PARAMS.model_copy(
         update={"override": PARAMS.override.model_copy(update={"enabled": False})}
     )
     rt = hot_rt(params)
-    assert run(reconcile, urgent_heat(rt), rt).override is None
+    ws = urgent_heat(rt)  # loudest, urgent, worse, not served
+    assert run(reconcile, ws, rt).override is None
+    enabled = override_with(ws, PARAMS)
+    assert enabled is not None
+    assert enabled.channel is HEAT
 
 
 def test_no_override_when_the_need_is_not_urgent() -> None:
@@ -321,19 +343,49 @@ def test_no_override_when_the_need_is_not_urgent() -> None:
         update={"override": PARAMS.override.model_copy(update={"urgent_felt": 10.0})}
     )
     rt = hot_rt(params)
-    assert run(reconcile, ready(rt, Action.REST, heat_band(0.4, 0.5)), rt).override is None
+    ws = urgent_heat(rt)  # loudest, worse and not served; urgent at 2.0
+    belief = updated_belief(ws.outcome.observation.signal, heat_band(0.4, 0.5), ILO, params.belief)
+    assert needs(belief, ILO)[HEAT] < params.override.urgent_felt
+    assert run(reconcile, ws, rt).override is None
+    urgent = override_with(ws, PARAMS)
+    assert urgent is not None
+    assert urgent.channel is HEAT
 
 
 def test_no_override_when_the_need_came_out_as_expected() -> None:
     rt = hot_rt()
-    assert run(reconcile, ready(rt, Action.REST), rt).override is None
+    ws = ready(rt, Action.REST)
+    belief = updated_belief(ws.outcome.observation.signal, OPEN_BANDS, ILO, PARAMS.belief)
+    need = needs(belief, ILO)
+    assert loudest(need)[0] is HEAT
+    assert need[HEAT] >= PARAMS.override.urgent_felt
+    assert ws.comparison.body_felt[HEAT] == 0
+    assert run(reconcile, ws, rt).override is None
+    # with no margin to clear, the same outcome counts as worse than expected
+    no_margin = PARAMS.model_copy(
+        update={"override": PARAMS.override.model_copy(update={"worse_margin": 0.0})}
+    )
+    worse = override_with(ws, no_margin)
+    assert worse is not None
+    assert worse.channel is HEAT
 
 
 def test_no_override_when_the_action_served_the_channel() -> None:
-    rt = hot_rt()
+    p = URGENT_AT_DEFAULT
+    rt = hot_rt(p)
     ws = ready(rt, Action.GO_OAK, heat_band(0.0, 0.1))
-    assert ws.comparison.body_felt[HEAT] >= PARAMS.override.worse_margin
+    belief = updated_belief(ws.outcome.observation.signal, heat_band(0.0, 0.1), ILO, p.belief)
+    need = needs(belief, ILO)
+    assert loudest(need)[0] is HEAT
+    assert need[HEAT] >= p.override.urgent_felt
+    assert ws.comparison.body_felt[HEAT] >= p.override.worse_margin
+    assert Action.GO_OAK in serving_actions(HEAT, True, Place.MEADOW)
     assert run(reconcile, ws, rt).override is None
+    assert override_with(ws, p) is None
+    # the same outcome after an action that does not serve heat is overruled
+    unserved = override_with(ws, p, Action.LOOK)
+    assert unserved is not None
+    assert unserved.channel is HEAT
 
 
 COLD_BODY = BodyState(heat=-1.0, water=0.8, energy=0.7)
@@ -373,7 +425,8 @@ def test_a_cold_body_that_came_out_colder_is_overridden_toward_warmth() -> None:
     # the size of the need, not its sign, against the threshold
     belief = out.agent.belief
     size = abs(needs(belief, ILO)[HEAT])
-    assert out.override.detail.startswith(f"heat need {size:.2f} is at least 1.50")
+    threshold = URGENT_AT_DEFAULT.override.urgent_felt
+    assert out.override.detail.startswith(f"heat need {size:.2f} is at least {threshold:.2f}")
 
 
 def test_a_cold_body_that_came_out_warmer_is_not_overridden() -> None:
