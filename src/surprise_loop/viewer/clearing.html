@@ -36,7 +36,10 @@
   .lens { margin: 18px 2px 0; font-size: 19px; line-height: 1.55; color: var(--ink);
     text-wrap: pretty; }
   .s { cursor: pointer; border-radius: 3px; padding: 1px 0; box-decoration-break: clone;
-    -webkit-box-decoration-break: clone; transition: background .2s, color .2s; }
+    -webkit-box-decoration-break: clone; transition: background .2s, color .2s;
+    background-image: linear-gradient(currentColor, currentColor); background-size: 0 1px;
+    background-repeat: no-repeat; background-position: 0 100%; }
+  .s:focus-visible { outline: 1px dotted var(--accent); outline-offset: 2px; }
   .s:hover { background-color: #ffffff10; }
   .s.opening { color: var(--soft); }
   .s.bodyline { font-style: italic; }
@@ -395,7 +398,8 @@ function paintScene(root, entry, arousal, opts) {
   setStroke(q("birds"), tint("#2f2a24", val("birds"), on("birds")));
   q("birds").style.opacity = on("birds") ? 0.9 : 0.35;
 
-  setArousal(root, arousal, 0);
+  if (o.fadeMs) fadeArousal(root, arousal, o.fadeMs);
+  else setArousal(root, arousal, 0);
   placeFigure(root, feet.x, feet.y, {});
 }
 function strengthOf(noticed) { return noticed ? 1 : UNNOTICED_OPACITY; }
@@ -403,9 +407,24 @@ function strengthOf(noticed) { return noticed ? 1 : UNNOTICED_OPACITY; }
 /* arousal closes the frame; `breath` (-1..1) lets it breathe */
 function setArousal(root, arousal, breath) {
   const a = Math.max(0, Math.min(1, arousal));
+  root.shownArousal = a;
   const b = breath || 0;
   root.querySelector('[data-k="vigIn"]').setAttribute("offset", String(0.92 - 0.72 * a - 0.04 * a * b));
   root.querySelector('[data-k="vigOut"]').style.stopOpacity = String(0.22 + 0.7 * a + 0.05 * b);
+}
+
+/* move the frame from the arousal it shows to `target` over `ms`, for a page that does not
+   drive the frame itself on every animation frame */
+function fadeArousal(root, target, ms) {
+  const from = root.shownArousal === undefined ? target : root.shownArousal;
+  const start = performance.now();
+  cancelAnimationFrame(root.fading || 0);
+  const step = now => {
+    const k = Math.max(0, Math.min(1, (now - start) / ms));
+    setArousal(root, from + (target - from) * k * k * (3 - 2 * k), 0);
+    if (k < 1) root.fading = requestAnimationFrame(step);
+  };
+  root.fading = requestAnimationFrame(step);
 }
 
 /* the creature, standing at x, feet on y; pose: sit, kneel (a stumble) and lie (collapsed), 0..1 */
@@ -481,6 +500,28 @@ function openingWhy(entry, place) {
     <div>${noticed} of ${entry.facts.length} facts noticed; ${entry.body.length} body line${entry.body.length === 1 ? "" : "s"}</div>
     <div class="nums"><span class="muted">felt strength</span>${feltNums(entry)}</div>`;
 }
+
+/* a sentence the person can open: by pointer, or by Tab and then Enter or Space */
+function sentenceSpan(cls, key, text) {
+  const span = document.createElement("span");
+  span.className = cls;
+  span.dataset.key = key;
+  span.textContent = text;
+  span.tabIndex = 0;
+  span.setAttribute("role", "button");
+  return span;
+}
+document.addEventListener("keydown", ev => {
+  const s = ev.target;
+  if (!(s instanceof HTMLElement) || !s.classList.contains("s")) return;
+  if (ev.key !== "Enter" && ev.key !== " ") return;
+  ev.preventDefault();
+  const key = s.dataset.key, host = s.closest("section");
+  s.click();
+  /* the click redraws the sentences: keep the focus on the same one */
+  const again = host && host.querySelector(`.s[data-key="${CSS.escape(key)}"]`);
+  if (again) again.focus();
+});
 
 function idleWhy(entry) {
   const left = entry.facts.filter(f => !f.noticed).map(f => NAMES[f.name] || f.name);

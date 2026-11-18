@@ -30,7 +30,7 @@ from surprise_loop.world import Action, BodyState, Channel, Event, Levels, OpenQ
 HEAT, WATER, ENERGY = Channel.HEAT, Channel.WATER, Channel.ENERGY
 OPEN = Band(lo=None, hi=None)
 OPEN_BANDS = dict.fromkeys(Channel, OPEN)
-HOT_READING = Appraisal(reading="It is too hot; I need to cool down.", about=HEAT)
+HOT_READING = Appraisal(reading="I am too hot; I need to cool down.", about=HEAT)
 NO_FEEDBACK = Feedback(judged_step=None, score=None, line="")
 
 

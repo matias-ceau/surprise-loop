@@ -317,8 +317,8 @@ QUESTION_PHRASES: dict[OpenQuestion, str] = {
 
 # (about, too much) -> the Appraise stub's one line. About None is a body with nothing pressing.
 STUB_READINGS: dict[tuple[Channel | None, bool], str] = {
-    (Channel.HEAT, True): "It is too hot; I need to cool down.",
-    (Channel.HEAT, False): "It is too cold; I need to warm up.",
+    (Channel.HEAT, True): "I am too hot; I need to cool down.",
+    (Channel.HEAT, False): "I am cold; I need to warm up.",
     (Channel.WATER, True): "I am thirsty; I need water.",
     (Channel.WATER, False): "I have had plenty to drink.",
     (Channel.ENERGY, True): "I am tired; I need to rest.",

@@ -15,14 +15,48 @@ from surprise_loop.metrics import flatten
 from surprise_loop.phrases import LADDER_WORDS
 from surprise_loop.state import Band, FeltScene, PassRecord, Temperament
 from surprise_loop.viewer import export_page
-from surprise_loop.world import QUESTION_OF, Channel, Levels, Place
+from surprise_loop.world import (
+    GO_TARGET,
+    QUESTION_OF,
+    Action,
+    BodyState,
+    Channel,
+    ClearingWorld,
+    Levels,
+    Place,
+    air_at,
+    log_shaded_at,
+    sun_at,
+)
 
 DIGITS = 4  # decimals kept in the embedded numbers
 PLACEHOLDER = "@@SCENE_DATA@@"
+# heat is (skin °C - 25) / 10: the unit convention stated in world.py's module docstring
+SKIN_NEUTRAL_C = 25.0
+SKIN_C_PER_HEAT = 10.0
 
 
 def _r(x: float) -> float:
     return round(x, DIGITS)
+
+
+def skin_c(heat: float) -> float:
+    """The skin temperature in °C of a body whose heat is `heat`."""
+    return SKIN_NEUTRAL_C + SKIN_C_PER_HEAT * heat
+
+
+def _body(body: BodyState) -> dict[str, float]:
+    return {
+        "heat": _r(body.heat),
+        "water": _r(body.water),
+        "energy": _r(body.energy),
+        "skin_c": _r(skin_c(body.heat)),
+    }
+
+
+def _toward(action: Action, place: Place) -> str:
+    """Where `action` leaves a body that takes it at `place`."""
+    return GO_TARGET.get(action, place).value
 
 
 def _levels(levels: Levels) -> dict[str, float]:
@@ -69,7 +103,13 @@ def _scene(scene: FeltScene) -> dict[str, Any]:
     }
 
 
-def _step(p: PassRecord, reading: str, arousal_before: float, t: Temperament) -> dict[str, Any]:
+def _step(
+    p: PassRecord,
+    reading: str,
+    arousal_before: float,
+    truth_before: dict[str, Any],
+    t: Temperament,
+) -> dict[str, Any]:
     decision, comparison, info = p.decision, p.comparison, p.outcome.info
     expectation = decision.expectation
     words = None
@@ -83,6 +123,7 @@ def _step(p: PassRecord, reading: str, arousal_before: float, t: Temperament) ->
         "scene": _scene(p.scene),
         "reading": reading,
         "action": decision.action.value,
+        "ghost_place": _toward(decision.action, p.scene.place),
         "event": p.outcome.observation.event.value,
         "expected": {
             "words": words,
@@ -108,17 +149,21 @@ def _step(p: PassRecord, reading: str, arousal_before: float, t: Temperament) ->
             "better": _r(comparison.better),
             "size": _r(comparison.size),
         },
+        # a miss too small to survive the rounding of `size` is still a miss
+        "match": comparison.size == 0,
         "belief": _levels(p.belief_after),
         "feeling": {
             "valence": _r(p.feeling_after.valence),
             "arousal": _r(p.feeling_after.arousal),
         },
         "arousal_before": _r(arousal_before),
+        "truth_before": truth_before,
         "override": None
         if p.override is None
         else {
             "channel": p.override.channel.value,
             "actions": [a.value for a in p.override.actions],
+            "toward": _toward(p.override.actions[0], info.place),
         },
         "truth": {
             "air_c": _r(info.air_c),
@@ -127,12 +172,25 @@ def _step(p: PassRecord, reading: str, arousal_before: float, t: Temperament) ->
             "stream_full": info.stream_full,
             "stumbled": info.stumbled,
             "collapsed": info.collapsed,
-            "body": {
-                "heat": _r(info.body.heat),
-                "water": _r(info.body.water),
-                "energy": _r(info.body.energy),
-            },
+            "body": _body(info.body),
         },
+    }
+
+
+def _start_truth(result: RunResult) -> dict[str, Any]:
+    """The world's truth where and when the run starts, from the world's own code."""
+    config = result.config
+    world, place = config.world, config.start_place
+    minute = result.records[0].observation.minute
+    start = ClearingWorld(world, config.seed, config.agent.body, place).snapshot()
+    return {
+        "air_c": _r(air_at(world, place, minute)),
+        "sun": _r(sun_at(world, place, minute)),
+        "log_shaded": log_shaded_at(world, minute),
+        "stream_full": start.stream_full,
+        "stumbled": False,
+        "collapsed": False,
+        "body": _body(config.agent.body),
     }
 
 
@@ -140,10 +198,11 @@ def _steps(result: RunResult) -> list[dict[str, Any]]:
     """One entry per world step of a run, in world-step order."""
     spec = result.config.agent
     readings = [r.appraisal.reading for r in result.records for _ in r.passes]
-    out, arousal = [], spec.arousal
+    out, arousal, truth = [], spec.arousal, _start_truth(result)
     for p, reading in zip(flatten(result.records), readings, strict=True):
-        out.append(_step(p, reading, arousal, spec.temperament))
-        arousal = p.feeling_after.arousal
+        step = _step(p, reading, arousal, truth, spec.temperament)
+        out.append(step)
+        arousal, truth = p.feeling_after.arousal, step["truth"]
     return out
 
 
@@ -180,11 +239,6 @@ def scene_data(a: RunResult, b: RunResult) -> dict[str, Any]:
             {
                 "name": r.config.agent.name,
                 "setpoint": r.config.agent.temperament.setpoint.model_dump(),
-                "start_body": {
-                    "heat": _r(r.config.agent.body.heat),
-                    "water": _r(r.config.agent.body.water),
-                    "energy": _r(r.config.agent.body.energy),
-                },
                 "start_place": r.config.start_place.value,
             }
             for r in (a, b)

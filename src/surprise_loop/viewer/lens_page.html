@@ -104,6 +104,7 @@ const DATA = JSON.parse(document.getElementById("lens-data").textContent);
 const G = DATA.grid;
 const DIMS = ["heat", "water", "energy", "arousal"];
 const NOON = 780;                   /* the frozen 13:00 sets the hour of the picture */
+const FRAME_FADE_MS = 600;          /* the frame closes or opens over the time the scene re-lights */
 
 /* ---------- text ---------- */
 function sentences(entry) {
@@ -149,11 +150,12 @@ function buildBody(agent, k) {
   const el = document.createElement("section");
   el.className = "body";
   el.innerHTML = `
-    <h2 class="head"><span>as <b>${titleCase(agent.name)}</b> lives it</span><span class="tag"></span></h2>
+    <h2 class="head"><span>as <b></b> lives it</span><span class="tag"></span></h2>
     <div class="frame">${sceneSvg(id)}</div>
     <p class="lens" aria-live="polite"></p>
     <div class="why"></div>
     <div class="controls"></div>`;
+  el.querySelector(".head b").textContent = titleCase(agent.name);
   el.querySelector("svg").dataset.id = id;
   const body = { agent, el, idx: {}, exact: null, chosen: null, shown: new Set() };
   const controls = el.querySelector(".controls");
@@ -221,7 +223,7 @@ function current(body) {
 
 function render(body) {
   const { entry, values } = current(body);
-  paintScene(body.el.querySelector("svg"), entry, values.arousal, { place: DATA.place.name, minute: NOON });
+  paintScene(body.el.querySelector("svg"), entry, values.arousal, { place: DATA.place.name, minute: NOON, fadeMs: FRAME_FADE_MS });
 
   ["heat", "water", "energy"].forEach(d => {
     body[d].input.value = String(body.idx[d]);
@@ -239,11 +241,8 @@ function render(body) {
     lens.textContent = entry.text;
   } else {
     parts.forEach((p, i) => {
-      const span = document.createElement("span");
-      span.className = "s " + p.cls + (p.key === body.chosen ? " chosen" : "")
-        + (before.size && !before.has(p.text) ? " fresh" : "");
-      span.dataset.key = p.key;
-      span.textContent = p.text;
+      const span = sentenceSpan("s " + p.cls + (p.key === body.chosen ? " chosen" : "")
+        + (before.size && !before.has(p.text) ? " fresh" : ""), p.key, p.text);
       lens.append(span);
       if (i < parts.length - 1) lens.append(" ");
     });

@@ -58,7 +58,7 @@
   .truth { margin-top: 14px; display: grid; gap: 14px; font: 11.5px/1.5 var(--mono); color: var(--dim); }
   .truth h3 { margin: 0 0 4px; font: 11px/1 var(--mono); letter-spacing: .2em; text-transform: uppercase;
     color: var(--soft); font-weight: normal; display: flex; justify-content: space-between; gap: 8px; }
-  .truth h3 span { letter-spacing: .04em; text-transform: none; color: var(--dim); }
+  .truth h3 .where { letter-spacing: .04em; text-transform: none; color: var(--dim); }
   .truth .row { display: grid; grid-template-columns: 4.6em 1fr 4.4em; gap: 8px; align-items: center; }
   .truth .row b { color: var(--ink); font-weight: normal; text-align: right; font-variant-numeric: tabular-nums; }
   .truth .gauge { position: relative; height: 4px; background: #2f2d27; border-radius: 2px; }
@@ -140,7 +140,19 @@ const STEPS = DATA.steps, N = STEPS.length;
 /* ---------- presentation constants ---------- */
 const STEP_MS = 3000;               /* one world step at normal speed */
 const SPEEDS = [0.5, 1, 2, 4];
-const T = { ghostIn: 0.10, ghostFull: 0.30, moveFrom: 0.34, moveTo: 0.62, outFrom: 0.64 };
+/* where each part of a step's bar starts and how long it lasts, as fractions of the bar */
+const T = {
+  ghostIn: 0.10, ghostFull: 0.30,         /* the ghost fades in */
+  moveFrom: 0.34, moveTo: 0.62,           /* the move; the truth after the step lands at moveTo */
+  outFrom: 0.64,                          /* the outcome: a dissolve or a ring */
+  missCut: 0.05,                          /* on a miss the ghost goes this fast once met */
+  unmetFrom: 0.45, unmetLen: 0.25,        /* collapsed: the ghost fades unmet */
+  fallFrom: 0.35, fallLen: 0.40,          /* a stumble: the fall, in the move's own progress */
+  dustFrom: 0.50, dustLen: 0.25,          /* a stumble: the dust, in the move's own progress */
+  coreFrom: 0.70, coreLen: 0.15,          /* an override: the core lights after the outcome */
+  coreOutLen: 0.30,                       /* a second pass: the core goes out after the outcome */
+};
+const LURCH = 0.22;                 /* how far toward its ghost a stumbling body gets */
 const RING_MIN = 10, RING_MAX = 92, RING_SIZE = 0.8;  /* a size of RING_SIZE is most of the way out */
 const WARM = "#f6b85a", COLD = "#6f97ff", PLAIN_RING = "#efe8d6";
 const GHOST_PALE = "#f4efe2", GHOST_RELIEF = 0.4, GHOST_MAX = 0.8;
@@ -149,10 +161,8 @@ const BREATH_SLOW = 5.5, BREATH_FAST = 1.3;   /* seconds per breath, calm .. sti
 const SAME_CHANGE = 0.05;           /* an expected change in felt strength smaller than this is "=" */
 const M_SCALE = 0.5;                /* the measured strip is the same view, half as wide */
 const M_OFFSET = [-9, 9];           /* the two bodies side by side when they share a spot */
-const SKIN_ZERO_C = 25, SKIN_PER_UNIT_C = 10;   /* heat is (skin °C − 25) / 10 */
 const HEAT_RANGE = [-1, 1.2];       /* the gauge of heat, in heat units */
 
-const TARGET = { go_meadow: "meadow", go_oak: "oak", go_stream: "stream" };
 const DID = {
   go_meadow: "went out into the meadow", go_oak: "went to the oak", go_stream: "went to the stream",
   drink: "drank", rest: "rested", look: "looked around",
@@ -167,6 +177,7 @@ const QUESTION_WORDS = {
   stream_full: ["the stream running full", "only a trickle"],
 };
 const PLACE_SHORT = { meadow: "in the meadow", oak: "under the oak", stream: "at the stream" };
+const TAG_OVERRULED = "the body overruled the plan", TAG_PULLS = "the body pulls it back";
 
 /* ---------- small helpers ---------- */
 function clamp01(x) { return Math.max(0, Math.min(1, x)); }
@@ -197,12 +208,13 @@ function buildBody(k) {
   const el = document.createElement("section");
   el.className = "body";
   el.innerHTML = `
-    <h2 class="head"><span>as <b>${titleCase(agent.name)}</b> lives it</span><span class="tag"></span></h2>
+    <h2 class="head"><span>as <b></b> lives it</span><span class="tag"></span></h2>
     <div class="frame">${sceneSvg(id)}</div>
-    <p class="lens" aria-live="polite"></p>
+    <p class="lens"></p>
     <p class="reading"></p>
     <p class="did"></p>
     <div class="why"></div>`;
+  el.querySelector(".head b").textContent = titleCase(agent.name);
   const svg = el.querySelector("svg");
   svg.dataset.id = id;
   const view = { k, agent, el, svg, chosen: null, shown: new Set(), q: key => svg.querySelector(`[data-k="${key}"]`) };
@@ -228,7 +240,7 @@ function measuredSvg() {
         <path d="M-5 -1 C-6.5 -14 -4.5 -22 0 -25 C4.5 -22 6.5 -14 5 -1 Z" fill="${k ? "#5d5a53" : "#3f3c36"}"/>
         <circle cx="0" cy="-30" r="4.4" fill="${k ? "#5d5a53" : "#3f3c36"}"/>
       </g>
-      <text data-m="name${k}" x="0" y="-40" font-size="9" text-anchor="middle">${a.name.charAt(0).toUpperCase()}</text>
+      <text data-m="name${k}" x="0" y="-40" font-size="9" text-anchor="middle"></text>
     </g>`).join("");
   return `
 <svg viewBox="0 0 240 326" role="img" aria-label="the clearing as measured">
@@ -257,17 +269,33 @@ function measuredSvg() {
 </svg>`;
 }
 
-function gauge(value, lo, hi, home) {
-  const f = v => (100 * clamp01((v - lo) / (hi - lo))).toFixed(1);
-  return `<span class="gauge"><i style="width:${f(value)}%"></i><u style="left:${f(home)}%" title="where this body is comfortable"></u></span>`;
-}
+const GAUGES = [
+  { label: "skin", key: "heat", range: [-1, 1.2], text: b => b.skin_c.toFixed(1) + " °C" },
+  { label: "water", key: "water", range: [0, 1], text: b => b.water.toFixed(2) },
+  { label: "energy", key: "energy", range: [0, 1], text: b => b.energy.toFixed(2) },
+];
+function share(v, range) { return (100 * clamp01((v - range[0]) / (range[1] - range[0]))).toFixed(1) + "%"; }
 
 function buildMeasured() {
   const el = document.createElement("section");
   el.className = "measured";
   el.innerHTML = `<h2 class="head"><span>as measured</span></h2>
     <div class="frame">${measuredSvg()}</div>
-    <div class="truth" id="truth"></div>`;
+    <div class="truth"></div>`;
+  const box = el.querySelector(".truth");
+  DATA.agents.forEach((agent, b) => {
+    const div = document.createElement("div");
+    div.dataset.body = String(b);
+    div.innerHTML = `<h3><span class="who"></span><span class="where"></span></h3><div class="air"></div>`
+      + GAUGES.map(g => `<div class="row" data-g="${g.key}"><span>${g.label}</span>`
+        + `<span class="gauge"><i></i><u title="where this body is comfortable"></u></span><b></b></div>`).join("");
+    div.querySelector(".who").textContent = agent.name;
+    GAUGES.forEach(g => {
+      div.querySelector(`[data-g="${g.key}"] u`).style.left = share(agent.setpoint[g.key], g.range);
+    });
+    box.append(div);
+    el.querySelector(`[data-m="name${b}"]`).textContent = agent.name.charAt(0).toUpperCase();
+  });
   return el;
 }
 
@@ -349,11 +377,8 @@ function writeText(view, k, fresh) {
     lens.textContent = scene.text;
   } else {
     parts.forEach((p, i) => {
-      const span = document.createElement("span");
-      span.className = "s " + p.cls + (p.key === view.chosen ? " chosen" : "")
-        + (fresh && before.size && !before.has(p.text) ? " fresh" : "");
-      span.dataset.key = p.key;
-      span.textContent = p.text;
+      const span = sentenceSpan("s " + p.cls + (p.key === view.chosen ? " chosen" : "")
+        + (fresh && before.size && !before.has(p.text) ? " fresh" : ""), p.key, p.text);
       lens.append(span);
       if (i < parts.length - 1) lens.append(" ");
     });
@@ -361,18 +386,11 @@ function writeText(view, k, fresh) {
   view.shown = new Set(parts.map(p => p.text));
   const reading = view.el.querySelector(".reading");
   reading.innerHTML = "";
-  const rs = document.createElement("span");
-  rs.className = "s" + (view.chosen === "reading" ? " chosen" : "");
-  rs.dataset.key = "reading";
-  rs.textContent = "“" + e.reading + "”";
-  reading.append(rs);
+  reading.append(sentenceSpan("s" + (view.chosen === "reading" ? " chosen" : ""), "reading", "“" + e.reading + "”"));
   const did = view.el.querySelector(".did");
   did.innerHTML = "";
-  const ds = document.createElement("span");
-  ds.className = "s" + (view.chosen === "did" ? " chosen" : "");
-  ds.dataset.key = "did";
-  ds.textContent = titleCase(didText(e)) + ". " + titleCase(expectText(e)) + ".";
-  did.append(ds);
+  did.append(sentenceSpan("s" + (view.chosen === "did" ? " chosen" : ""), "did",
+    titleCase(didText(e)) + ". " + titleCase(expectText(e)) + "."));
 
   const why = view.el.querySelector(".why");
   const key = view.chosen;
@@ -384,9 +402,6 @@ function writeText(view, k, fresh) {
   else if (key.startsWith("fact:") && scene.facts.some(f => f.name === key.slice(5))) why.innerHTML = factWhy(scene, key.slice(5));
   else if (key.startsWith("body:")) why.innerHTML = bodyWhy(scene, key.slice(5));
   else why.innerHTML = idleWhy(scene);
-
-  const tag = view.el.querySelector(".tag");
-  tag.textContent = e.second_pass ? "the body overruled the plan" : e.override ? "the body pulls it back" : "";
 }
 
 /* ---------- entering a step: re-light, captions, colours of ghost and ring ---------- */
@@ -409,15 +424,6 @@ function enter(k, animate) {
     view.q("tether").style.stroke = CORE;
     writeText(view, k, animate);
   });
-  const sun = sunAt(step.minute);
-  mq("sun").setAttribute("cx", (sun.x * M_SCALE).toFixed(1));
-  mq("sun").setAttribute("cy", sun.y.toFixed(1));
-  const truth = step.bodies[0].truth;
-  mq("streamFull").style.display = truth.stream_full ? "" : "none";
-  mq("streamLow").style.display = truth.stream_full ? "none" : "";
-  mq("streamLabel").textContent = truth.stream_full ? "stream: full" : "stream: a trickle";
-  mq("logLabel").textContent = truth.log_shaded ? "log: shaded" : "log: in sun";
-  mq("log").style.fill = truth.log_shaded ? "none" : "#f2ecd9";
   document.getElementById("scrub").value = String(k);
   document.getElementById("count").textContent = `step ${k + 1} of ${N}`;
   if (!animate) {
@@ -445,7 +451,7 @@ function bodyAt(k, b, t) {
   const e = STEPS[k].bodies[b];
   const prev = k > 0 ? STEPS[k - 1].bodies[b] : null;
   const from = SPOTS[e.place];
-  const aim = SPOTS[TARGET[e.action] || e.place];
+  const aim = SPOTS[e.ghost_place];
   const u = smooth((t - T.moveFrom) / (T.moveTo - T.moveFrom));
   let x = from.x, y = from.y, pose;
   const start = poseAfter(prev);
@@ -453,82 +459,104 @@ function bodyAt(k, b, t) {
     x = lerp(from.x, aim.x, u); y = lerp(from.y, aim.y, u);
     pose = mixPose(start, {}, smooth(u * 3));
   } else if (e.event === "stumbled") {
-    const lurch = 0.22 * Math.sin(Math.PI * u);
+    const lurch = LURCH * Math.sin(Math.PI * u);
     x = lerp(from.x, aim.x, lurch); y = lerp(from.y, aim.y, lurch);
-    pose = mixPose(mixPose(start, {}, smooth(u * 3)), { kneel: 1 }, smooth((u - 0.35) / 0.4));
+    pose = mixPose(mixPose(start, {}, smooth(u * 3)), { kneel: 1 }, smooth((u - T.fallFrom) / T.fallLen));
   } else {
     pose = mixPose(start, poseAfter(e), u);
   }
   return { e, from, aim, u, x, y, pose };
 }
 
-function frameBody(view, k, t, now) {
-  const s = bodyAt(k, view.k, t);
+/* the ghost: where it means to be; a match dissolves it, a miss cuts it */
+function drawGhost(view, s, t) {
   const { e, aim, u } = s;
-  const q = view.q;
-  placeFigure(view.svg, s.x, s.y, s.pose);
-
-  /* the ghost: where it means to be */
   const gIn = smooth((t - T.ghostIn) / (T.ghostFull - T.ghostIn));
-  const match = e.comparison.size === 0;
   let gOp, gScale = 1.1;
-  if (e.event === "collapsed") gOp = gIn * (1 - smooth((t - 0.45) / 0.25));
-  else if (e.event === "stumbled") gOp = gIn * (1 - smooth((u - 0.35) / 0.4));
+  if (e.event === "collapsed") gOp = gIn * (1 - smooth((t - T.unmetFrom) / T.unmetLen));
+  else if (e.event === "stumbled") gOp = gIn * (1 - smooth((u - T.fallFrom) / T.fallLen));
   else if (t <= T.moveTo) gOp = gIn * (1 - 0.35 * u);
-  else if (match) {
+  else if (e.match) {
     const v = (t - T.moveTo) / (1 - T.moveTo);
     gOp = 0.65 * (1 - smooth(v)); gScale = 1.1 + 0.35 * smooth(v);
-  } else gOp = 0.65 * (1 - smooth((t - T.moveTo) / 0.05));
-  q("ghostAt").setAttribute("transform", `translate(${aim.x} ${aim.y}) scale(${gScale.toFixed(3)})`);
-  q("ghostAt").setAttribute("opacity", (GHOST_MAX * gOp).toFixed(3));
+  } else gOp = 0.65 * (1 - smooth((t - T.moveTo) / T.missCut));
+  view.q("ghostAt").setAttribute("transform", `translate(${aim.x} ${aim.y}) scale(${gScale.toFixed(3)})`);
+  view.q("ghostAt").setAttribute("opacity", (GHOST_MAX * gOp).toFixed(3));
+  return gIn;
+}
 
-  /* the ring: a miss, thrown from the figure */
-  const ring = q("ring"), shade = q("ringShade");
-  if (e.comparison.size > 0 && t > T.outFrom) {
-    const v = (t - T.outFrom) / (1 - T.outFrom);
-    const k2 = Math.tanh(e.comparison.size / RING_SIZE);
-    const r = RING_MIN + (RING_MAX * k2 + 14 - RING_MIN) * (1 - Math.pow(1 - v, 2.4));
-    ring.setAttribute("cx", s.x.toFixed(1));
-    ring.setAttribute("cy", (s.y - 30).toFixed(1));
-    ring.setAttribute("r", r.toFixed(1));
-    ring.setAttribute("stroke-width", ((2.2 + 3.6 * k2) * (1 - 0.4 * v)).toFixed(2));
-    ring.setAttribute("opacity", (0.95 * Math.pow(1 - v, 1.1)).toFixed(3));
-    ["cx", "cy", "r"].forEach(a => shade.setAttribute(a, ring.getAttribute(a)));
-    shade.setAttribute("stroke-width", (Number(ring.getAttribute("stroke-width")) + 2.5).toFixed(2));
-    shade.setAttribute("opacity", (0.22 * Math.pow(1 - v, 1.1)).toFixed(3));
-  } else { ring.setAttribute("opacity", "0"); shade.setAttribute("opacity", "0"); }
+/* the ring: a miss, thrown from the figure */
+function drawRing(view, s, t) {
+  const ring = view.q("ring"), shade = view.q("ringShade");
+  if (s.e.match || t <= T.outFrom) {
+    ring.setAttribute("opacity", "0"); shade.setAttribute("opacity", "0");
+    return;
+  }
+  const v = (t - T.outFrom) / (1 - T.outFrom);
+  const k = Math.tanh(s.e.comparison.size / RING_SIZE);
+  const r = RING_MIN + (RING_MAX * k + 14 - RING_MIN) * (1 - Math.pow(1 - v, 2.4));
+  ring.setAttribute("cx", s.x.toFixed(1));
+  ring.setAttribute("cy", (s.y - 30).toFixed(1));
+  ring.setAttribute("r", r.toFixed(1));
+  ring.setAttribute("stroke-width", ((2.2 + 3.6 * k) * (1 - 0.4 * v)).toFixed(2));
+  ring.setAttribute("opacity", (0.95 * Math.pow(1 - v, 1.1)).toFixed(3));
+  ["cx", "cy", "r"].forEach(a => shade.setAttribute(a, ring.getAttribute(a)));
+  shade.setAttribute("stroke-width", (Number(ring.getAttribute("stroke-width")) + 2.5).toFixed(2));
+  shade.setAttribute("opacity", (0.22 * Math.pow(1 - v, 1.1)).toFixed(3));
+}
 
-  /* a stumble raises dust where it fell */
-  const dust = q("dust");
-  if (e.event === "stumbled") {
-    dust.setAttribute("transform", `translate(${s.x.toFixed(1)} ${s.y.toFixed(1)})`);
-    dust.setAttribute("opacity", (0.85 * smooth((u - 0.5) / 0.25)).toFixed(3));
-  } else dust.setAttribute("opacity", "0");
+/* a stumble raises dust where it fell */
+function drawDust(view, s) {
+  const dust = view.q("dust");
+  if (s.e.event !== "stumbled") { dust.setAttribute("opacity", "0"); return; }
+  dust.setAttribute("transform", `translate(${s.x.toFixed(1)} ${s.y.toFixed(1)})`);
+  dust.setAttribute("opacity", (0.85 * smooth((s.u - T.dustFrom) / T.dustLen)).toFixed(3));
+}
 
-  /* the body overrules: a red core, and a cord pulling toward what serves it */
-  let core = 0, cord = 0, toward = null;
+/* the body overrules: a red core, a cord pulling toward what serves it, and the panel's tag */
+function drawOverride(view, s, t, gIn, now) {
+  const { e, aim, u } = s;
+  let core = 0, cord = 0, toward = null, tag = "";
   if (e.override) {
-    core = smooth((t - 0.7) / 0.15);
+    core = smooth((t - T.coreFrom) / T.coreLen);
     cord = core;
-    toward = SPOTS[TARGET[e.override.actions[0]] || e.place_after];
+    toward = SPOTS[e.override.toward];
+    if (t >= T.coreFrom) tag = TAG_PULLS;
   } else if (e.second_pass) {
-    core = 1 - smooth((t - T.outFrom) / 0.3);
+    core = 1 - smooth((t - T.outFrom) / T.coreOutLen);
     cord = gIn * (1 - u);
     toward = aim;
+    tag = TAG_OVERRULED;
   }
-  q("core").setAttribute("opacity", (0.95 * core).toFixed(3));
-  q("core").setAttribute("r", (4.5 + 0.8 * Math.sin(now / 160)).toFixed(2));
-  const tether = q("tether");
+  view.q("core").setAttribute("opacity", (0.95 * core).toFixed(3));
+  view.q("core").setAttribute("r", (4.5 + 0.8 * Math.sin(now / 160)).toFixed(2));
+  const tether = view.q("tether");
   if (cord > 0 && toward && Math.abs(toward.x - s.x) > 6) {
     const x0 = s.x, y0 = s.y - 30, x1 = toward.x, y1 = toward.y - 30;
     tether.setAttribute("d", `M${x0.toFixed(1)} ${y0.toFixed(1)} Q${((x0 + x1) / 2).toFixed(1)} ${(Math.min(y0, y1) + 22).toFixed(1)} ${x1.toFixed(1)} ${y1.toFixed(1)}`);
     tether.setAttribute("opacity", (0.9 * cord).toFixed(3));
   } else tether.setAttribute("opacity", "0");
+  if (view.tagShown !== tag) {
+    view.tagShown = tag;
+    view.el.querySelector(".tag").textContent = tag;
+  }
+}
 
-  /* arousal closes the frame and sets the pace of its breathing */
+/* arousal closes the frame and sets the pace of its breathing */
+function breathe(view, e, t, now) {
   const a = lerp(e.arousal_before, e.feeling.arousal, smooth((t - T.outFrom) / (1 - T.outFrom)));
   const period = lerp(BREATH_SLOW, BREATH_FAST, clamp01(a));
   setArousal(view.svg, a, Math.sin(2 * Math.PI * now / 1000 / period));
+}
+
+function frameBody(view, k, t, now) {
+  const s = bodyAt(k, view.k, t);
+  placeFigure(view.svg, s.x, s.y, s.pose);
+  const gIn = drawGhost(view, s, t);
+  drawRing(view, s, t);
+  drawDust(view, s);
+  drawOverride(view, s, t, gIn, now);
+  breathe(view, s.e, t, now);
   return s;
 }
 
@@ -545,24 +573,29 @@ function frameMeasured(k, t, states) {
   if (key === lastTruthShown) return;
   lastTruthShown = key;
   const step = STEPS[k];
-  mq("clock").textContent = clockOf(after ? step.minute_after : step.minute);
-  document.getElementById("clock").textContent = clockOf(after ? step.minute_after : step.minute);
-  const rows = DATA.agents.map((agent, b) => {
-    const e = step.bodies[b];
-    const prev = k > 0 ? STEPS[k - 1].bodies[b] : null;
-    const truth = after ? e.truth : prev ? prev.truth : null;
-    const body = truth ? truth.body : agent.start_body;
-    const place = after ? e.place_after : e.place;
-    const home = agent.setpoint;
-    const skin = x => (SKIN_ZERO_C + SKIN_PER_UNIT_C * x).toFixed(1) + " °C";
-    const air = truth ? `air here ${truth.air_c.toFixed(1)} °C · sun ${truth.sun.toFixed(2)}` : "air here —";
-    return `<div><h3>${agent.name}<span>${PLACE_SHORT[place]}</span></h3>
-      <div class="air">${air}</div>
-      <div class="row"><span>skin</span>${gauge(body.heat, HEAT_RANGE[0], HEAT_RANGE[1], home.heat)}<b>${skin(body.heat)}</b></div>
-      <div class="row"><span>water</span>${gauge(body.water, 0, 1, home.water)}<b>${body.water.toFixed(2)}</b></div>
-      <div class="row"><span>energy</span>${gauge(body.energy, 0, 1, home.energy)}<b>${body.energy.toFixed(2)}</b></div></div>`;
+  const minute = after ? step.minute_after : step.minute;
+  mq("clock").textContent = clockOf(minute);
+  document.getElementById("clock").textContent = clockOf(minute);
+  const sun = sunAt(minute);
+  mq("sun").setAttribute("cx", (sun.x * M_SCALE).toFixed(1));
+  mq("sun").setAttribute("cy", sun.y.toFixed(1));
+  const world = after ? step.bodies[0].truth : step.bodies[0].truth_before;
+  mq("streamFull").style.display = world.stream_full ? "" : "none";
+  mq("streamLow").style.display = world.stream_full ? "none" : "";
+  mq("streamLabel").textContent = world.stream_full ? "stream: full" : "stream: a trickle";
+  mq("logLabel").textContent = world.log_shaded ? "log: shaded" : "log: in sun";
+  mq("log").style.fill = world.log_shaded ? "none" : "#f2ecd9";
+  measured.querySelectorAll(".truth [data-body]").forEach(div => {
+    const e = step.bodies[Number(div.dataset.body)];
+    const truth = after ? e.truth : e.truth_before;
+    div.querySelector(".where").textContent = PLACE_SHORT[after ? e.place_after : e.place];
+    div.querySelector(".air").textContent = `air here ${truth.air_c.toFixed(1)} °C · sun ${truth.sun.toFixed(2)}`;
+    GAUGES.forEach(g => {
+      const row = div.querySelector(`[data-g="${g.key}"]`);
+      row.querySelector("i").style.width = share(truth.body[g.key], g.range);
+      row.querySelector("b").textContent = g.text(truth.body);
+    });
   });
-  document.getElementById("truth").innerHTML = rows.join("");
 }
 
 function frame(k, t, now) {
@@ -625,7 +658,11 @@ SPEEDS.forEach(v => {
   speedBox.append(b);
 });
 document.addEventListener("keydown", ev => {
-  if (ev.target && ev.target.tagName === "INPUT" && ev.key !== " ") return;
+  /* a focused button or sentence takes its own keys; the range input keeps its arrows */
+  if (ev.defaultPrevented || ev.altKey || ev.ctrlKey || ev.metaKey) return;
+  const tag = ev.target && ev.target.tagName;
+  if (tag === "BUTTON" || (ev.target.classList && ev.target.classList.contains("s"))) return;
+  if (tag === "INPUT" && ev.key !== " ") return;
   if (ev.key === " ") { ev.preventDefault(); togglePlay(); }
   else if (ev.key === "ArrowLeft") { ev.preventDefault(); show(current - 1); }
   else if (ev.key === "ArrowRight") { ev.preventDefault(); show(current + 1); }

@@ -17,7 +17,16 @@ from surprise_loop.phrases import LADDER_WORDS
 from surprise_loop.state import Band, ChangeWord, Temperament
 from surprise_loop.viewer.lens_page import lens_page_html
 from surprise_loop.viewer.scene import expected_felt, scene_html
-from surprise_loop.world import Channel, FactKind, Levels
+from surprise_loop.world import (
+    GO_TARGET,
+    Channel,
+    ClearingWorld,
+    FactKind,
+    Levels,
+    air_at,
+    log_shaded_at,
+    sun_at,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 AFTERNOON = ROOT / "experiments" / "clearing_afternoon.yaml"
@@ -177,6 +186,80 @@ def test_stub_steps_carry_no_words_and_a_number_per_channel(data: dict[str, Any]
             assert set(body["expected"]["felt"]) == {"heat", "water", "energy"}
 
 
+def _skin_c(heat: float) -> float:
+    # world.py: heat is (skin °C - 25) / 10
+    return round(25 + 10 * heat, 4)
+
+
+def test_the_truth_before_the_first_step_is_the_worlds_own(
+    afternoon: tuple[RunResult, RunResult], data: dict[str, Any]
+) -> None:
+    for k, result in enumerate(afternoon):
+        config = result.config
+        place, minute = config.start_place, result.records[0].observation.minute
+        world = ClearingWorld(config.world, config.seed, config.agent.body, place)
+        before = data["steps"][0]["bodies"][k]["truth_before"]
+        assert before["air_c"] == round(air_at(config.world, place, minute), 4)
+        assert before["sun"] == round(sun_at(config.world, place, minute), 4)
+        assert before["log_shaded"] == log_shaded_at(config.world, minute)
+        assert before["stream_full"] == world.snapshot().stream_full
+        assert before["body"]["heat"] == round(config.agent.body.heat, 4)
+        assert before["body"]["skin_c"] == _skin_c(config.agent.body.heat)
+        assert before["stumbled"] is False and before["collapsed"] is False
+
+
+def test_the_truth_before_a_later_step_is_the_last_ones_truth_after(
+    data: dict[str, Any],
+) -> None:
+    for prev, step in zip(data["steps"], data["steps"][1:], strict=False):
+        for k in (0, 1):
+            assert step["bodies"][k]["truth_before"] == prev["bodies"][k]["truth"]
+
+
+def test_the_true_body_carries_its_skin_temperature(
+    afternoon: tuple[RunResult, RunResult], data: dict[str, Any]
+) -> None:
+    for step, p in zip(data["steps"], flatten(afternoon[0].records), strict=True):
+        assert step["bodies"][0]["truth"]["body"]["skin_c"] == _skin_c(p.outcome.info.body.heat)
+
+
+def test_the_ghost_stands_where_the_action_leads(
+    afternoon: tuple[RunResult, RunResult], data: dict[str, Any]
+) -> None:
+    for k, result in enumerate(afternoon):
+        for step, p in zip(data["steps"], flatten(result.records), strict=True):
+            want = GO_TARGET.get(p.decision.action, p.scene.place)
+            assert step["bodies"][k]["ghost_place"] == want.value
+
+
+def test_the_override_names_the_place_that_serves_the_need(
+    afternoon: tuple[RunResult, RunResult], data: dict[str, Any]
+) -> None:
+    for step, p in zip(data["steps"], flatten(afternoon[0].records), strict=True):
+        if p.override is not None:
+            first = p.override.actions[0]
+            want = GO_TARGET.get(first, p.outcome.info.place)
+            assert step["bodies"][0]["override"]["toward"] == want.value
+
+
+def test_a_match_is_a_size_of_exactly_zero_before_rounding(
+    afternoon: tuple[RunResult, RunResult],
+) -> None:
+    a, b = afternoon
+    for step, p in zip(embedded(scene_html(a, b))["steps"], flatten(a.records), strict=True):
+        assert step["bodies"][0]["match"] == (p.comparison.size == 0)
+    # a miss too small to survive rounding is still a miss
+    first = a.records[0]
+    p = first.passes[0]
+    tiny = p.comparison.model_copy(update={"size": 1e-6})
+    passes = [p.model_copy(update={"comparison": tiny}), *first.passes[1:]]
+    records = [first.model_copy(update={"passes": passes}), *a.records[1:]]
+    data = embedded(scene_html(a.model_copy(update={"records": records}), b))
+    body = data["steps"][0]["bodies"][0]
+    assert body["comparison"]["size"] == 0
+    assert body["match"] is False
+
+
 # --- refusals -----------------------------------------------------------------------------------
 
 
@@ -207,6 +290,13 @@ def test_runs_with_different_lengths_are_refused(afternoon: tuple[RunResult, Run
     a, b = afternoon
     shorter = b.model_copy(update={"records": b.records[:-1]})
     assert "steps" in _refusal(a, shorter)
+
+
+def test_runs_without_world_steps_are_refused(afternoon: tuple[RunResult, RunResult]) -> None:
+    a, b = afternoon
+    empty_a = a.model_copy(update={"records": []})
+    empty_b = b.model_copy(update={"records": []})
+    assert "no world steps" in _refusal(empty_a, empty_b)
 
 
 # --- the page -----------------------------------------------------------------------------------
