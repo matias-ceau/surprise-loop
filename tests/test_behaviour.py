@@ -1,243 +1,249 @@
-"""The behavioural gate (build step 4): the stub agent behaves like an operant subject.
+"""The behavioural gate: a stub day in the clearing is alive and honest under the default numbers.
 
-Every run uses the `experiments/trait_grid.yaml` schedule and agents, stub backends, the default
-`Params`, no run directory, and the same 20 fixed seeds. The runs are computed once per module.
+Every run here is a whole day of `experiments/clearing_day.yaml` (both bodies, seeds 1 to 10) on
+the rule-based stubs, with no model and no tick files. Each set of runs is computed once per test
+session. A criterion that names a stub runs with that stub. The collapse-and-places criterion
+holds for the `reactive` stub (the one the file configures) and the `lookahead` stub; `blind` is a
+control and is exempt (a chooser that reads nothing runs dry). The day pair's opposite values are
+read from the experiment as its file configures it (`reactive`).
 
-Baseline gate, per run unless stated: more active than inactive presses in the first FR phase;
-PR response rate lower in the last quarter of the phase than in the first; a breakpoint above 0,
-censored in at most 2 of 20 runs; extinction response rate lower in the last third than in the
-first; extinction persistence censored in at most 2 of 20 runs; a goal revision in at least 10
-runs and no goal priority at a clamp at the end of any run; a two-pass tick in at least 10 runs,
-and two-pass ticks under 25% of the ticks of every phase; 300 steps of steady FR1 give at most
-one goal revision.
+The criteria (the plan's Task 10, plus the controller's liveliness criterion):
 
-Trait gate: for each trait, the high profile differs from the low one in the stated direction by
-more than two standard errors of the seed-paired difference, and breakpoint and persistence are
-each censored in at most 4 of 20 runs for every low and high profile.
+- `reactive` and `lookahead`: no run has more than 6 collapsed steps, and every run visits all
+  three places (`blind` exempt);
+- `reactive`: every run has at least 3 passes with a body error, and at most half its passes;
+- `reactive`: at least 3 of Ilo's 10 runs have an override, and no run has two-pass ticks on more
+  than a quarter of its ticks;
+- `lookahead` spends at least 10% fewer uncomfortable steps than `reactive` (mean over 20 runs);
+- `blind`: Ilo's and Tavi's action counts differ by less than 15% of the steps for every action;
+  `reactive`: they differ by more than that for at least one action;
+- the day pair has `opposite_value_steps` at least 5 in at least 8 of the 10 seeds;
+- in the afternoon experiment, seed 1, Ilo has not collapsed within the first 3 steps;
+- `reactive`: every run walks at least 8 times, and no action takes more than 60% of its passes.
 """
 
 import asyncio
-import math
 import statistics
-from dataclasses import dataclass
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from surprise_loop.config import ExperimentConfig, RunConfig, load_config
 from surprise_loop.loop import RunResult, run
-from surprise_loop.metrics import RunMetrics, flatten, summarize
+from surprise_loop.metrics import flatten, opposite_value_steps, summarize
 from surprise_loop.state import PassRecord
-from surprise_loop.world import Action, PhaseKind, PhaseSpec
+from surprise_loop.world import Action, BodyState, Channel, Event, WorldConfig
 
-GRID = Path(__file__).resolve().parents[1] / "experiments" / "trait_grid.yaml"
-SEEDS = list(range(1, 21))
-BASELINE = "baseline"
-PRESSES = (Action.PRESS_A, Action.PRESS_B)
+ROOT = Path(__file__).resolve().parent.parent
+DAY = ROOT / "experiments" / "clearing_day.yaml"
+AFTERNOON = ROOT / "experiments" / "clearing_afternoon.yaml"
+SEEDS = list(range(1, 11))
+AGENTS = ("ilo", "tavi")
 
-# (trait, metric, +1 if the high profile must score higher, -1 if lower)
-CONTRASTS = [
-    ("reward_sensitivity", "breakpoint", +1),
-    ("surprise_learning_rate", "extinction_persistence", -1),
-    ("mood_inertia", "extinction_persistence", +1),
-]
+# the plan's thresholds
+MAX_COLLAPSED = 6
+MIN_ERROR_PASSES = 3
+MAX_ERROR_SHARE = 0.5
+MIN_ILO_OVERRIDE_RUNS = 3
+MAX_TWO_PASS_SHARE = 0.25
+LOOKAHEAD_GAIN = 0.10
+ACTION_DIFF_SHARE = 0.15
+MIN_OPPOSITE_STEPS = 5
+MIN_OPPOSITE_SEEDS = 8
+AFTERNOON_STEPS = 3
+# the controller's liveliness criterion
+MIN_WALKS = 8
+MAX_ACTION_SHARE = 0.6
 
-
-@dataclass(frozen=True)
-class Run:
-    result: RunResult
-    metrics: RunMetrics
-    passes: list[PassRecord]
-
-
-def _experiment() -> ExperimentConfig:
-    return load_config(GRID).model_copy(update={"seeds": SEEDS})
-
-
-def _execute(configs: list[RunConfig]) -> list[Run]:
-    async def all_runs() -> list[RunResult]:
-        return [await run(config) for config in configs]
-
-    return [
-        Run(result=r, metrics=summarize(r), passes=flatten(r.records))
-        for r in asyncio.run(all_runs())
-    ]
+Runs = dict[str, list[RunResult]]  # agent name -> one result per seed, in seed order
 
 
-@pytest.fixture(scope="module")
-def runs() -> dict[str, list[Run]]:
-    """Every agent of the grid over the 20 seeds, in seed order."""
-    experiment = _experiment()
-    configs = experiment.runs()
-    by_agent: dict[str, list[Run]] = {}
-    for config, r in zip(configs, _execute(configs), strict=True):
-        by_agent.setdefault(config.agent.name, []).append(r)
+def day_runs(stub: str | None) -> Runs:
+    """The day experiment over seeds 1 to 10, with `stub` (None: as the file configures it)."""
+    exp = load_config(DAY)
+    params = exp.params
+    if stub is not None:
+        deliberate = params.deliberate.model_copy(update={"stub": stub})
+        params = params.model_copy(update={"deliberate": deliberate})
+    exp = exp.model_copy(update={"seeds": SEEDS, "params": params})
+    results = _run_all(exp.runs())
+    by_agent: Runs = {name: [] for name in AGENTS}
+    for result in results:
+        by_agent[result.config.agent.name].append(result)
+    assert all(len(results) == len(SEEDS) for results in by_agent.values())
     return by_agent
 
 
+def _run_all(configs: list[RunConfig]) -> list[RunResult]:
+    async def all_runs() -> list[RunResult]:
+        return list(await asyncio.gather(*(run(config) for config in configs)))
+
+    return asyncio.run(all_runs())
+
+
 @pytest.fixture(scope="module")
-def baseline(runs: dict[str, list[Run]]) -> list[Run]:
-    return runs[BASELINE]
+def configured() -> Runs:
+    assert load_config(DAY).params.deliberate.stub == "reactive"
+    return day_runs(None)
 
 
-def _phase(r: Run, kind: PhaseKind) -> list[PassRecord]:
-    """The passes of the first phase of `kind` in the run."""
-    index = next(
-        (p.outcome.info.phase_index for p in r.passes if p.outcome.info.phase_kind == kind), None
-    )
-    assert index is not None, f"the run never reached a {kind.value} phase"
-    return [p for p in r.passes if p.outcome.info.phase_index == index]
+@pytest.fixture(scope="module")
+def lookahead() -> Runs:
+    return day_runs("lookahead")
 
 
-def _rate(passes: list[PassRecord]) -> float:
-    return sum(1 for p in passes if p.outcome.info.active_press) / len(passes)
+@pytest.fixture(scope="module")
+def blind() -> Runs:
+    return day_runs("blind")
 
 
-# --- the grid itself ----------------------------------------------------------------------------
+def every_run(runs: Runs) -> list[RunResult]:
+    return [result for name in AGENTS for result in runs[name]]
 
 
-def test_grid_has_the_documented_shape() -> None:
-    config = load_config(GRID)
-    kinds = [phase.kind for phase in config.world.schedule]
-    assert kinds == [
-        PhaseKind.FIXED_RATIO,
-        PhaseKind.PROGRESSIVE_RATIO,
-        PhaseKind.FIXED_RATIO,
-        PhaseKind.EXTINCTION,
-    ]
-    assert config.ticks is None
-    assert len(config.seeds) == 5
-    assert set(config.backends.model_dump().values()) == {"stub"}
-    names = [a.name for a in config.agents]
-    assert names[0] == BASELINE
-    base = config.agents[0].traits.model_dump()
-    for trait, _, _ in CONTRASTS:
-        low, high = (
-            next(a for a in config.agents if a.name == f"{trait}_{level}").traits.model_dump()
-            for level in ("low", "high")
+def label(result: RunResult) -> str:
+    stub = result.config.params.deliberate.stub
+    return f"{stub} {result.config.agent.name} seed {result.config.seed}"
+
+
+def passes(result: RunResult) -> list[PassRecord]:
+    return flatten(result.records)
+
+
+def has_body_error(p: PassRecord) -> bool:
+    return any(p.comparison.body[c] != 0 for c in Channel)
+
+
+def action_counts(result: RunResult) -> dict[Action, int]:
+    chosen = [p.decision.action for p in passes(result)]
+    return {action: chosen.count(action) for action in Action}
+
+
+def uncomfortable(result: RunResult) -> int:
+    m = summarize(result)
+    return m.uncomfortable_heat + m.uncomfortable_water + m.uncomfortable_energy
+
+
+def mean_action_differences(runs: Runs) -> dict[Action, float]:
+    """Per action, the mean over seeds of |Ilo's count - Tavi's count|, as a share of the mean
+    number of steps of a run."""
+    pairs = list(zip(runs["ilo"], runs["tavi"], strict=True))
+    steps = statistics.mean(len(passes(r)) for pair in pairs for r in pair)
+    return {
+        action: statistics.mean(
+            abs(action_counts(a)[action] - action_counts(b)[action]) for a, b in pairs
         )
-        assert low[trait] < base[trait] < high[trait]
-        # each profile differs from the baseline in its own trait only
-        assert {k: v for k, v in low.items() if k != trait} == {
-            k: v for k, v in base.items() if k != trait
-        }
-        assert {k: v for k, v in high.items() if k != trait} == {
-            k: v for k, v in base.items() if k != trait
-        }
-    assert len(names) == 1 + 2 * len(CONTRASTS)
+        / steps
+        for action in Action
+    }
 
 
-def test_every_run_completes_the_schedule(runs: dict[str, list[Run]]) -> None:
-    steps = sum(phase.steps for phase in load_config(GRID).world.schedule)
-    for agent_runs in runs.values():
-        for r in agent_runs:
-            assert not r.metrics.truncated
-            assert r.metrics.steps == steps
-
-
-# --- baseline gate ------------------------------------------------------------------------------
-
-
-def test_active_presses_exceed_inactive_presses_in_the_first_fr_phase(baseline: list[Run]) -> None:
-    for r in baseline:
-        first = [p for p in r.passes if p.outcome.info.phase_index == 0]
-        assert first[0].outcome.info.phase_kind == PhaseKind.FIXED_RATIO
-        active = sum(1 for p in first if p.outcome.info.active_press)
-        inactive = sum(
-            1 for p in first if p.decision.action in PRESSES and not p.outcome.info.active_press
-        )
-        assert active > inactive, (r.result.config.seed, active, inactive)
-
-
-def test_pr_response_rate_falls_from_the_first_to_the_last_quarter(baseline: list[Run]) -> None:
-    for r in baseline:
-        pr = _phase(r, PhaseKind.PROGRESSIVE_RATIO)
-        quarter = len(pr) // 4
-        assert quarter > 0
-        assert _rate(pr[-quarter:]) < _rate(pr[:quarter]), r.result.config.seed
-
-
-def test_breakpoint_is_positive_and_rarely_censored(baseline: list[Run]) -> None:
-    assert all(r.metrics.breakpoint > 0 for r in baseline)
-    assert sum(r.metrics.breakpoint_censored for r in baseline) <= 2
-
-
-def test_extinction_response_rate_falls_from_the_first_to_the_last_third(
-    baseline: list[Run],
-) -> None:
-    for r in baseline:
-        ext = _phase(r, PhaseKind.EXTINCTION)
-        third = len(ext) // 3
-        assert third > 0
-        assert _rate(ext[-third:]) < _rate(ext[:third]), r.result.config.seed
-
-
-def test_extinction_persistence_is_rarely_censored(baseline: list[Run]) -> None:
-    assert sum(r.metrics.extinction_censored for r in baseline) <= 2
-
-
-def test_goals_are_revised_but_never_end_at_a_clamp(baseline: list[Run]) -> None:
-    assert sum(r.metrics.goal_revisions >= 1 for r in baseline) >= 10
-    for r in baseline:
-        bounds = r.result.config.params.goals
-        for goal, priority in r.result.agent.goals.priorities.items():
-            assert bounds.min_priority < priority < bounds.max_priority, (
-                r.result.config.seed,
-                goal,
-                priority,
-            )
-
-
-def test_reentry_happens_but_stays_rare_in_every_phase(baseline: list[Run]) -> None:
-    assert sum(r.metrics.reentries >= 1 for r in baseline) >= 10
-    for r in baseline:
-        ticks: dict[int, int] = {}
-        two_pass: dict[int, int] = {}
-        for record in r.result.records:
-            phase = record.passes[0].outcome.info.phase_index
-            ticks[phase] = ticks.get(phase, 0) + 1
-            two_pass[phase] = two_pass.get(phase, 0) + (len(record.passes) == 2)
-        for phase, n in ticks.items():
-            assert two_pass[phase] / n < 0.25, (r.result.config.seed, phase, two_pass[phase], n)
-
-
-def test_steady_fr1_gives_at_most_one_goal_revision() -> None:
-    experiment = _experiment()
-    world = experiment.world.model_copy(
-        update={"schedule": [PhaseSpec(kind=PhaseKind.FIXED_RATIO, steps=300, ratio=1)]}
+def at_a_limit(body: BodyState, world: WorldConfig) -> bool:
+    p = world.body
+    return (
+        body.heat in (p.heat_cold_limit, p.heat_hot_limit)
+        or body.water <= p.water_floor
+        or body.energy <= p.energy_floor
     )
-    configs = experiment.model_copy(update={"world": world}).runs()
-    configs = [c for c in configs if c.agent.name == BASELINE]
-    assert len(configs) == len(SEEDS)
-    for r in _execute(configs):
-        assert r.metrics.steps == 300
-        assert r.metrics.goal_revisions <= 1, r.result.config.seed
 
 
-# --- trait gate ---------------------------------------------------------------------------------
+def failing(runs: list[RunResult], ok: Callable[[RunResult], bool]) -> list[str]:
+    return [label(result) for result in runs if not ok(result)]
 
 
-@pytest.mark.parametrize(("trait", "metric", "direction"), CONTRASTS)
-def test_trait_contrast_exceeds_two_paired_standard_errors(
-    runs: dict[str, list[Run]], trait: str, metric: str, direction: int
-) -> None:
-    low, high = runs[f"{trait}_low"], runs[f"{trait}_high"]
-    assert [r.result.config.seed for r in low] == [r.result.config.seed for r in high] == SEEDS
-    diffs = [
-        direction * (getattr(h.metrics, metric) - getattr(lo.metrics, metric))
-        for lo, h in zip(low, high, strict=True)
+# --- the gate -----------------------------------------------------------------------------------
+
+
+def test_no_run_collapses_for_more_than_six_steps(configured: Runs, lookahead: Runs) -> None:
+    runs = every_run(configured) + every_run(lookahead)
+    collapsed = {label(r): summarize(r).collapsed_steps for r in runs}
+    assert max(collapsed.values()) <= MAX_COLLAPSED, collapsed
+
+
+def test_every_run_visits_all_three_places(configured: Runs, lookahead: Runs) -> None:
+    def visits_all(result: RunResult) -> bool:
+        places = {result.records[0].observation.place}
+        places |= {p.outcome.info.place for p in passes(result)}
+        return len(places) == 3
+
+    assert failing(every_run(configured) + every_run(lookahead), visits_all) == []
+
+
+def test_reactive_expectations_usually_hold_and_sometimes_fail(configured: Runs) -> None:
+    errors = {
+        label(r): (sum(has_body_error(p) for p in passes(r)), len(passes(r)))
+        for r in every_run(configured)
+    }
+    too_few = {k: v for k, v in errors.items() if v[0] < MIN_ERROR_PASSES}
+    too_many = {k: v for k, v in errors.items() if v[0] > MAX_ERROR_SHARE * v[1]}
+    assert too_few == {}
+    assert too_many == {}
+
+
+def test_reactive_ilo_is_overridden_in_at_least_three_runs(configured: Runs) -> None:
+    overridden = [r.config.seed for r in configured["ilo"] if summarize(r).overrides > 0]
+    assert len(overridden) >= MIN_ILO_OVERRIDE_RUNS, overridden
+
+
+def test_reactive_runs_have_two_passes_on_at_most_a_quarter_of_ticks(configured: Runs) -> None:
+    def few_two_pass(result: RunResult) -> bool:
+        two = sum(1 for record in result.records if len(record.passes) == 2)
+        return two <= MAX_TWO_PASS_SHARE * len(result.records)
+
+    assert failing(every_run(configured), few_two_pass) == []
+
+
+def test_looking_ahead_pays(configured: Runs, lookahead: Runs) -> None:
+    reactive_mean = statistics.mean(uncomfortable(r) for r in every_run(configured))
+    lookahead_mean = statistics.mean(uncomfortable(r) for r in every_run(lookahead))
+    assert lookahead_mean <= (1 - LOOKAHEAD_GAIN) * reactive_mean, (reactive_mean, lookahead_mean)
+
+
+def test_blind_bodies_act_alike(blind: Runs) -> None:
+    differences = mean_action_differences(blind)
+    assert all(d < ACTION_DIFF_SHARE for d in differences.values()), differences
+
+
+def test_reactive_bodies_act_differently(configured: Runs) -> None:
+    differences = mean_action_differences(configured)
+    assert any(d > ACTION_DIFF_SHARE for d in differences.values()), differences
+
+
+def test_the_two_bodies_value_the_same_fact_oppositely(configured: Runs) -> None:
+    steps = [
+        opposite_value_steps(a, b)
+        for a, b in zip(configured["ilo"], configured["tavi"], strict=True)
     ]
-    mean = statistics.fmean(diffs)
-    se = statistics.stdev(diffs) / math.sqrt(len(diffs))
-    assert mean > 2 * se, (mean, se)
-    assert mean > 0
+    assert sum(n >= MIN_OPPOSITE_STEPS for n in steps) >= MIN_OPPOSITE_SEEDS, steps
 
 
-@pytest.mark.parametrize("trait", [trait for trait, _, _ in CONTRASTS])
-@pytest.mark.parametrize("level", ["low", "high"])
-def test_trait_profiles_are_rarely_censored(
-    runs: dict[str, list[Run]], trait: str, level: str
-) -> None:
-    profile = runs[f"{trait}_{level}"]
-    assert sum(r.metrics.breakpoint_censored for r in profile) <= 4
-    assert sum(r.metrics.extinction_censored for r in profile) <= 4
+def test_afternoon_ilo_does_not_collapse_at_once() -> None:
+    exp = load_config(AFTERNOON)
+    config = next(c for c in exp.runs() if c.agent.name == "ilo" and c.seed == 1)
+    first = passes(_run_all([config])[0])[:AFTERNOON_STEPS]
+    assert len(first) == AFTERNOON_STEPS
+    assert not any(p.outcome.info.collapsed for p in first)
+    assert not any(at_a_limit(p.outcome.info.body, config.world) for p in first)
+
+
+def test_reactive_runs_walk_at_least_eight_times(configured: Runs) -> None:
+    def walks(result: RunResult) -> int:
+        return sum(1 for p in passes(result) if p.outcome.observation.event is Event.ARRIVED)
+
+    counts = {label(r): walks(r) for r in every_run(configured)}
+    assert min(counts.values()) >= MIN_WALKS, counts
+
+
+def test_no_reactive_run_is_mostly_one_action(configured: Runs) -> None:
+    shares = {
+        label(r): max(action_counts(r).values()) / len(passes(r)) for r in every_run(configured)
+    }
+    assert max(shares.values()) <= MAX_ACTION_SHARE, shares
+
+
+def test_the_gate_runs_the_day_experiment_as_written() -> None:
+    exp: ExperimentConfig = load_config(DAY)
+    assert [a.name for a in exp.agents] == list(AGENTS)
+    assert exp.backends.appraise == exp.backends.deliberate == "stub"
+    assert exp.ticks is None

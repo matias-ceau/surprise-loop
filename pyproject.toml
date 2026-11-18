@@ -1,7 +1,7 @@
 [project]
 name = "surprise-loop"
 version = "0.1.0"
-description = "A prediction-error-driven LLM agent in a self-administration world."
+description = "A prediction-error-driven LLM agent with a simulated body, in a small forest clearing."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -17,9 +17,6 @@ surprise-loop = "surprise_loop.cli:main"
 dev = [
     "pytest",
     "ruff",
-]
-plot = [
-    "matplotlib",
 ]
 
 [build-system]

@@ -1,0 +1,686 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The same day, lived twice</title>
+@@CLEARING@@
+<style>
+  .page { max-width: 1520px; margin: 0 auto; padding: 32px 32px 48px; }
+  header.top { border-bottom: 1px solid var(--rule); padding-bottom: 20px; margin-bottom: 0; }
+  .kicker { margin: 0; font: 11px/1 var(--mono); letter-spacing: .2em; text-transform: uppercase;
+    color: var(--dim); }
+  h1 { margin: 6px 0 0; font-weight: normal; font-style: italic; font-size: 38px; line-height: 1.1;
+    letter-spacing: -.01em; }
+  .lede { margin: 10px 0 0; max-width: 54em; color: var(--soft); font-size: 15px; }
+
+  .transport { position: sticky; top: 0; z-index: 5; background: var(--bg);
+    display: grid; grid-template-columns: auto auto auto auto 1fr auto auto; gap: 10px 14px;
+    align-items: center; padding: 14px 0; margin-bottom: 18px; border-bottom: 1px solid var(--rule);
+    font: 12px/1 var(--mono); color: var(--dim); }
+  .tbtn { background: transparent; border: 1px solid var(--rule); border-radius: 999px;
+    width: 34px; height: 34px; display: grid; place-items: center; color: var(--soft);
+    transition: border-color .2s, color .2s, background .2s; padding: 0; }
+  .tbtn:hover { border-color: var(--dim); color: var(--ink); }
+  .tbtn.play { width: 42px; height: 42px; border-color: var(--accent); color: var(--accent); }
+  .tbtn.play[aria-pressed="true"] { background: var(--accent); color: var(--bg); }
+  .tbtn svg { width: 14px; height: 14px; fill: currentColor; }
+  .clock { font: italic 26px/1 var(--serif); color: var(--ink); min-width: 3.2em; text-align: left;
+    font-variant-numeric: tabular-nums; }
+  .count { min-width: 8.5em; }
+  .speed { display: flex; gap: 4px; }
+  .speed button { background: transparent; border: 1px solid var(--rule); border-radius: 3px;
+    padding: 6px 8px; font: 12px/1 var(--mono); color: var(--dim); }
+  .speed button[aria-pressed="true"] { border-color: var(--soft); color: var(--ink); background: #ffffff0d; }
+  input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 22px;
+    margin: 0; background: transparent; cursor: pointer; }
+  input[type=range]::-webkit-slider-runnable-track { height: 2px; background: #4a463b; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px;
+    margin-top: -6px; border-radius: 50%; background: var(--ink); border: 2px solid var(--bg);
+    box-shadow: 0 0 0 1px var(--ink); }
+  input[type=range]::-moz-range-track { height: 2px; background: #4a463b; }
+  input[type=range]::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%;
+    background: var(--ink); border: 2px solid var(--bg); }
+  input[type=range]:focus-visible, button:focus-visible { outline: 1px dotted var(--accent); outline-offset: 2px; }
+
+  .film { display: grid; grid-template-columns: minmax(0, 1fr) minmax(210px, .42fr) minmax(0, 1fr);
+    gap: 28px; align-items: start; }
+  .body, .measured { display: flex; flex-direction: column; min-width: 0; }
+  .head .tag { color: var(--accent); letter-spacing: .12em; text-align: right; }
+  .lens { font-size: 18px; min-height: 7.8em; }
+  .reading { margin: 10px 2px 0; font-size: 15px; font-style: italic; color: var(--soft); }
+  .did { margin: 8px 2px 0; font: 12.5px/1.6 var(--mono); color: var(--dim); }
+  .did .s { color: var(--soft); }
+  .why { min-height: 128px; }
+
+  .measured .frame { background: #cfccc4; box-shadow: 0 0 0 1px #000; }
+  .measured svg text { font-family: var(--mono); fill: #4d4a44; }
+  .truth { margin-top: 14px; display: grid; gap: 14px; font: 11.5px/1.5 var(--mono); color: var(--dim); }
+  .truth h3 { margin: 0 0 4px; font: 11px/1 var(--mono); letter-spacing: .2em; text-transform: uppercase;
+    color: var(--soft); font-weight: normal; display: flex; justify-content: space-between; gap: 8px; }
+  .truth h3 .where { letter-spacing: .04em; text-transform: none; color: var(--dim); }
+  .truth .row { display: grid; grid-template-columns: 4.6em 1fr 4.4em; gap: 8px; align-items: center; }
+  .truth .row b { color: var(--ink); font-weight: normal; text-align: right; font-variant-numeric: tabular-nums; }
+  .truth .gauge { position: relative; height: 4px; background: #2f2d27; border-radius: 2px; }
+  .truth .gauge i { position: absolute; left: 0; top: 0; bottom: 0; background: #9a968b; border-radius: 2px; }
+  .truth .gauge u { position: absolute; top: 5px; width: 0; height: 0; margin-left: -4px;
+    border: 4px solid transparent; border-bottom: 5px solid var(--accent); opacity: .85; }
+  .truth .air { color: var(--soft); }
+
+  footer.legend { margin-top: 36px; padding-top: 18px; border-top: 1px solid var(--rule);
+    display: flex; flex-wrap: wrap; gap: 14px 40px; font: 11.5px/1.5 var(--mono); color: var(--dim); }
+  .legend .item { display: flex; align-items: center; gap: 10px; }
+  .legend .scale { width: 160px; height: 8px; border-radius: 4px; }
+  .legend .swatch { width: 26px; height: 14px; border-radius: 2px; }
+  .legend .ringw, .legend .ringc { width: 16px; height: 16px; border-radius: 50%; border: 2.5px solid; }
+  .legend .home { width: 0; height: 0; border: 5px solid transparent; border-bottom: 7px solid var(--accent);
+    margin-top: -6px; }
+
+  @media (max-width: 1100px) {
+    .film { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+    .measured { grid-column: 1 / -1; order: 3; display: grid; grid-template-columns: minmax(0, 300px) 1fr;
+      gap: 0 24px; }
+    .measured .head { grid-column: 1 / -1; }
+  }
+  @media (max-width: 760px) {
+    .page { padding: 22px 16px 36px; }
+    h1 { font-size: 29px; }
+    .film { grid-template-columns: minmax(0, 1fr); }
+    .measured { display: flex; order: 0; }
+    .measured .frame { width: 100%; max-width: 300px; align-self: center; }
+    .transport { grid-template-columns: 1fr auto auto auto; }
+    .transport input { grid-column: 1 / -1; grid-row: 2; }
+    .transport .count { grid-column: 1 / 3; grid-row: 3; }
+    .transport .speed { grid-column: 3 / -1; grid-row: 3; justify-self: end; }
+    .lens { font-size: 17px; min-height: 0; }
+    .why { min-height: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <header class="top">
+    <p class="kicker" id="kicker">the forest clearing &middot; two bodies, one day</p>
+    <h1>The same day, lived twice</h1>
+    <p class="lede">Two bodies live the same seeded day in their own copy of the clearing. Each
+      step, a pale ghost shows where the creature means to be and how it expects to feel; then it
+      moves, and a ring is thrown when the world answers otherwise. The narrow middle panel is the
+      world as measured. Click any sentence to see the numbers behind it.</p>
+  </header>
+  <div class="transport" role="group" aria-label="playback">
+    <span class="clock" id="clock" aria-live="off"></span>
+    <button type="button" class="tbtn" id="back" title="step back (left arrow)" aria-label="step back">
+      <svg viewBox="0 0 14 14"><path d="M2 2h2v10H2zM13 2v10L5 7z"/></svg></button>
+    <button type="button" class="tbtn play" id="play" title="play or pause (space)" aria-label="play" aria-pressed="false">
+      <svg viewBox="0 0 14 14"><path id="playIcon" d="M3 1.5v11L12.5 7z"/></svg></button>
+    <button type="button" class="tbtn" id="fwd" title="step forward (right arrow)" aria-label="step forward">
+      <svg viewBox="0 0 14 14"><path d="M10 2h2v10h-2zM1 2v10l8-5z"/></svg></button>
+    <input type="range" id="scrub" min="0" value="0" step="1" aria-label="world step">
+    <span class="count" id="count"></span>
+    <div class="speed" id="speed" aria-label="speed"></div>
+  </div>
+  <main class="film" id="film"></main>
+  <footer class="legend">
+    <div class="item"><span>bad for this body</span><span class="scale" id="legend-scale"></span><span>good for this body</span></div>
+    <div class="item"><span class="swatch" id="legend-faded"></span><span>faded: there, not noticed</span></div>
+    <div class="item"><span class="home"></span><span>where this body is comfortable</span></div>
+    <div class="item"><span>pale ghost: where it means to be, tinted by the relief it expects</span></div>
+    <div class="item"><span class="ringw" id="legend-warm"></span><span class="ringc" id="legend-cold"></span><span>a ring: a miss, warm when better than expected, cold when worse</span></div>
+    <div class="item"><span>a closing frame, breathing faster: a stirred-up body</span></div>
+    <div class="item"><span>pitched forward in the dust: a stumble &middot; lying flat: the body gave way &middot; a red core on a cord: the body overrules the plan</span></div>
+  </footer>
+</div>
+
+<script type="application/json" id="scene-data">@@SCENE_DATA@@</script>
+<script>
+"use strict";
+const DATA = JSON.parse(document.getElementById("scene-data").textContent);
+const STEPS = DATA.steps, N = STEPS.length;
+
+/* ---------- presentation constants ---------- */
+const STEP_MS = 3000;               /* one world step at normal speed */
+const SPEEDS = [0.5, 1, 2, 4];
+/* where each part of a step's bar starts and how long it lasts, as fractions of the bar */
+const T = {
+  ghostIn: 0.10, ghostFull: 0.30,         /* the ghost fades in */
+  moveFrom: 0.34, moveTo: 0.62,           /* the move; the truth after the step lands at moveTo */
+  outFrom: 0.64,                          /* the outcome: a dissolve or a ring */
+  missCut: 0.05,                          /* on a miss the ghost goes this fast once met */
+  unmetFrom: 0.45, unmetLen: 0.25,        /* collapsed: the ghost fades unmet */
+  fallFrom: 0.35, fallLen: 0.40,          /* a stumble: the fall, in the move's own progress */
+  dustFrom: 0.50, dustLen: 0.25,          /* a stumble: the dust, in the move's own progress */
+  coreFrom: 0.70, coreLen: 0.15,          /* an override: the core lights after the outcome */
+  coreOutLen: 0.30,                       /* a second pass: the core goes out after the outcome */
+};
+const LURCH = 0.22;                 /* how far toward its ghost a stumbling body gets */
+const RING_MIN = 10, RING_MAX = 92, RING_SIZE = 0.8;  /* a size of RING_SIZE is most of the way out */
+const WARM = "#f6b85a", COLD = "#6f97ff", PLAIN_RING = "#efe8d6";
+const GHOST_PALE = "#f4efe2", GHOST_RELIEF = 0.4, GHOST_MAX = 0.8;
+const CORE = "#e4552f";
+const BREATH_SLOW = 5.5, BREATH_FAST = 1.3;   /* seconds per breath, calm .. stirred */
+const SAME_CHANGE = 0.05;           /* an expected change in felt strength smaller than this is "=" */
+const M_SCALE = 0.5;                /* the measured strip is the same view, half as wide */
+const M_OFFSET = [-9, 9];           /* the two bodies side by side when they share a spot */
+const HEAT_RANGE = [-1, 1.2];       /* the gauge of heat, in heat units */
+
+const DID = {
+  go_meadow: "went out into the meadow", go_oak: "went to the oak", go_stream: "went to the stream",
+  drink: "drank", rest: "rested", look: "looked around",
+};
+const INTENT = {
+  go_meadow: "go out into the meadow", go_oak: "go to the oak", go_stream: "go to the stream",
+  drink: "drink", rest: "rest", look: "look around",
+};
+const CHANNEL_LABEL = { heat: "heat", water: "thirst", energy: "tiredness" };
+const QUESTION_WORDS = {
+  log_shaded: ["the log in the shade", "the log in the sun"],
+  stream_full: ["the stream running full", "only a trickle"],
+};
+const PLACE_SHORT = { meadow: "in the meadow", oak: "under the oak", stream: "at the stream" };
+const TAG_OVERRULED = "the body overruled the plan", TAG_PULLS = "the body pulls it back";
+
+/* ---------- small helpers ---------- */
+function clamp01(x) { return Math.max(0, Math.min(1, x)); }
+function smooth(x) { const v = clamp01(x); return v * v * (3 - 2 * v); }
+function lerp(a, b, k) { return a + (b - a) * k; }
+function clockOf(minute) {
+  const h = Math.floor(minute / 60), m = minute % 60;
+  return String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0");
+}
+function titleCase(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+function need(c, f) { return c === "heat" ? f : Math.max(0, f); }
+function strain(felt) { return Object.keys(felt).reduce((s, c) => s + Math.abs(need(c, felt[c])), 0); }
+function expectedFelt(e) {
+  const out = {};
+  Object.keys(e.scene.felt).forEach(c => {
+    const x = e.expected.felt[c];
+    out[c] = x === null || x === undefined ? e.scene.felt[c] : x;
+  });
+  return out;
+}
+
+/* ---------- the panels ---------- */
+const views = [];
+
+function buildBody(k) {
+  const agent = DATA.agents[k];
+  const id = "b" + k;
+  const el = document.createElement("section");
+  el.className = "body";
+  el.innerHTML = `
+    <h2 class="head"><span>as <b></b> lives it</span><span class="tag"></span></h2>
+    <div class="frame">${sceneSvg(id)}</div>
+    <p class="lens"></p>
+    <p class="reading"></p>
+    <p class="did"></p>
+    <div class="why"></div>`;
+  el.querySelector(".head b").textContent = titleCase(agent.name);
+  const svg = el.querySelector("svg");
+  svg.dataset.id = id;
+  const view = { k, agent, el, svg, chosen: null, shown: new Set(), q: key => svg.querySelector(`[data-k="${key}"]`) };
+  el.addEventListener("click", ev => {
+    const s = ev.target.closest(".s");
+    if (!s) return;
+    view.chosen = view.chosen === s.dataset.key ? null : s.dataset.key;
+    writeText(view, current, false);
+  });
+  return view;
+}
+
+function measuredSvg() {
+  const x = v => (v * M_SCALE).toFixed(1);
+  const sp = SPOTS;
+  const paces = DATA.world.paces;
+  const pace = (a, b) => paces[a + "-" + b] !== undefined ? paces[a + "-" + b] : paces[b + "-" + a];
+  const word = n => n + (n === 1 ? " pace" : " paces");
+  const mid = (a, b) => x((sp[a].x + sp[b].x) / 2);
+  const figs = DATA.agents.map((a, k) => `
+    <g data-m="fig${k}">
+      <g class="mpose">
+        <path d="M-5 -1 C-6.5 -14 -4.5 -22 0 -25 C4.5 -22 6.5 -14 5 -1 Z" fill="${k ? "#5d5a53" : "#3f3c36"}"/>
+        <circle cx="0" cy="-30" r="4.4" fill="${k ? "#5d5a53" : "#3f3c36"}"/>
+      </g>
+      <text data-m="name${k}" x="0" y="-40" font-size="9" text-anchor="middle"></text>
+    </g>`).join("");
+  return `
+<svg viewBox="0 0 240 326" role="img" aria-label="the clearing as measured">
+  <g fill="none" stroke="#7d7a72" stroke-width="1">
+    <path d="M0 190 H240"/>
+    <path d="M0 184 q8 -12 17 -3 q7 -16 20 -2 q10 -10 19 -1 q11 -18 25 -1 q9 -11 18 0 q10 -14 22 -1 q12 -16 26 0 q9 -10 18 -1 q11 -15 24 0 q9 -11 19 -1 q10 -14 22 0 q6 -7 10 -3"/>
+    <circle data-m="sun" cx="0" cy="0" r="8"/>
+    <path data-m="streamFull" d="M0 214 C22 208 42 220 48 238 C53 256 32 276 0 290"/>
+    <path data-m="streamLow" d="M0 236 C15 232 31 238 38 246 C42 252 26 262 0 268"/>
+    <ellipse cx="186" cy="124" rx="38" ry="48"/>
+    <path d="M182 262 L180 168 M191 262 L190 168"/>
+    <rect data-m="log" x="197" y="248" width="27" height="10" rx="5"/>
+  </g>
+  <g font-size="8.5">
+    <text data-m="clock" x="8" y="20" font-size="15">--:--</text>
+    <text data-m="logLabel" x="236" y="274" text-anchor="end"></text>
+    <text data-m="streamLabel" x="4" y="206"></text>
+    <g stroke="#7d7a72" stroke-width="1" fill="none">
+      <path d="M${x(sp.stream.x)} 292 H${x(sp.oak.x)} M${x(sp.stream.x)} 288 v8 M${x(sp.meadow.x)} 288 v8 M${x(sp.oak.x)} 288 v8"/>
+    </g>
+    <text x="${mid("stream", "meadow")}" y="306" text-anchor="middle">${word(pace("meadow", "stream"))}</text>
+    <text x="${mid("meadow", "oak")}" y="306" text-anchor="middle">${word(pace("meadow", "oak"))}</text>
+    <text x="${x((sp.stream.x + sp.oak.x) / 2)}" y="320" text-anchor="middle">stream to oak: ${word(pace("oak", "stream"))}</text>
+  </g>
+  ${figs}
+</svg>`;
+}
+
+const GAUGES = [
+  { label: "skin", key: "heat", range: [-1, 1.2], text: b => b.skin_c.toFixed(1) + " °C" },
+  { label: "water", key: "water", range: [0, 1], text: b => b.water.toFixed(2) },
+  { label: "energy", key: "energy", range: [0, 1], text: b => b.energy.toFixed(2) },
+];
+function share(v, range) { return (100 * clamp01((v - range[0]) / (range[1] - range[0]))).toFixed(1) + "%"; }
+
+function buildMeasured() {
+  const el = document.createElement("section");
+  el.className = "measured";
+  el.innerHTML = `<h2 class="head"><span>as measured</span></h2>
+    <div class="frame">${measuredSvg()}</div>
+    <div class="truth"></div>`;
+  const box = el.querySelector(".truth");
+  DATA.agents.forEach((agent, b) => {
+    const div = document.createElement("div");
+    div.dataset.body = String(b);
+    div.innerHTML = `<h3><span class="who"></span><span class="where"></span></h3><div class="air"></div>`
+      + GAUGES.map(g => `<div class="row" data-g="${g.key}"><span>${g.label}</span>`
+        + `<span class="gauge"><i></i><u title="where this body is comfortable"></u></span><b></b></div>`).join("");
+    div.querySelector(".who").textContent = agent.name;
+    GAUGES.forEach(g => {
+      div.querySelector(`[data-g="${g.key}"] u`).style.left = share(agent.setpoint[g.key], g.range);
+    });
+    box.append(div);
+    el.querySelector(`[data-m="name${b}"]`).textContent = agent.name.charAt(0).toUpperCase();
+  });
+  return el;
+}
+
+const film = document.getElementById("film");
+views.push(buildBody(0));
+const measured = buildMeasured();
+views.push(buildBody(1));
+film.append(views[0].el, measured, views[1].el);
+const mq = key => measured.querySelector(`[data-m="${key}"]`);
+
+/* ---------- text under a lived panel ---------- */
+function sentences(scene) {
+  const out = [{ key: "opening", cls: "opening", text: scene.opening }];
+  scene.facts.forEach(f => { if (f.noticed) out.push({ key: "fact:" + f.name, cls: "fact", text: f.phrase }); });
+  scene.body.forEach(b => out.push({ key: "body:" + b.channel, cls: "bodyline", text: b.phrase }));
+  if (scene.surprise) out.push({ key: "surprise", cls: "surprise", text: scene.surprise });
+  return out;
+}
+
+function didText(e) {
+  if (e.event === "collapsed") return `meant to ${INTENT[e.action]}; the body gave way, and it lay where it was`;
+  if (e.event === "stumbled") return `set off to ${INTENT[e.action]}, stumbled, and stayed`;
+  return DID[e.action];
+}
+
+function expectText(e) {
+  let s;
+  if (e.expected.words) {
+    s = "expecting: " + Object.keys(e.expected.words).map(c => e.expected.words[c]).join(", ");
+  } else {
+    const exp = expectedFelt(e);
+    const arrows = Object.keys(exp).map(c => {
+      const d = exp[c] - e.scene.felt[c];
+      return CHANNEL_LABEL[c] + " " + (Math.abs(d) < SAME_CHANGE ? "=" : d > 0 ? "↑" : "↓");
+    });
+    s = "expecting, as a forecast without words: " + arrows.join(" · ");
+  }
+  if (e.expected.world !== null && e.expected.question) {
+    s += "; and " + QUESTION_WORDS[e.expected.question][e.expected.world ? 0 : 1];
+  }
+  return s;
+}
+
+function didWhy(e) {
+  const exp = expectedFelt(e), c = e.comparison;
+  const rows = Object.keys(exp).map(ch => `<span>${ch} <b>${signed(e.scene.felt[ch], 2)}</b> → <b>${signed(exp[ch], 2)}</b></span>`).join("");
+  const errs = Object.keys(c.body_felt).map(ch => `<span>${ch} <b>${signed(c.body_felt[ch], 2)}</b></span>`).join("");
+  const world = c.world === null ? "nothing to compare" : c.world ? "mismatch" : "held";
+  return `<div class="title">${didText(e)}</div>
+    <div class="nums"><span class="muted">felt now → expected</span>${rows}</div>
+    <div class="nums"><span class="muted">miss, felt units</span>${errs}</div>
+    <div class="nums"><span>world <b>${world}</b></span><span>better <b>${signed(c.better, 2)}</b></span><span>size <b>${c.size.toFixed(2)}</b></span></div>
+    <div class="nums"><span class="muted">after</span><span>valence <b>${signed(e.feeling.valence, 2)}</b></span><span>arousal <b>${e.feeling.arousal.toFixed(2)}</b></span></div>`;
+}
+
+function readingWhy() {
+  return `<div class="title">its own reading</div>
+    <div>the creature's words for what it read, before it chose; no numbers stand behind them.</div>`;
+}
+
+function surpriseWhy(k, b) {
+  const prev = k > 0 ? STEPS[k - 1].bodies[b] : null;
+  if (!prev) return `<div class="title">the last surprise, voiced</div><div>carried in from the run's start.</div>`;
+  const c = prev.comparison;
+  const errs = Object.keys(c.body_felt).map(ch => `<span>${ch} <b>${signed(c.body_felt[ch], 2)}</b></span>`).join("");
+  return `<div class="title">the last surprise, voiced</div>
+    <div>from the step before: the largest miss, felt units</div>
+    <div class="nums">${errs}<span>size <b>${c.size.toFixed(2)}</b></span></div>`;
+}
+
+function writeText(view, k, fresh) {
+  const e = STEPS[k].bodies[view.k];
+  const scene = e.scene;
+  const parts = sentences(scene);
+  const lens = view.el.querySelector(".lens");
+  const before = view.shown;
+  lens.textContent = "";
+  if (parts.map(p => p.text).join(" ") !== scene.text) {
+    lens.textContent = scene.text;
+  } else {
+    parts.forEach((p, i) => {
+      const span = sentenceSpan("s " + p.cls + (p.key === view.chosen ? " chosen" : "")
+        + (fresh && before.size && !before.has(p.text) ? " fresh" : ""), p.key, p.text);
+      lens.append(span);
+      if (i < parts.length - 1) lens.append(" ");
+    });
+  }
+  view.shown = new Set(parts.map(p => p.text));
+  const reading = view.el.querySelector(".reading");
+  reading.innerHTML = "";
+  reading.append(sentenceSpan("s" + (view.chosen === "reading" ? " chosen" : ""), "reading", "“" + e.reading + "”"));
+  const did = view.el.querySelector(".did");
+  did.innerHTML = "";
+  did.append(sentenceSpan("s" + (view.chosen === "did" ? " chosen" : ""), "did",
+    titleCase(didText(e)) + ". " + titleCase(expectText(e)) + "."));
+
+  const why = view.el.querySelector(".why");
+  const key = view.chosen;
+  if (!key) why.innerHTML = idleWhy(scene);
+  else if (key === "opening") why.innerHTML = openingWhy(scene, e.place);
+  else if (key === "surprise") why.innerHTML = scene.surprise ? surpriseWhy(k, view.k) : idleWhy(scene);
+  else if (key === "reading") why.innerHTML = readingWhy();
+  else if (key === "did") why.innerHTML = didWhy(e);
+  else if (key.startsWith("fact:") && scene.facts.some(f => f.name === key.slice(5))) why.innerHTML = factWhy(scene, key.slice(5));
+  else if (key.startsWith("body:")) why.innerHTML = bodyWhy(scene, key.slice(5));
+  else why.innerHTML = idleWhy(scene);
+}
+
+/* ---------- entering a step: re-light, captions, colours of ghost and ring ---------- */
+function enter(k, animate) {
+  current = k;
+  const step = STEPS[k];
+  const root = document.documentElement;
+  if (!animate) root.classList.add("instant");
+  views.forEach(view => {
+    const e = step.bodies[view.k];
+    paintScene(view.svg, e.scene, e.arousal_before, { place: e.place, minute: step.minute });
+    const relief = Math.tanh((strain(e.scene.felt) - strain(expectedFelt(e))) / GHOST_RELIEF);
+    const ghostTint = toHex(mix(toHex(scaleColour(relief)), GHOST_PALE, 0.3));
+    view.svg.querySelectorAll(".ghost .torso, .ghost .headc").forEach(el => { el.style.fill = ghostTint; });
+    view.svg.querySelectorAll(".ghost .shadow").forEach(el => { el.style.opacity = "0"; });
+    const c = e.comparison;
+    view.ringColour = c.better > 0 ? WARM : c.better < 0 ? COLD : PLAIN_RING;
+    view.q("ring").style.stroke = view.ringColour;
+    view.q("core").style.fill = CORE;
+    view.q("tether").style.stroke = CORE;
+    writeText(view, k, animate);
+  });
+  document.getElementById("scrub").value = String(k);
+  document.getElementById("count").textContent = `step ${k + 1} of ${N}`;
+  if (!animate) {
+    void root.getBoundingClientRect();
+    requestAnimationFrame(() => root.classList.remove("instant"));
+  }
+  lastTruthShown = null;
+}
+
+/* ---------- one moment of a step: t from 0 (start) to 1 (end) ---------- */
+function poseAfter(e) {
+  if (!e) return {};
+  if (e.event === "collapsed") return { lie: 1 };
+  if (e.event === "stumbled") return { kneel: 1 };
+  if (e.event === "rested") return { sit: 1 };
+  return {};
+}
+function mixPose(a, b, u) {
+  const out = {};
+  ["sit", "kneel", "lie"].forEach(p => { out[p] = lerp(a[p] || 0, b[p] || 0, u); });
+  return out;
+}
+
+function bodyAt(k, b, t) {
+  const e = STEPS[k].bodies[b];
+  const prev = k > 0 ? STEPS[k - 1].bodies[b] : null;
+  const from = SPOTS[e.place];
+  const aim = SPOTS[e.ghost_place];
+  const u = smooth((t - T.moveFrom) / (T.moveTo - T.moveFrom));
+  let x = from.x, y = from.y, pose;
+  const start = poseAfter(prev);
+  if (e.event === "arrived") {
+    x = lerp(from.x, aim.x, u); y = lerp(from.y, aim.y, u);
+    pose = mixPose(start, {}, smooth(u * 3));
+  } else if (e.event === "stumbled") {
+    const lurch = LURCH * Math.sin(Math.PI * u);
+    x = lerp(from.x, aim.x, lurch); y = lerp(from.y, aim.y, lurch);
+    pose = mixPose(mixPose(start, {}, smooth(u * 3)), { kneel: 1 }, smooth((u - T.fallFrom) / T.fallLen));
+  } else {
+    pose = mixPose(start, poseAfter(e), u);
+  }
+  return { e, from, aim, u, x, y, pose };
+}
+
+/* the ghost: where it means to be; a match dissolves it, a miss cuts it */
+function drawGhost(view, s, t) {
+  const { e, aim, u } = s;
+  const gIn = smooth((t - T.ghostIn) / (T.ghostFull - T.ghostIn));
+  let gOp, gScale = 1.1;
+  if (e.event === "collapsed") gOp = gIn * (1 - smooth((t - T.unmetFrom) / T.unmetLen));
+  else if (e.event === "stumbled") gOp = gIn * (1 - smooth((u - T.fallFrom) / T.fallLen));
+  else if (t <= T.moveTo) gOp = gIn * (1 - 0.35 * u);
+  else if (e.match) {
+    const v = (t - T.moveTo) / (1 - T.moveTo);
+    gOp = 0.65 * (1 - smooth(v)); gScale = 1.1 + 0.35 * smooth(v);
+  } else gOp = 0.65 * (1 - smooth((t - T.moveTo) / T.missCut));
+  view.q("ghostAt").setAttribute("transform", `translate(${aim.x} ${aim.y}) scale(${gScale.toFixed(3)})`);
+  view.q("ghostAt").setAttribute("opacity", (GHOST_MAX * gOp).toFixed(3));
+  return gIn;
+}
+
+/* the ring: a miss, thrown from the figure */
+function drawRing(view, s, t) {
+  const ring = view.q("ring"), shade = view.q("ringShade");
+  if (s.e.match || t <= T.outFrom) {
+    ring.setAttribute("opacity", "0"); shade.setAttribute("opacity", "0");
+    return;
+  }
+  const v = (t - T.outFrom) / (1 - T.outFrom);
+  const k = Math.tanh(s.e.comparison.size / RING_SIZE);
+  const r = RING_MIN + (RING_MAX * k + 14 - RING_MIN) * (1 - Math.pow(1 - v, 2.4));
+  ring.setAttribute("cx", s.x.toFixed(1));
+  ring.setAttribute("cy", (s.y - 30).toFixed(1));
+  ring.setAttribute("r", r.toFixed(1));
+  ring.setAttribute("stroke-width", ((2.2 + 3.6 * k) * (1 - 0.4 * v)).toFixed(2));
+  ring.setAttribute("opacity", (0.95 * Math.pow(1 - v, 1.1)).toFixed(3));
+  ["cx", "cy", "r"].forEach(a => shade.setAttribute(a, ring.getAttribute(a)));
+  shade.setAttribute("stroke-width", (Number(ring.getAttribute("stroke-width")) + 2.5).toFixed(2));
+  shade.setAttribute("opacity", (0.22 * Math.pow(1 - v, 1.1)).toFixed(3));
+}
+
+/* a stumble raises dust where it fell */
+function drawDust(view, s) {
+  const dust = view.q("dust");
+  if (s.e.event !== "stumbled") { dust.setAttribute("opacity", "0"); return; }
+  dust.setAttribute("transform", `translate(${s.x.toFixed(1)} ${s.y.toFixed(1)})`);
+  dust.setAttribute("opacity", (0.85 * smooth((s.u - T.dustFrom) / T.dustLen)).toFixed(3));
+}
+
+/* the body overrules: a red core, a cord pulling toward what serves it, and the panel's tag */
+function drawOverride(view, s, t, gIn, now) {
+  const { e, aim, u } = s;
+  let core = 0, cord = 0, toward = null, tag = "";
+  if (e.override) {
+    core = smooth((t - T.coreFrom) / T.coreLen);
+    cord = core;
+    toward = SPOTS[e.override.toward];
+    if (t >= T.coreFrom) tag = TAG_PULLS;
+  } else if (e.second_pass) {
+    core = 1 - smooth((t - T.outFrom) / T.coreOutLen);
+    cord = gIn * (1 - u);
+    toward = aim;
+    tag = TAG_OVERRULED;
+  }
+  view.q("core").setAttribute("opacity", (0.95 * core).toFixed(3));
+  view.q("core").setAttribute("r", (4.5 + 0.8 * Math.sin(now / 160)).toFixed(2));
+  const tether = view.q("tether");
+  if (cord > 0 && toward && Math.abs(toward.x - s.x) > 6) {
+    const x0 = s.x, y0 = s.y - 30, x1 = toward.x, y1 = toward.y - 30;
+    tether.setAttribute("d", `M${x0.toFixed(1)} ${y0.toFixed(1)} Q${((x0 + x1) / 2).toFixed(1)} ${(Math.min(y0, y1) + 22).toFixed(1)} ${x1.toFixed(1)} ${y1.toFixed(1)}`);
+    tether.setAttribute("opacity", (0.9 * cord).toFixed(3));
+  } else tether.setAttribute("opacity", "0");
+  if (view.tagShown !== tag) {
+    view.tagShown = tag;
+    view.el.querySelector(".tag").textContent = tag;
+  }
+}
+
+/* arousal closes the frame and sets the pace of its breathing */
+function breathe(view, e, t, now) {
+  const a = lerp(e.arousal_before, e.feeling.arousal, smooth((t - T.outFrom) / (1 - T.outFrom)));
+  const period = lerp(BREATH_SLOW, BREATH_FAST, clamp01(a));
+  setArousal(view.svg, a, Math.sin(2 * Math.PI * now / 1000 / period));
+}
+
+function frameBody(view, k, t, now) {
+  const s = bodyAt(k, view.k, t);
+  placeFigure(view.svg, s.x, s.y, s.pose);
+  const gIn = drawGhost(view, s, t);
+  drawRing(view, s, t);
+  drawDust(view, s);
+  drawOverride(view, s, t, gIn, now);
+  breathe(view, s.e, t, now);
+  return s;
+}
+
+let lastTruthShown = null;
+function frameMeasured(k, t, states) {
+  states.forEach((s, b) => {
+    const g = mq("fig" + b);
+    g.setAttribute("transform", `translate(${(s.x * M_SCALE + M_OFFSET[b]).toFixed(1)} ${s.y.toFixed(1)})`);
+    g.querySelector(".mpose").setAttribute("transform", poseTransform(s.pose));
+  });
+  /* the truth after the step is reached when the creature arrives */
+  const after = t >= T.moveTo;
+  const key = k + (after ? "+" : "-");
+  if (key === lastTruthShown) return;
+  lastTruthShown = key;
+  const step = STEPS[k];
+  const minute = after ? step.minute_after : step.minute;
+  mq("clock").textContent = clockOf(minute);
+  document.getElementById("clock").textContent = clockOf(minute);
+  const sun = sunAt(minute);
+  mq("sun").setAttribute("cx", (sun.x * M_SCALE).toFixed(1));
+  mq("sun").setAttribute("cy", sun.y.toFixed(1));
+  const world = after ? step.bodies[0].truth : step.bodies[0].truth_before;
+  mq("streamFull").style.display = world.stream_full ? "" : "none";
+  mq("streamLow").style.display = world.stream_full ? "none" : "";
+  mq("streamLabel").textContent = world.stream_full ? "stream: full" : "stream: a trickle";
+  mq("logLabel").textContent = world.log_shaded ? "log: shaded" : "log: in sun";
+  mq("log").style.fill = world.log_shaded ? "none" : "#f2ecd9";
+  measured.querySelectorAll(".truth [data-body]").forEach(div => {
+    const e = step.bodies[Number(div.dataset.body)];
+    const truth = after ? e.truth : e.truth_before;
+    div.querySelector(".where").textContent = PLACE_SHORT[after ? e.place_after : e.place];
+    div.querySelector(".air").textContent = `air here ${truth.air_c.toFixed(1)} °C · sun ${truth.sun.toFixed(2)}`;
+    GAUGES.forEach(g => {
+      const row = div.querySelector(`[data-g="${g.key}"]`);
+      row.querySelector("i").style.width = share(truth.body[g.key], g.range);
+      row.querySelector("b").textContent = g.text(truth.body);
+    });
+  });
+}
+
+function frame(k, t, now) {
+  const states = views.map(view => frameBody(view, k, t, now));
+  frameMeasured(k, t, states);
+}
+
+/* ---------- playback ---------- */
+let current = 0, t = 0, playing = false, speed = 1, last = null;
+
+function setSpeed(v) {
+  speed = v;
+  const root = document.documentElement.style;
+  root.setProperty("--relight", (0.6 / v).toFixed(3) + "s");
+  root.setProperty("--arrive", (0.9 / v).toFixed(3) + "s");
+  document.querySelectorAll("#speed button").forEach(b => b.setAttribute("aria-pressed", String(Number(b.dataset.v) === v)));
+}
+function setPlaying(on) {
+  playing = on;
+  const btn = document.getElementById("play");
+  btn.setAttribute("aria-pressed", String(on));
+  btn.setAttribute("aria-label", on ? "pause" : "play");
+  document.getElementById("playIcon").setAttribute("d", on ? "M3 2h3v10H3zM8 2h3v10H8z" : "M3 1.5v11L12.5 7z");
+}
+function togglePlay() {
+  if (!playing && current === N - 1 && t >= 1) { enter(0, false); t = 0; }
+  setPlaying(!playing);
+}
+/* jump to the end state of step k, without its animation */
+function show(k) {
+  setPlaying(false);
+  enter(Math.max(0, Math.min(N - 1, k)), false);
+  t = 1;
+}
+
+function loop(now) {
+  if (playing && last !== null) {
+    t += (now - last) / (STEP_MS / speed);
+    if (t >= 1) {
+      if (current < N - 1) { enter(current + 1, true); t = 0; }
+      else { t = 1; setPlaying(false); }
+    }
+  }
+  last = now;
+  frame(current, Math.min(1, t), now);
+  requestAnimationFrame(loop);
+}
+
+const scrub = document.getElementById("scrub");
+scrub.max = String(N - 1);
+scrub.addEventListener("input", () => show(Number(scrub.value)));
+document.getElementById("play").addEventListener("click", togglePlay);
+document.getElementById("back").addEventListener("click", () => show(current - 1));
+document.getElementById("fwd").addEventListener("click", () => show(current + 1));
+const speedBox = document.getElementById("speed");
+SPEEDS.forEach(v => {
+  const b = document.createElement("button");
+  b.type = "button"; b.dataset.v = String(v); b.textContent = v + "×";
+  b.addEventListener("click", () => setSpeed(v));
+  speedBox.append(b);
+});
+document.addEventListener("keydown", ev => {
+  /* a focused button or sentence keeps Space and Enter for itself; the range input keeps its
+     arrows; the arrow keys step from anywhere else */
+  if (ev.defaultPrevented || ev.altKey || ev.ctrlKey || ev.metaKey) return;
+  const tag = ev.target && ev.target.tagName;
+  const own = tag === "BUTTON" || (ev.target.classList && ev.target.classList.contains("s"));
+  if (own && (ev.key === " " || ev.key === "Enter")) return;
+  if (tag === "INPUT" && ev.key !== " ") return;
+  if (ev.key === " ") { ev.preventDefault(); togglePlay(); }
+  else if (ev.key === "ArrowLeft") { ev.preventDefault(); show(current - 1); }
+  else if (ev.key === "ArrowRight") { ev.preventDefault(); show(current + 1); }
+});
+
+document.getElementById("kicker").textContent = "the forest clearing · " + DATA.agents.map(a => titleCase(a.name)).join(" and ")
+  + " · " + clockOf(STEPS[0].minute) + " to " + clockOf(STEPS[N - 1].minute_after) + " · " + N + " steps";
+document.getElementById("legend-scale").style.background = scaleGradient();
+document.getElementById("legend-faded").style.background = toHex(mix("#c45a2e", PAPER, FADE));
+document.getElementById("legend-warm").style.borderColor = WARM;
+document.getElementById("legend-cold").style.borderColor = COLD;
+setSpeed(1);
+setPlaying(false);
+enter(0, false);
+t = 0;
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

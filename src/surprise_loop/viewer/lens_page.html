@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The clearing, lived twice</title>
+@@CLEARING@@
+<style>
+  .page { max-width: 1320px; margin: 0 auto; padding: 36px 32px 48px; }
+
+  header.top { display: grid; grid-template-columns: 1fr auto; gap: 8px 40px; align-items: end;
+    border-bottom: 1px solid var(--rule); padding-bottom: 22px; margin-bottom: 28px; }
+  .kicker { grid-column: 1 / -1; margin: 0; font: 11px/1 var(--mono); letter-spacing: .2em;
+    text-transform: uppercase; color: var(--dim); }
+  h1 { margin: 6px 0 0; font-weight: normal; font-style: italic; font-size: 38px; line-height: 1.1;
+    letter-spacing: -.01em; }
+  .lede { margin: 10px 0 0; max-width: 46em; color: var(--soft); font-size: 15px; }
+  .presets { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; align-self: end; }
+  .presets span { width: 100%; text-align: right; font: 10px/1 var(--mono); letter-spacing: .18em;
+    text-transform: uppercase; color: var(--dim); margin-bottom: 2px; }
+  .preset { background: transparent; border: 1px solid var(--rule); border-radius: 999px;
+    padding: 7px 15px; font: 13px/1 var(--serif); color: var(--soft);
+    transition: border-color .2s, color .2s, background .2s; }
+  .preset:hover { border-color: var(--dim); color: var(--ink); }
+  .preset[aria-pressed="true"] { border-color: var(--accent); color: var(--bg);
+    background: var(--accent); }
+
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; }
+  @media (max-width: 900px) {
+    .pair { grid-template-columns: 1fr; }
+    header.top { grid-template-columns: 1fr; }
+    .presets { justify-content: flex-start; }
+    .presets span { text-align: left; }
+  }
+  @media (max-width: 600px) {
+    .page { padding: 24px 16px 36px; }
+    h1 { font-size: 30px; }
+    .lens { font-size: 17px; min-height: 0; }
+    .controls { gap: 12px 10px; }
+    .choice button { font-size: 11px; }
+    .body .why { min-height: 0; }
+  }
+  .body { display: flex; flex-direction: column; min-width: 0; }
+  .lens { min-height: 7.9em; }
+  .why { min-height: 152px; }
+
+  .controls { margin-top: 18px; display: grid; grid-template-columns: max-content 1fr 3.4em;
+    gap: 14px 12px; align-items: center; font: 12px/1 var(--mono); color: var(--dim); }
+  .controls label { letter-spacing: .04em; }
+  .controls output { color: var(--ink); text-align: right; font-variant-numeric: tabular-nums; }
+  .track { position: relative; height: 22px; }
+  .track .home { position: absolute; top: 15px; width: 0; height: 0; margin-left: -4px;
+    border: 4px solid transparent; border-bottom: 6px solid var(--accent); opacity: .85; }
+  input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 22px;
+    margin: 0; background: transparent; cursor: pointer; }
+  input[type=range]::-webkit-slider-runnable-track { height: 2px; background: #4a463b; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px;
+    margin-top: -6px; border-radius: 50%; background: var(--ink); border: 2px solid var(--bg);
+    box-shadow: 0 0 0 1px var(--ink); }
+  input[type=range]::-moz-range-track { height: 2px; background: #4a463b; }
+  input[type=range]::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%;
+    background: var(--ink); border: 2px solid var(--bg); }
+  input[type=range]:focus-visible { outline: 1px dotted var(--accent); outline-offset: 2px; }
+  .choice { grid-column: 2 / 4; display: flex; gap: 6px; }
+  .choice button { flex: 1; background: transparent; border: 1px solid var(--rule); border-radius: 3px;
+    padding: 6px 0; font: 12px/1 var(--mono); color: var(--dim); }
+  .choice button[aria-pressed="true"] { border-color: var(--soft); color: var(--ink);
+    background: #ffffff0d; }
+
+  footer.legend { margin-top: 36px; padding-top: 18px; border-top: 1px solid var(--rule);
+    display: flex; flex-wrap: wrap; gap: 18px 44px; font: 11.5px/1.5 var(--mono); color: var(--dim); }
+  .legend .item { display: flex; align-items: center; gap: 10px; }
+  .legend .scale { width: 180px; height: 8px; border-radius: 4px; }
+  .legend .swatch { width: 26px; height: 14px; border-radius: 2px; }
+  .legend .home { width: 0; height: 0; border: 5px solid transparent; border-bottom: 7px solid var(--accent);
+    margin-top: -6px; }
+</style>
+</head>
+<body>
+<div class="page">
+  <header class="top">
+    <p class="kicker">the forest clearing &middot; early afternoon &middot; seven facts</p>
+    <div>
+      <h1>The same clearing, lived twice</h1>
+      <p class="lede">One meadow, read through two bodies. Move what a body believes about
+        itself and watch what it notices, and how it reads, change. Click any sentence to see the
+        numbers behind it.</p>
+    </div>
+    <nav class="presets" id="presets" aria-label="presets"><span>presets</span></nav>
+  </header>
+  <main class="pair" id="pair"></main>
+  <footer class="legend">
+    <div class="item"><span>bad for this body</span><span class="scale" id="legend-scale"></span><span>good for this body</span></div>
+    <div class="item"><span class="swatch" id="legend-faded"></span><span>faded: there, not noticed</span></div>
+    <div class="item"><span class="home"></span><span>where this body is comfortable</span></div>
+    <div class="item"><span>a closing frame: a stirred-up body</span></div>
+  </footer>
+</div>
+
+<script type="application/json" id="lens-data">@@LENS_DATA@@</script>
+<script>
+"use strict";
+const DATA = JSON.parse(document.getElementById("lens-data").textContent);
+const G = DATA.grid;
+const DIMS = ["heat", "water", "energy", "arousal"];
+const NOON = 780;                   /* the frozen 13:00 sets the hour of the picture */
+const FRAME_FADE_MS = 600;          /* the frame closes or opens over the time the scene re-lights */
+
+/* ---------- text ---------- */
+function sentences(entry) {
+  const out = [{ key: "opening", cls: "opening", text: DATA.place.opening }];
+  entry.facts.forEach(f => { if (f.noticed) out.push({ key: "fact:" + f.name, cls: "fact", text: f.phrase }); });
+  entry.body.forEach(b => out.push({ key: "body:" + b.channel, cls: "bodyline", text: b.phrase }));
+  if (entry.surprise) out.push({ key: "surprise", cls: "surprise", text: entry.surprise });
+  return out;
+}
+
+function surpriseWhy() {
+  return `<div class="title">the last surprise, voiced</div>
+    <div>carried in from the config's start state, not from the sliders:
+    it belongs to the worked example only, and moving a slider drops it.</div>`;
+}
+
+/* ---------- state and controls ---------- */
+const bodies = [];
+let activePreset = 0;
+
+function nearest(list, x) {
+  let best = 0;
+  list.forEach((v, i) => { if (Math.abs(v - x) < Math.abs(list[best] - x)) best = i; });
+  return best;
+}
+function gridEntry(agent, idx) {
+  const flat = ((idx.heat * G.water.length + idx.water) * G.energy.length + idx.energy)
+    * G.arousal.length + idx.arousal;
+  return agent.entries[flat];
+}
+function titleCase(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+function homeFraction(list, x) {
+  /* where x sits along the slider's evenly spaced stops, interpolating between them */
+  if (x <= list[0]) return 0;
+  for (let i = 1; i < list.length; i++) {
+    if (x <= list[i]) return (i - 1 + (x - list[i - 1]) / (list[i] - list[i - 1])) / (list.length - 1);
+  }
+  return 1;
+}
+
+function buildBody(agent, k) {
+  const id = "b" + k;
+  const el = document.createElement("section");
+  el.className = "body";
+  el.innerHTML = `
+    <h2 class="head"><span>as <b></b> lives it</span><span class="tag"></span></h2>
+    <div class="frame">${sceneSvg(id)}</div>
+    <p class="lens" aria-live="polite"></p>
+    <div class="why"></div>
+    <div class="controls"></div>`;
+  el.querySelector(".head b").textContent = titleCase(agent.name);
+  el.querySelector("svg").dataset.id = id;
+  const body = { agent, el, idx: {}, exact: null, chosen: null, shown: new Set() };
+  const controls = el.querySelector(".controls");
+  const labels = { heat: "believed heat", water: "believed water", energy: "believed energy" };
+  ["heat", "water", "energy"].forEach(dim => {
+    const label = document.createElement("label");
+    label.textContent = labels[dim];
+    label.htmlFor = `${id}-${dim}`;
+    const track = document.createElement("div");
+    track.className = "track";
+    const input = document.createElement("input");
+    input.type = "range"; input.min = "0"; input.max = String(G[dim].length - 1); input.step = "1";
+    input.id = `${id}-${dim}`;
+    input.addEventListener("input", () => { body.idx[dim] = Number(input.value); leaveExact(body); });
+    const home = document.createElement("span");
+    home.className = "home";
+    home.title = "where this body is comfortable";
+    const f = homeFraction(G[dim], agent.setpoint[dim]);
+    home.style.left = `calc(7px + (100% - 14px) * ${f.toFixed(4)})`;
+    track.append(input, home);
+    const out = document.createElement("output");
+    out.htmlFor = input.id;
+    controls.append(label, track, out);
+    body[dim] = { input, out };
+  });
+  const aLabel = document.createElement("label");
+  aLabel.textContent = "arousal";
+  const choice = document.createElement("div");
+  choice.className = "choice";
+  const words = ["calm", "alert", "stirred"];
+  body.arousalButtons = G.arousal.map((a, i) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = `${words[i] || ""} ${a.toFixed(1)}`;
+    b.addEventListener("click", () => { body.idx.arousal = i; leaveExact(body); });
+    choice.append(b);
+    return b;
+  });
+  controls.append(aLabel, choice);
+  el.querySelector(".lens").addEventListener("click", ev => {
+    const s = ev.target.closest(".s");
+    if (!s) return;
+    body.chosen = body.chosen === s.dataset.key ? null : s.dataset.key;
+    render(body);
+  });
+  document.getElementById("pair").append(el);
+  return body;
+}
+
+function leaveExact(body) {
+  /* this body's own control moved: it alone leaves its preset's exact entry for the grid;
+     the other body keeps what it shows, and no preset is highlighted any more */
+  body.exact = null;
+  activePreset = -1;
+  render(body);
+  markPresets();
+}
+
+function current(body) {
+  if (body.exact) return { entry: body.exact.entry, values: { ...body.exact.belief, arousal: body.exact.arousal } };
+  const values = {};
+  DIMS.forEach(d => { values[d] = G[d][body.idx[d]]; });
+  return { entry: gridEntry(body.agent, body.idx), values };
+}
+
+function render(body) {
+  const { entry, values } = current(body);
+  paintScene(body.el.querySelector("svg"), entry, values.arousal, { place: DATA.place.name, minute: NOON, fadeMs: FRAME_FADE_MS });
+
+  ["heat", "water", "energy"].forEach(d => {
+    body[d].input.value = String(body.idx[d]);
+    body[d].out.textContent = fmt(values[d], 2);
+  });
+  body.arousalButtons.forEach((b, i) => b.setAttribute("aria-pressed", String(i === body.idx.arousal)));
+  body.el.querySelector(".tag").textContent = body.exact ? "exact" : "on the grid";
+
+  const parts = sentences(entry);
+  const lens = body.el.querySelector(".lens");
+  const joined = parts.map(p => p.text).join(" ");
+  const before = body.shown;
+  lens.textContent = "";
+  if (joined !== entry.text) {
+    lens.textContent = entry.text;
+  } else {
+    parts.forEach((p, i) => {
+      const span = sentenceSpan("s " + p.cls + (p.key === body.chosen ? " chosen" : "")
+        + (before.size && !before.has(p.text) ? " fresh" : ""), p.key, p.text);
+      lens.append(span);
+      if (i < parts.length - 1) lens.append(" ");
+    });
+  }
+  body.shown = new Set(parts.map(p => p.text));
+
+  const why = body.el.querySelector(".why");
+  const key = body.chosen;
+  if (!key) why.innerHTML = idleWhy(entry);
+  else if (key === "opening") why.innerHTML = openingWhy(entry, DATA.place.name);
+  else if (key === "surprise") why.innerHTML = entry.surprise ? surpriseWhy() : idleWhy(entry);
+  else if (key.startsWith("fact:")) why.innerHTML = factWhy(entry, key.slice(5));
+  else if (key.startsWith("body:")) why.innerHTML = bodyWhy(entry, key.slice(5));
+}
+
+function markPresets() {
+  document.querySelectorAll(".preset").forEach((b, i) => b.setAttribute("aria-pressed", String(i === activePreset)));
+}
+
+function renderAll() {
+  bodies.forEach(render);
+  markPresets();
+}
+
+function choosePreset(p) {
+  activePreset = p;
+  DATA.presets[p].bodies.forEach((exact, k) => {
+    const body = bodies[k];
+    body.exact = exact;
+    body.idx = {
+      heat: nearest(G.heat, exact.belief.heat), water: nearest(G.water, exact.belief.water),
+      energy: nearest(G.energy, exact.belief.energy), arousal: nearest(G.arousal, exact.arousal),
+    };
+  });
+  renderAll();
+}
+
+DATA.agents.forEach((agent, k) => bodies.push(buildBody(agent, k)));
+const nav = document.getElementById("presets");
+DATA.presets.forEach((preset, p) => {
+  const b = document.createElement("button");
+  b.type = "button"; b.className = "preset"; b.textContent = preset.name;
+  b.addEventListener("click", () => choosePreset(p));
+  nav.append(b);
+});
+document.getElementById("legend-scale").style.background = scaleGradient();
+document.getElementById("legend-faded").style.background = toHex(mix("#c45a2e", PAPER, FADE));
+choosePreset(0);
+</script>
+</body>
+</html>

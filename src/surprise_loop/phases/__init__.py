@@ -1,4 +1,4 @@
-"""The seven phases of the cognitive cycle; each is `async (Workspace, Runtime) -> Workspace`."""
+"""The seven phases of one tick; each is `async (Workspace, Runtime) -> Workspace`."""
 
 from surprise_loop.phases.act import act
 from surprise_loop.phases.appraise import appraise

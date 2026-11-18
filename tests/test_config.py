@@ -4,58 +4,99 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from bodies import (
+    HOTTER,
+    ILO,
+    ILO_AFTERNOON,
+    ILO_AFTERNOON_AROUSAL,
+    ILO_TEXT,
+    TAVI,
+    TAVI_AFTERNOON,
+    TAVI_AFTERNOON_AROUSAL,
+    TAVI_TEXT,
+)
 from pydantic import BaseModel, ValidationError
 
 from surprise_loop.config import (
     AgentSpec,
-    AppraiseParams,
     Backends,
+    BeliefParams,
     ConfigError,
-    ConflictParams,
     DeliberateParams,
-    DispositionParams,
     EvaluateParams,
+    ExpectationParams,
     ExperimentConfig,
-    GoalParams,
+    FeelingParams,
+    LensParams,
+    LLMParams,
     MemoryParams,
     MetricsParams,
     MonitorParams,
-    MoodParams,
+    OverrideParams,
     Params,
+    PullParams,
+    ReconcileParams,
     RunConfig,
     Runtime,
+    StubModelParams,
     derive_rng,
     initial_agent_state,
     load_config,
     resolve_model,
 )
-from surprise_loop.state import GoalName, Mood, Traits
-from surprise_loop.world import Action, SelfAdminWorld, WorldConfig
+from surprise_loop.feeling import feel
+from surprise_loop.lens import felt_scene
+from surprise_loop.state import AgentState, Feeling, SurpriseNote
+from surprise_loop.world import (
+    Action,
+    BodyState,
+    Channel,
+    Levels,
+    Observation,
+    Outcome,
+    Place,
+    WorldConfig,
+    WorldState,
+    frozen_noon_facts,
+)
+
+ROOT = Path(__file__).resolve().parents[1]
+AFTERNOON = ROOT / "experiments" / "clearing_afternoon.yaml"
+DAY = ROOT / "experiments" / "clearing_day.yaml"
 
 YAML = """\
 name: pilot
 seeds: [1, 2]
 ticks: 50
-world:
-  active_lever: random
-  reward_magnitude: 1.0
-  schedule:
-    - {kind: fixed_ratio, steps: 30, ratio: 1}
-    - {kind: progressive_ratio, steps: 30, pr_start: 1, pr_increment: 2}
-    - {kind: extinction, steps: 30}
+world: {start_minute: 780}
+start_place: oak
 agents:
-  - name: high
-    traits: {reward_sensitivity: 2.0, surprise_learning_rate: 0.5, mood_inertia: 0.3}
-  - name: low
-    traits: {reward_sensitivity: 0.5, surprise_learning_rate: 0.2, mood_inertia: 0.8}
-    mood: {valence: 0.1, arousal: 0.2}
-    goal_priorities: {seek_reward: 0.8, explore: 0.6, conserve: 0.4}
+  - name: ilo
+    temperament:
+      setpoint: {heat: -0.1, water: 0.8, energy: 0.7}
+      tightness: {heat: 3.0, water: 6.0, energy: 6.0}
+      trust: {heat: 0.5, water: 0.3, energy: 0.5}
+      habit: {burden: 0.6, relief: 0.2, ambient: 0.1}
+      baseline: -0.1
+    body: {heat: 0.5, water: 0.6, energy: 0.5}
+    belief: {heat: 0.5, water: 0.6, energy: 0.5}
+  - name: tavi
+    temperament:
+      setpoint: {heat: 0.2, water: 0.8, energy: 0.7}
+      tightness: {heat: 2.5, water: 4.0, energy: 4.0}
+      trust: {heat: 0.5, water: 0.5, energy: 0.5}
+      habit: {burden: 0.1, relief: 0.1, ambient: 0.6}
+      baseline: 0.1
+    body: {heat: 0.0, water: 0.8, energy: 0.7}
+    belief: {heat: 0.0, water: 0.8, energy: 0.7}
+    arousal: 0.4
+    voiced: {question: stream_full, actual: false}
 params:
-  goals: {patience: 5}
-  deliberate: {action_costs: {press_a: 0.1, press_b: 0.1, explore: 0.0, rest: 0.0}}
+  memory: {retrieval_k: 6}
+  deliberate: {stub: lookahead, model: {rest_energy: 0.05}}
 """
 
-SCHEDULE = [{"kind": "extinction", "steps": 10}]
+LLM = {"appraise": "stub", "deliberate": "llm"}
 
 
 def write(tmp_path: Path, text: str) -> Path:
@@ -64,24 +105,20 @@ def write(tmp_path: Path, text: str) -> Path:
     return path
 
 
-def experiment(**overrides: Any) -> ExperimentConfig:
+def spec(**changes: Any) -> dict[str, Any]:
     data: dict[str, Any] = {
-        "name": "exp",
-        "seeds": [3],
-        "world": {"active_lever": "press_a", "reward_magnitude": 1.0, "schedule": SCHEDULE},
-        "agents": [
-            {
-                "name": "a",
-                "traits": {
-                    "reward_sensitivity": 1.5,
-                    "surprise_learning_rate": 0.4,
-                    "mood_inertia": 0.6,
-                },
-                "mood": {"valence": 0.2, "arousal": 0.1},
-                "goal_priorities": {"seek_reward": 1.2, "explore": 0.3, "conserve": 0.7},
-            }
-        ],
+        "name": "a",
+        "temperament": ILO.model_dump(),
+        "body": {"heat": 0.99, "water": 0.47, "energy": 0.22},
+        "belief": ILO_AFTERNOON.model_dump(),
+        "arousal": 0.7,
+        "voiced": HOTTER.model_dump(),
     }
+    return data | changes
+
+
+def experiment(**overrides: Any) -> ExperimentConfig:
+    data: dict[str, Any] = {"name": "exp", "seeds": [3], "agents": [spec()]}
     data.update(overrides)
     return ExperimentConfig.model_validate(data)
 
@@ -90,56 +127,75 @@ def run_config(**overrides: Any) -> RunConfig:
     return experiment(**overrides).runs()[0]
 
 
-# --- loading -------------------------------------------------------------------------------
+# --- loading ---------------------------------------------------------------------------------
 
 
 def test_yaml_loads_and_runs_are_agents_times_seeds(tmp_path: Path) -> None:
     config = load_config(write(tmp_path, YAML))
     assert isinstance(config, ExperimentConfig)
-    assert config.params.goals.patience == 5
-    assert config.params.goals.ema_rate == GoalParams().ema_rate
-    assert config.params.deliberate.action_costs[Action.PRESS_A] == 0.1
-    assert config.agents[0].mood == Mood(valence=0.0, arousal=0.0)
-    assert config.backends == Backends(appraise="stub", deliberate="stub", evaluate="stub")
+    assert config.world == WorldConfig(start_minute=780)
+    assert config.start_place is Place.OAK
+    assert config.params.memory.retrieval_k == 6
+    assert config.params.memory.base_salience == MemoryParams().base_salience
+    assert config.params.deliberate.stub == "lookahead"
+    assert config.params.deliberate.model.rest_energy == 0.05
+    assert config.params.deliberate.model.walk_energy == StubModelParams().walk_energy
+    assert config.agents[0].arousal == 0.2
+    assert config.agents[0].voiced is None
+    assert config.agents[1].voiced == SurpriseNote(question="stream_full", actual=False)
+    assert config.backends == Backends(appraise="stub", deliberate="stub")
     assert config.model is None
 
     runs = config.runs()
     assert [(r.run_id, r.agent.name, r.seed) for r in runs] == [
-        ("pilot-high-s1", "high", 1),
-        ("pilot-high-s2", "high", 2),
-        ("pilot-low-s1", "low", 1),
-        ("pilot-low-s2", "low", 2),
+        ("pilot-ilo-s1", "ilo", 1),
+        ("pilot-ilo-s2", "ilo", 2),
+        ("pilot-tavi-s1", "tavi", 1),
+        ("pilot-tavi-s2", "tavi", 2),
     ]
     for run in runs:
         assert isinstance(run, RunConfig)
         assert run.ticks == 50
         assert run.world == config.world
+        assert run.start_place is Place.OAK
         assert run.params == config.params
         assert run.backends == config.backends
         assert run.model is None
 
 
+def test_world_and_start_place_default() -> None:
+    config = experiment()
+    assert config.world == WorldConfig()
+    assert config.start_place is Place.MEADOW
+    assert config.ticks is None
+
+
 def test_unknown_yaml_key_raises_config_error_naming_the_key_path(tmp_path: Path) -> None:
-    path = write(tmp_path, YAML.replace("patience: 5", "pateince: 5"))
-    with pytest.raises(ConfigError, match=r"params\.goals\.pateince") as excinfo:
+    path = write(tmp_path, YAML.replace("retrieval_k: 6", "retreival_k: 6"))
+    with pytest.raises(ConfigError, match=r"params\.memory\.retreival_k") as excinfo:
         load_config(path)
     assert "not permitted" in str(excinfo.value)
 
 
+def test_unknown_top_level_key_raises_config_error_naming_it(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r"start_plaec"):
+        load_config(write(tmp_path, YAML.replace("start_place:", "start_plaec:")))
+
+
 def test_validation_errors_are_one_line_per_problem(tmp_path: Path) -> None:
-    text = YAML.replace("patience: 5", "patience: 0, typo: 1")
+    text = YAML.replace("retrieval_k: 6", "retrieval_k: 0, typo: 1")
     with pytest.raises(ConfigError) as excinfo:
         load_config(write(tmp_path, text))
     lines = str(excinfo.value).splitlines()
-    assert any(line.strip().startswith("params.goals.patience:") for line in lines)
-    assert any(line.strip().startswith("params.goals.typo:") for line in lines)
+    assert any(line.strip().startswith("params.memory.retrieval_k:") for line in lines)
+    assert any(line.strip().startswith("params.memory.typo:") for line in lines)
     assert len(lines) == 3  # header + one line per problem
     assert "Traceback" not in str(excinfo.value)
 
 
 def test_list_indices_appear_in_the_key_path(tmp_path: Path) -> None:
-    text = YAML.replace("mood_inertia: 0.8", "mood_inertia: 1.5")
-    with pytest.raises(ConfigError, match=r"agents\.1\.traits\.mood_inertia"):
+    text = YAML.replace("arousal: 0.4", "arousal: 1.5")
+    with pytest.raises(ConfigError, match=r"agents\.1\.arousal"):
         load_config(write(tmp_path, text))
 
 
@@ -160,11 +216,85 @@ def test_non_mapping_document_raises_config_error(tmp_path: Path, text: str) -> 
         load_config(write(tmp_path, text))
 
 
+def test_config_file_that_is_not_utf8_raises_config_error(tmp_path: Path) -> None:
+    path = tmp_path / "exp.yaml"
+    path.write_bytes(b"name: \xff\xfe\n")
+    with pytest.raises(ConfigError, match="not UTF-8"):
+        load_config(path)
+
+
 def test_config_error_is_a_value_error() -> None:
     assert issubclass(ConfigError, ValueError)
 
 
-# --- validation ----------------------------------------------------------------------------
+# --- the two experiment files ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("path", [AFTERNOON, DAY], ids=["afternoon", "day"])
+def test_experiment_files_load_with_two_all_stub_runs(path: Path) -> None:
+    config = load_config(path)
+    assert config.seeds == [1]
+    assert config.ticks is None
+    assert config.start_place is Place.MEADOW
+    assert config.backends == Backends()
+    assert config.model is None
+    assert config.params == Params()
+    assert [a.name for a in config.agents] == ["ilo", "tavi"]
+    assert [a.temperament for a in config.agents] == [ILO, TAVI]
+    runs = config.runs()
+    assert [r.run_id for r in runs] == [f"{config.name}-ilo-s1", f"{config.name}-tavi-s1"]
+    assert resolve_model(runs[0]) is None
+
+
+def test_afternoon_file_is_the_worked_example() -> None:
+    config = load_config(AFTERNOON)
+    assert config.name == "clearing_afternoon"
+    assert config.world == WorldConfig(start_minute=780)
+    ilo, tavi = config.agents
+    assert ilo.body == BodyState(heat=0.99, water=0.47, energy=0.22)
+    assert ilo.belief == ILO_AFTERNOON
+    assert ilo.arousal == ILO_AFTERNOON_AROUSAL
+    assert ilo.voiced == HOTTER
+    assert tavi.body == BodyState(heat=0.02, water=0.84, energy=0.76)
+    assert tavi.belief == TAVI_AFTERNOON
+    assert tavi.arousal == TAVI_AFTERNOON_AROUSAL
+    assert tavi.voiced is None
+
+
+def test_day_file_starts_at_the_world_default_with_belief_equal_to_body() -> None:
+    config = load_config(DAY)
+    assert config.name == "clearing_day"
+    assert config.world == WorldConfig()
+    ilo, tavi = config.agents
+    assert ilo.belief == Levels(heat=-0.1, water=0.75, energy=0.60)
+    assert ilo.arousal == 0.3
+    assert tavi.belief == Levels(heat=0.0, water=0.85, energy=0.80)
+    assert tavi.arousal == 0.2
+    for agent in config.agents:
+        assert agent.body.model_dump(exclude={"gut"}) == agent.belief.model_dump()
+        assert agent.body.gut == 0
+        assert agent.voiced is None
+
+
+@pytest.mark.parametrize(("index", "text"), [(0, ILO_TEXT), (1, TAVI_TEXT)], ids=["ilo", "tavi"])
+def test_afternoon_initial_states_give_the_fixed_texts(index: int, text: str) -> None:
+    run = load_config(AFTERNOON).runs()[index]
+    s = initial_agent_state(run)
+    scene = felt_scene(
+        run.start_place,
+        frozen_noon_facts(),
+        s.belief,
+        s.temperament,
+        s.feeling.arousal,
+        s.attention,
+        s.voiced,
+        0,
+        run.params.lens,
+    )
+    assert scene.text() == text
+
+
+# --- validation ------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("name", ["a/b", "", "has space", "../x"])
@@ -172,9 +302,7 @@ def test_names_are_restricted_to_safe_characters(name: str) -> None:
     with pytest.raises(ValidationError):
         experiment(name=name)
     with pytest.raises(ValidationError):
-        AgentSpec(
-            name=name, traits=Traits(reward_sensitivity=1, surprise_learning_rate=1, mood_inertia=0)
-        )
+        AgentSpec.model_validate(spec(name=name))
 
 
 def test_experiment_needs_seeds_and_agents() -> None:
@@ -184,91 +312,143 @@ def test_experiment_needs_seeds_and_agents() -> None:
         experiment(agents=[])
 
 
-def test_agent_names_must_be_unique() -> None:
-    agent = experiment().agents[0].model_dump()
+def test_seeds_must_be_unique() -> None:
     with pytest.raises(ValidationError, match="unique"):
-        experiment(agents=[agent, agent])
+        experiment(seeds=[1, 2, 1])
+
+
+def test_agent_names_must_be_unique() -> None:
+    with pytest.raises(ValidationError, match="unique"):
+        experiment(agents=[spec(), spec()])
 
 
 def test_ticks_must_be_positive_when_set() -> None:
-    assert experiment().ticks is None
     assert experiment(ticks=1).ticks == 1
     with pytest.raises(ValidationError):
         experiment(ticks=0)
 
 
-def test_agent_goal_priorities_default_and_must_cover_every_goal() -> None:
-    t = Traits(reward_sensitivity=1.0, surprise_learning_rate=0.5, mood_inertia=0.5)
-    spec = AgentSpec(name="x", traits=t)
-    assert spec.goal_priorities == {
-        GoalName.SEEK_REWARD: 1.0,
-        GoalName.EXPLORE: 0.5,
-        GoalName.CONSERVE: 0.5,
-    }
-    with pytest.raises(ValidationError, match="conserve"):
-        AgentSpec(name="x", traits=t, goal_priorities={"seek_reward": 1.0, "explore": 0.5})
+def test_backends_are_appraise_and_deliberate_only() -> None:
+    assert set(Backends.model_fields) == {"appraise", "deliberate"}
+    with pytest.raises(ValidationError):
+        Backends.model_validate({"evaluate": "stub"})
+    with pytest.raises(ValidationError):
+        Backends.model_validate({"deliberate": "model"})
 
 
-def test_params_defaults_are_the_tuned_values() -> None:
-    # The values tuned against tests/test_behaviour.py; change them only together with that gate.
+def test_agent_spec_defaults() -> None:
+    data = spec()
+    del data["arousal"], data["voiced"]
+    agent = AgentSpec.model_validate(data)
+    assert agent.arousal == 0.2
+    assert agent.voiced is None
+
+
+def test_params_defaults_are_the_contract_values() -> None:
     p = Params()
-    assert p.monitor == MonitorParams(confidence_floor=0.3, event_mismatch_weight=0.5)
-    assert p.mood == MoodParams(arousal_gain=1.0)
-    assert p.memory == MemoryParams(retrieval_k=20, base_salience=0.1)
-    assert p.goals == GoalParams(
-        ema_rate=0.2,
-        error_threshold=0.05,
-        patience=3,
-        revision_step=0.1,
-        min_priority=0.1,
-        max_priority=2.0,
+    assert p.lens == LensParams(
+        gain_base=0.5,
+        gain_arousal=1.5,
+        min_noticed=3,
+        drop_per_arousal=4.0,
+        attention_bonus=0.3,
+        narrow_arousal=0.5,
+        body_lines_narrow=2,
+        body_lines_wide=3,
+        body_speak_grade=2,
+        value_edges=(0.25, 1.0, 2.0, 3.0),
+        body_edges=(0.5, 1.0, 2.0, 3.0),
     )
-    assert p.dispositions == DispositionParams(rate=0.2, bound=1.0, alignment_weight=0.2)
-    assert p.conflict == ConflictParams(enabled=True, habit_threshold=0.1)
+    assert p.feeling == FeelingParams(
+        tone_gain=0.12,
+        phasic_gain=0.3,
+        phasic_decay=0.5,
+        surprise_gain=0.5,
+        strain_gain=0.6,
+        strain_full=3.0,
+        arousal_inertia=0.5,
+        mood_inertia=0.9,
+    )
+    assert p.expectation == ExpectationParams(
+        bit=0.25,
+        much=1.0,
+        stub_tolerance={Channel.HEAT: 0.12, Channel.WATER: 0.06, Channel.ENERGY: 0.03},
+    )
+    assert p.monitor == MonitorParams(world_weight=1.0)
+    assert p.belief == BeliefParams(
+        expectation_weight={Channel.HEAT: 0.5, Channel.WATER: 0.5, Channel.ENERGY: 0.5}
+    )
+    assert p.memory == MemoryParams(
+        retrieval_k=5, base_salience=0.2, salience_gain=0.3, retrieval="last_k"
+    )
+    assert p.evaluate == EvaluateParams(window=4, score_scale=1.0, helped=0.25)
+    assert p.pulls == PullParams(rate=0.5, speak=0.2)
+    assert p.override == OverrideParams(enabled=True, urgent_felt=1.5, worse_margin=0.2)
     assert p.deliberate == DeliberateParams(
-        temperature=0.1,
-        prior_expected_reward=0.3,
-        prior_weight=1.0,
-        action_costs={"press_a": 0.05, "press_b": 0.05, "explore": 0.02, "rest": 0.0},
-        approach_weight=0.2,
-        vigor_weight=2.0,
-        explore_value=0.3,
-        rest_value=0.3,
-        confidence_halfsat=3.0,
+        stub="reactive",
+        act_threshold=0.5,
+        horizon=6,
+        model=StubModelParams(
+            heat_rate=0.1,
+            heat_per_bearing=0.5,
+            water_drain=0.012,
+            sweat_water=0.01,
+            drink_water=0.04,
+            walk_energy=0.03,
+            rest_energy=0.05,
+        ),
     )
-    assert p.appraise == AppraiseParams(reward_gain=0.5)
-    assert p.evaluate == EvaluateParams(scale=0.2)
-    assert p.metrics == MetricsParams(quit_steps=10)
+    assert p.reconcile == ReconcileParams(voice_threshold=0.5)
+    assert p.metrics == MetricsParams(comfort_felt=1.0)
+    assert p.llm == LLMParams(output_retries=3, temperature=1.0, timeout_s=60.0)
 
 
 # (params group, field, out-of-range values); NaN and ±inf are added below
 BAD_PARAMS: list[tuple[type[BaseModel], str, list[Any]]] = [
-    (MonitorParams, "confidence_floor", [-0.1, 1.1]),
-    (MonitorParams, "event_mismatch_weight", [-0.1]),
-    (MoodParams, "arousal_gain", [-0.1]),
+    (LensParams, "gain_base", [-0.1]),
+    (LensParams, "gain_arousal", [-0.1]),
+    (LensParams, "min_noticed", [0]),
+    (LensParams, "drop_per_arousal", [-0.1]),
+    (LensParams, "attention_bonus", [-0.1]),
+    (LensParams, "narrow_arousal", [-0.1, 1.1]),
+    (LensParams, "body_lines_narrow", [-1]),
+    (LensParams, "body_lines_wide", [-1]),
+    (LensParams, "body_speak_grade", [0]),
+    (FeelingParams, "tone_gain", [-0.1]),
+    (FeelingParams, "phasic_gain", [-0.1]),
+    (FeelingParams, "phasic_decay", [-0.1, 1.1]),
+    (FeelingParams, "surprise_gain", [-0.1]),
+    (FeelingParams, "strain_gain", [-0.1]),
+    (FeelingParams, "strain_full", [0.0]),
+    (FeelingParams, "arousal_inertia", [-0.1, 1.1]),
+    (FeelingParams, "mood_inertia", [-0.1, 1.1]),
+    (ExpectationParams, "bit", [0.0, -0.1]),
+    (ExpectationParams, "much", [0.0, -0.1]),
+    (MonitorParams, "world_weight", [-0.1]),
+    (StubModelParams, "heat_rate", [-0.1, 1.1]),
+    (StubModelParams, "heat_per_bearing", []),
+    (StubModelParams, "water_drain", [-0.1]),
+    (StubModelParams, "sweat_water", [-0.1]),
+    (StubModelParams, "drink_water", [-0.1]),
+    (StubModelParams, "walk_energy", [-0.1]),
+    (StubModelParams, "rest_energy", [-0.1]),
     (MemoryParams, "retrieval_k", [0]),
     (MemoryParams, "base_salience", [-0.1, 1.1]),
-    (GoalParams, "ema_rate", [-0.1, 1.1]),
-    (GoalParams, "error_threshold", [-0.1]),
-    (GoalParams, "patience", [0]),
-    (GoalParams, "revision_step", [-0.1]),
-    (GoalParams, "min_priority", [-0.1, 3.0]),
-    (GoalParams, "max_priority", [0.05]),
-    (DispositionParams, "rate", [-0.1, 1.1]),
-    (DispositionParams, "bound", [0.0]),
-    (DispositionParams, "alignment_weight", [-0.1]),
-    (ConflictParams, "habit_threshold", []),
-    (DeliberateParams, "temperature", [0.0, -1.0]),
-    (DeliberateParams, "prior_expected_reward", []),
-    (DeliberateParams, "prior_weight", [0.0, -1.0]),
-    (DeliberateParams, "approach_weight", []),
-    (DeliberateParams, "vigor_weight", []),
-    (DeliberateParams, "explore_value", []),
-    (DeliberateParams, "rest_value", []),
-    (DeliberateParams, "confidence_halfsat", [0.0]),
-    (AppraiseParams, "reward_gain", [-0.1]),
-    (EvaluateParams, "scale", [0.0, -1.0]),
-    (MetricsParams, "quit_steps", [0]),
+    (MemoryParams, "salience_gain", [-0.1]),
+    (EvaluateParams, "window", [0]),
+    (EvaluateParams, "score_scale", [0.0, -1.0]),
+    (EvaluateParams, "helped", [-0.1, 1.1]),
+    (PullParams, "rate", [-0.1, 1.1]),
+    (PullParams, "speak", [-0.1]),
+    (OverrideParams, "urgent_felt", [-0.1]),
+    (OverrideParams, "worse_margin", [-0.1]),
+    (DeliberateParams, "act_threshold", [-0.1]),
+    (DeliberateParams, "horizon", [0]),
+    (ReconcileParams, "voice_threshold", [-0.1]),
+    (MetricsParams, "comfort_felt", [-0.1]),
+    (LLMParams, "output_retries", [-1]),
+    (LLMParams, "temperature", [-0.1]),
+    (LLMParams, "timeout_s", [0.0]),
 ]
 
 PARAM_CASES = [
@@ -286,28 +466,62 @@ def test_params_reject_out_of_range_nan_and_inf(
         model.model_validate({field: bad})
 
 
-def test_prior_weight_must_be_positive() -> None:
-    with pytest.raises(ValidationError, match="prior_weight"):
-        DeliberateParams(prior_weight=0.0)
+@pytest.mark.parametrize(
+    ("model", "field"),
+    [
+        (ExpectationParams, "stub_tolerance"),
+        (BeliefParams, "expectation_weight"),
+    ],
+)
+def test_per_channel_params_cover_every_channel_and_reject_bad_values(
+    model: type[BaseModel], field: str
+) -> None:
+    full = model().model_dump()[field]
+    with pytest.raises(ValidationError, match="water"):
+        model.model_validate({field: {k: v for k, v in full.items() if k != Channel.WATER}})
+    for bad in (-0.1, math.nan, math.inf):
+        with pytest.raises(ValidationError):
+            model.model_validate({field: full | {Channel.HEAT: bad}})
 
 
-def test_action_costs_must_cover_every_action() -> None:
-    with pytest.raises(ValidationError, match="rest"):
-        DeliberateParams(action_costs={"press_a": 0.0, "press_b": 0.0, "explore": 0.0})
-    with pytest.raises(ValidationError):
-        DeliberateParams(action_costs={a: math.nan for a in Action})
+def test_expectation_weight_must_be_positive() -> None:
+    # k = trust / (trust + weight) would divide by zero for a body with no trust
+    weights = {c: 0.5 for c in Channel} | {Channel.ENERGY: 0.0}
+    with pytest.raises(ValidationError, match="energy"):
+        BeliefParams(expectation_weight=weights)
+
+
+def test_bit_must_not_exceed_much() -> None:
+    ExpectationParams(bit=1.0, much=1.0)
+    with pytest.raises(ValidationError, match="bit"):
+        ExpectationParams(bit=1.5, much=1.0)
+
+
+@pytest.mark.parametrize("field", ["value_edges", "body_edges"])
+@pytest.mark.parametrize(
+    "edges",
+    [(), (1.0, 0.5), (0.5, 0.5), (0.0, 1.0), (-0.5, 1.0), (0.5, math.nan), (0.5, math.inf)],
+    ids=["empty", "descending", "repeated", "zero", "negative", "nan", "inf"],
+)
+def test_lens_edges_are_nonempty_strictly_ascending_and_positive(
+    field: str, edges: tuple[float, ...]
+) -> None:
+    with pytest.raises(ValidationError, match=field):
+        LensParams.model_validate({field: edges})
+
+
+def test_lens_edges_accept_a_single_edge() -> None:
+    assert LensParams(value_edges=(0.3,), body_edges=(1.0,)).value_edges == (0.3,)
 
 
 def test_unknown_params_fields_are_rejected() -> None:
     with pytest.raises(ValidationError):
-        Params.model_validate({"goals": {"pateince": 3}})
+        Params.model_validate({"memory": {"retreival_k": 3}})
     with pytest.raises(ValidationError):
         Params.model_validate({"habits": {}})
 
 
-# --- resolve_model -------------------------------------------------------------------------
-
-LLM = {"appraise": "stub", "deliberate": "llm", "evaluate": "stub"}
+# --- resolve_model ---------------------------------------------------------------------------
 
 
 def test_resolve_model_is_none_when_every_backend_is_a_stub(
@@ -317,9 +531,12 @@ def test_resolve_model_is_none_when_every_backend_is_a_stub(
     assert resolve_model(run_config(model="config-model")) is None
 
 
-def test_resolve_model_prefers_config_over_env(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("backends", [LLM, {"appraise": "llm", "deliberate": "stub"}])
+def test_resolve_model_prefers_config_over_env(
+    monkeypatch: pytest.MonkeyPatch, backends: dict[str, str]
+) -> None:
     monkeypatch.setenv("SURPRISE_LOOP_MODEL", "env-model")
-    assert resolve_model(run_config(backends=LLM, model="config-model")) == "config-model"
+    assert resolve_model(run_config(backends=backends, model="config-model")) == "config-model"
 
 
 def test_resolve_model_falls_back_to_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -339,25 +556,36 @@ def test_resolve_model_raises_for_llm_backend_without_model(
         resolve_model(run_config(backends=LLM))
 
 
-# --- initial state, rng, runtime -----------------------------------------------------------
+# --- initial state, rng, runtime -------------------------------------------------------------
 
 
 def test_initial_agent_state_comes_from_the_spec() -> None:
     config = run_config()
-    state = initial_agent_state(config)
-    assert state.traits == config.agent.traits
-    assert state.mood == Mood(valence=0.2, arousal=0.1)
-    assert state.goals.priorities == {
-        GoalName.SEEK_REWARD: 1.2,
-        GoalName.EXPLORE: 0.3,
-        GoalName.CONSERVE: 0.7,
-    }
-    assert state.memory.episodes == []
-    assert state.dispositions.biases == {a: 0.0 for a in Action}
-    assert state.goals.error_ema == {g: 0.0 for g in GoalName}
-    assert state.goals.error_streak == {g: 0 for g in GoalName}
-    assert state.goals.revisions == 0
-    assert state.tick == 0
+    s = initial_agent_state(config)
+    assert isinstance(s, AgentState)
+    assert s.temperament == ILO
+    assert s.belief == ILO_AFTERNOON
+    assert s.feeling.arousal == 0.7
+    assert s.voiced == HOTTER
+    assert s.attention is None
+    assert s.memory.episodes == []
+    assert s.pulls.values == {p: {a: 0.0 for a in Action} for p in Place}
+    assert s.tick == 0
+
+
+def test_initial_feeling_is_feel_from_baseline_with_the_spec_arousal() -> None:
+    config = run_config()
+    start = Feeling(discomfort=0, valence=ILO.baseline, arousal=0.7, mood=ILO.baseline, phasic=0)
+    expected = feel(ILO_AFTERNOON, ILO, start, None, config.params.feeling)
+    s = initial_agent_state(config)
+    assert s.feeling == expected.model_copy(update={"arousal": 0.7})
+    assert s.feeling.discomfort > 0
+    assert s.feeling.valence < ILO.baseline
+
+
+def test_initial_agent_state_without_voiced_note() -> None:
+    config = run_config(agents=[spec(voiced=None)])
+    assert initial_agent_state(config).voiced is None
 
 
 def test_derive_rng_is_stable_and_keyed() -> None:
@@ -366,52 +594,57 @@ def test_derive_rng_is_stable_and_keyed() -> None:
     assert derive_rng(7, "a").random() == random.Random("7:a").random()
 
 
-def test_derive_rng_matches_the_worlds_active_lever_draw() -> None:
-    for seed in range(20):
-        config = WorldConfig(active_lever="random", reward_magnitude=1.0, schedule=SCHEDULE)
-        drawn = SelfAdminWorld(config, seed).snapshot().active_lever
-        expected = derive_rng(seed, "active_lever").choice([Action.PRESS_A, Action.PRESS_B])
-        assert drawn == expected
+class StillWorld:
+    """A stand-in for the World protocol; the clearing world comes in a later task."""
+
+    def __init__(self, state: WorldState) -> None:
+        self._state = state
+
+    @property
+    def done(self) -> bool:
+        return True
+
+    def observe(self) -> Observation:
+        return self._state.last_observation
+
+    def step(self, action: Action) -> Outcome:
+        raise NotImplementedError
+
+    def snapshot(self) -> WorldState:
+        return self._state
 
 
 def test_runtime_is_a_frozen_dataclass() -> None:
     config = run_config()
-    world = SelfAdminWorld(config.world, config.seed)
-    rt = Runtime(config=config, world=world)
+    observation = Observation(
+        step=0,
+        minute=360,
+        place=Place.MEADOW,
+        last_action=None,
+        event="start",
+        facts=[],
+        signal=Levels(heat=0, water=0.5, energy=0.5),
+        offers=[Action.REST],
+    )
+    state = WorldState(
+        seed=3,
+        step=0,
+        minute=360,
+        place=Place.MEADOW,
+        body=config.agent.body,
+        water_history=[0.47, 0.47],
+        stream_full=True,
+        forced_rest_left=0,
+        last_observation=observation,
+    )
+    rt = Runtime(config=config, world=StillWorld(state))
     assert rt.model is None
     with pytest.raises(AttributeError):
         rt.model = "x"  # type: ignore[misc]
 
 
-# --- final fix wave -------------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("priority", [0.05, 2.5])
-def test_goal_priorities_must_lie_in_the_revision_range(priority: float) -> None:
-    agents = [
-        {
-            "name": "a",
-            "traits": {"reward_sensitivity": 1, "surprise_learning_rate": 0.5, "mood_inertia": 0.5},
-            "goal_priorities": {"seek_reward": priority, "explore": 0.5, "conserve": 0.5},
-        }
-    ]
-    with pytest.raises(ValidationError, match=r"seek_reward = .* is outside \[0.1, 2\]"):
-        experiment(agents=agents)
-    # the range follows params.goals, and RunConfig checks it too
-    widened = {"goals": {"min_priority": 0.0, "max_priority": 3.0}}
-    run = experiment(agents=agents, params=widened).runs()[0]
-    with pytest.raises(ValidationError, match="outside"):
-        RunConfig.model_validate({**run.model_dump(), "params": Params().model_dump()})
-
-
-def test_goal_priorities_out_of_range_is_a_config_error(tmp_path: Path) -> None:
-    path = write(tmp_path, YAML.replace("seek_reward: 0.8", "seek_reward: 9.0"))
-    with pytest.raises(ConfigError, match="goal_priorities.seek_reward = 9 is outside"):
-        load_config(path)
-
-
-def test_config_file_that_is_not_utf8_raises_config_error(tmp_path: Path) -> None:
-    path = tmp_path / "exp.yaml"
-    path.write_bytes(b"name: \xff\xfe\n")
-    with pytest.raises(ConfigError, match="not UTF-8"):
-        load_config(path)
+def test_the_default_recall_reaches_the_episode_just_judged() -> None:
+    # Evaluate scores the episode `window` back, then the pass's own episode is stored: recalling
+    # one more than the window makes the judged episode the oldest recalled, so its regulation
+    # line reaches the next prompt
+    assert MemoryParams().retrieval_k == EvaluateParams().window + 1

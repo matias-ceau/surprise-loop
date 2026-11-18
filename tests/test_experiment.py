@@ -1,15 +1,17 @@
-"""`surprise-loop experiment`: concurrent runs, skip and resume, failures, and the four CSVs."""
+"""`surprise-loop experiment`: concurrent runs, skip and resume, failures, and the CSV tables."""
 
 import asyncio
 import csv
+import errno
 import io
 import math
+import os
 import shutil
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 import pytest
-from pydantic_ai import ModelResponse, ToolCallPart
+from pydantic_ai import ModelResponse
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
@@ -19,44 +21,34 @@ from surprise_loop.config import load_config
 from surprise_loop.loop import RunResult, is_complete, load_result, run
 from surprise_loop.metrics import (
     STABILITY_METRICS,
-    PEPoint,
-    PhaseMetrics,
+    TRACE_COLUMNS,
     RunMetrics,
+    experiment_tables,
+    flatten,
     format_cell,
     icc1,
-    phases_csv,
+    opposite_value_steps,
     results_csv,
     stability_csv,
     summarize,
+    trace_csv,
 )
-from surprise_loop.state import Traits
+from surprise_loop.world import Channel
 
-CONFIG = """\
-name: exp
-seeds: [1, 2]
-ticks: null
-world:
-  active_lever: random
-  reward_magnitude: 1.0
-  schedule:
-    - {kind: fixed_ratio, steps: 8, ratio: 1}
-    - {kind: progressive_ratio, steps: 14, pr_start: 1, pr_increment: 2}
-    - {kind: fixed_ratio, steps: 4, ratio: 1}
-    - {kind: extinction, steps: 16}
-agents:
-  - name: slow
-    traits: {reward_sensitivity: 1.0, surprise_learning_rate: 0.2, mood_inertia: 0.5}
-  - name: fast
-    traits: {reward_sensitivity: 2.0, surprise_learning_rate: 0.8, mood_inertia: 0.1}
-backends:
-  appraise: stub
-  deliberate: stub
-  evaluate: stub
-model: null
-"""
-RUN_IDS = ["exp-slow-s1", "exp-slow-s2", "exp-fast-s1", "exp-fast-s2"]
-CSV_FILES = ["pe_trace.csv", "phases.csv", "results.csv", "stability.csv"]
-TRAIT_COLUMNS = list(Traits.model_fields)
+ROOT = Path(__file__).resolve().parent.parent
+AFTERNOON = ROOT / "experiments" / "clearing_afternoon.yaml"
+CONFIG = (
+    AFTERNOON.read_text()
+    .replace("name: clearing_afternoon", "name: exp")
+    .replace("seeds: [1]", "seeds: [1, 2]")
+)
+RUN_IDS = ["exp-ilo-s1", "exp-ilo-s2", "exp-tavi-s1", "exp-tavi-s2"]
+CSV_FILES = ["pairs.csv", "results.csv", "stability.csv", "trace.csv"]
+STEPS = 42  # world steps of an afternoon; a tick with an override takes two
+
+
+def steps(result: RunResult) -> int:
+    return sum(len(record.passes) for record in result.records)
 
 
 def write_config(tmp_path: Path, text: str = CONFIG, **replacements: str) -> Path:
@@ -127,64 +119,77 @@ def reference(tmp_path_factory: pytest.TempPathFactory) -> Path:
 # --- files and columns ----------------------------------------------------------------------
 
 
-def test_writes_one_run_dir_per_agent_and_seed_and_the_four_csvs(reference: Path) -> None:
+def test_writes_one_run_dir_per_agent_and_seed_and_the_csvs(reference: Path) -> None:
     assert sorted(p.name for p in reference.iterdir()) == sorted([*RUN_IDS, "exp"])
     assert sorted(p.name for p in (reference / "exp").iterdir()) == CSV_FILES
     for run_id in RUN_IDS:
-        assert (reference / run_id / "config.json").is_file()
-        assert load_result(reference / run_id).world.phase_index == 4  # schedule ran to its end
+        result = load_result(reference / run_id)
+        assert steps(result) == STEPS and is_complete(result)
 
 
 def test_results_csv_has_one_row_per_run_in_config_order(reference: Path) -> None:
     path = reference / "exp" / "results.csv"
-    assert header(path) == ["agent", *TRAIT_COLUMNS, "seed", *RunMetrics.model_fields]
+    assert header(path) == ["agent", "seed", *RunMetrics.model_fields]
     rows = read_csv(path)
     assert [(r["agent"], r["seed"]) for r in rows] == [
-        ("slow", "1"),
-        ("slow", "2"),
-        ("fast", "1"),
-        ("fast", "2"),
+        ("ilo", "1"),
+        ("ilo", "2"),
+        ("tavi", "1"),
+        ("tavi", "2"),
     ]
-    assert rows[2]["reward_sensitivity"] == "2.0"
-    assert rows[2]["surprise_learning_rate"] == "0.8"
     for row, run_id in zip(rows, RUN_IDS, strict=True):
         metrics = summarize(load_result(reference / run_id))
         for field, value in metrics.model_dump().items():
             assert row[field] == format_cell(value), (run_id, field)
         assert row["truncated"] == "False"
-        assert row["steps"] == "42"
+        assert row["steps"] == str(STEPS)
 
 
-def test_phases_csv_has_one_row_per_phase_per_run(reference: Path) -> None:
-    path = reference / "exp" / "phases.csv"
-    assert header(path) == ["agent", "seed", *PhaseMetrics.model_fields]
-    rows = read_csv(path)
-    assert len(rows) == 4 * 4
-    assert [r["phase_kind"] for r in rows[:4]] == [
-        "fixed_ratio",
-        "progressive_ratio",
-        "fixed_ratio",
-        "extinction",
+def test_trace_csv_has_one_row_per_world_step(reference: Path) -> None:
+    path = reference / "exp" / "trace.csv"
+    assert header(path) == [
+        "agent",
+        "seed",
+        "step",
+        "minute",
+        "place",
+        "action",
+        "event",
+        "error_heat",
+        "error_water",
+        "error_energy",
+        "world",
+        "better",
+        "size",
+        "belief_heat",
+        "belief_water",
+        "belief_energy",
+        "body_heat",
+        "body_water",
+        "body_energy",
+        "valence",
+        "arousal",
     ]
-    assert [(r["agent"], r["seed"], r["phase_index"]) for r in rows[4:6]] == [
-        ("slow", "2", "0"),
-        ("slow", "2", "1"),
-    ]
-
-
-def test_pe_trace_csv_has_one_row_per_world_step(reference: Path) -> None:
-    path = reference / "exp" / "pe_trace.csv"
-    assert header(path) == ["agent", "seed", *PEPoint.model_fields]
+    assert header(path) == list(TRACE_COLUMNS)
     rows = read_csv(path)
-    assert len(rows) == 4 * 42
-    first = [r for r in rows if (r["agent"], r["seed"]) == ("slow", "1")]
-    assert [int(r["step"]) for r in first] == list(range(1, 43))
-    # the per-step active presses add up to each phase's count in phases.csv
-    for phase in read_csv(reference / "exp" / "phases.csv"):
-        key = (phase["agent"], phase["seed"], phase["phase_index"])
-        steps = [r for r in rows if (r["agent"], r["seed"], r["phase_index"]) == key]
-        assert sum(r["active_press"] == "True" for r in steps) == int(phase["active_presses"])
-        assert all(r["action"] in {"press_a", "press_b", "explore", "rest"} for r in steps)
+    results = {(r.split("-")[1], r[-1]): load_result(reference / r) for r in RUN_IDS}
+    assert len(rows) == sum(len(flatten(r.records)) for r in results.values())
+    for (agent, seed), result in results.items():
+        mine = [r for r in rows if (r["agent"], r["seed"]) == (agent, seed)]
+        passes = flatten(result.records)
+        assert [int(r["step"]) for r in mine] == list(range(1, len(passes) + 1))
+        for row, p in zip(mine, passes, strict=True):
+            assert row["minute"] == str(p.outcome.info.minute)
+            assert row["place"] == p.scene.place.value
+            assert row["action"] == p.decision.action.value
+            assert row["event"] == p.outcome.observation.event.value
+            assert row["world"] == ""  # the stubs expect nothing of the world
+            for c in Channel:
+                assert row[f"error_{c.value}"] == repr(p.comparison.body[c])
+                assert row[f"belief_{c.value}"] == repr(p.belief_after.of(c))
+                assert row[f"body_{c.value}"] == repr(getattr(p.outcome.info.body, c.value))
+            assert row["size"] == repr(p.comparison.size)
+            assert row["arousal"] == repr(p.feeling_after.arousal)
 
 
 def test_stability_csv_has_one_row_per_behavioural_metric(reference: Path) -> None:
@@ -197,10 +202,57 @@ def test_stability_csv_has_one_row_per_behavioural_metric(reference: Path) -> No
         assert r["icc1"] == "nan" or math.isfinite(float(r["icc1"]))
 
 
-def test_stability_metrics_are_the_numeric_behavioural_fields() -> None:
-    bookkeeping = {"steps", "ticks", "truncated", "breakpoint_censored", "extinction_censored"}
-    assert set(STABILITY_METRICS) == set(RunMetrics.model_fields) - bookkeeping
+def test_stability_metrics_are_the_behavioural_fields() -> None:
+    assert set(STABILITY_METRICS) == set(RunMetrics.model_fields) - {"steps", "ticks", "truncated"}
     assert list(STABILITY_METRICS) == [f for f in RunMetrics.model_fields if f in STABILITY_METRICS]
+
+
+def test_one_seed_writes_no_stability_csv(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config = write_config(tmp_path, **{"seeds: [1, 2]": "seeds: [1]", "ticks: null": "ticks: 3"})
+    runs_dir = tmp_path / "runs"
+    code, err = experiment(config, runs_dir, capsys)
+    assert code == 0, err
+    assert sorted(p.name for p in (runs_dir / "exp").iterdir()) == [
+        "pairs.csv",
+        "results.csv",
+        "trace.csv",
+    ]
+
+
+def test_a_rerun_with_one_seed_removes_an_earlier_stability_csv(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runs_dir = tmp_path / "runs"
+    two = write_config(tmp_path, **{"ticks: null": "ticks: 3"})
+    assert experiment(two, runs_dir, capsys)[0] == 0
+    assert (runs_dir / "exp" / "stability.csv").is_file()
+    one = write_config(tmp_path, **{"ticks: null": "ticks: 3", "seeds: [1, 2]": "seeds: [1]"})
+    code, err = experiment(one, runs_dir, capsys)
+    assert code == 0, err
+    assert sorted(p.name for p in (runs_dir / "exp").iterdir()) == [
+        "pairs.csv",
+        "results.csv",
+        "trace.csv",
+    ]
+    assert len(read_csv(runs_dir / "exp" / "results.csv")) == 2
+
+
+def test_a_rerun_with_one_agent_removes_an_earlier_pairs_csv(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runs_dir = tmp_path / "runs"
+    two = write_config(tmp_path, **{"ticks: null": "ticks: 3"})
+    assert experiment(two, runs_dir, capsys)[0] == 0
+    assert (runs_dir / "exp" / "pairs.csv").is_file()
+    text = CONFIG.replace("ticks: null", "ticks: 3")
+    one = write_config(
+        tmp_path, text[: text.index("  - name: tavi")] + text[text.index("backends:") :]
+    )
+    code, err = experiment(one, runs_dir, capsys)
+    assert code == 0, err
+    assert sorted(p.name for p in (runs_dir / "exp").iterdir()) == CSV_FILES[1:]
 
 
 # --- determinism ----------------------------------------------------------------------------
@@ -253,7 +305,7 @@ def test_runs_interleave_under_jobs(tmp_path: Path, capsys: pytest.CaptureFixtur
         finally:
             peak["now"] -= 1
 
-    config = write_config(tmp_path)
+    config = write_config(tmp_path, **{"ticks: null": "ticks: 5"})
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(cli, "run", counting)
         assert experiment(config, tmp_path / "a", capsys, "--jobs", "4")[0] == 0
@@ -271,14 +323,14 @@ def test_partial_run_is_resumed_to_the_uninterrupted_result(
 ) -> None:
     config = write_config(tmp_path)
     runs_dir = tmp_path / "runs"
-    partial = next(r for r in load_config(config).runs() if r.run_id == "exp-fast-s2")
+    partial = next(r for r in load_config(config).runs() if r.run_id == "exp-tavi-s2")
     asyncio.run(run(partial, runs_dir / partial.run_id, stop_after_tick=11))
     assert len(list((runs_dir / partial.run_id).glob("tick_*.json"))) == 11
 
     code, err = experiment(config, runs_dir, capsys, "--jobs", "2")
 
     assert code == 0, err
-    assert "exp-fast-s2: resumed at tick 11" in err
+    assert "exp-tavi-s2: resumed at tick 11" in err
     assert csv_bytes(runs_dir) == csv_bytes(reference)
     assert dump_bytes(runs_dir) == dump_bytes(reference)
 
@@ -287,16 +339,42 @@ def test_run_dir_with_a_different_config_fails_before_any_run(
     reference: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     runs_dir = tmp_path / "runs"
-    shutil.copytree(reference / "exp-fast-s1", runs_dir / "exp-fast-s1")
-    changed = write_config(tmp_path, **{"mood_inertia: 0.1": "mood_inertia: 0.2"})
+    shutil.copytree(reference / "exp-tavi-s1", runs_dir / "exp-tavi-s1")
+    changed = write_config(tmp_path, **{"baseline: 0.1": "baseline: 0.2"})
 
     code, err = experiment(changed, runs_dir, capsys)
 
     assert code == 2
     assert error_lines(err) == err.splitlines()
     assert len(err.splitlines()) == 1
-    assert "exp-fast-s1" in err and "differs" in err
-    assert sorted(p.name for p in runs_dir.iterdir()) == ["exp-fast-s1"]
+    assert "exp-tavi-s1" in err and "differs" in err
+    assert sorted(p.name for p in runs_dir.iterdir()) == ["exp-tavi-s1"]
+
+
+def test_run_capped_by_ticks_is_complete_and_not_rerun(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config = write_config(tmp_path, **{"ticks: null": "ticks: 5"})
+    runs_dir = tmp_path / "runs"
+    code, err = experiment(config, runs_dir, capsys)
+    assert code == 0, err
+    for run_id in RUN_IDS:
+        result = load_result(runs_dir / run_id)
+        assert len(result.records) == 5 and is_complete(result)
+    first, before = csv_bytes(runs_dir), mtimes(runs_dir)
+
+    async def must_not_run(*args: object, **kwargs: object) -> RunResult:
+        raise AssertionError("a run complete by its tick cap was run again")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(cli, "run", must_not_run)
+        code, err = experiment(config, runs_dir, capsys, "--jobs", "4")
+
+    assert code == 0, err
+    assert err.count("complete, not rerun") == 4
+    assert csv_bytes(runs_dir) == first
+    assert mtimes(runs_dir) == before
+    assert all(r["truncated"] == "True" for r in read_csv(runs_dir / "exp" / "results.csv"))
 
 
 # --- failures -------------------------------------------------------------------------------
@@ -310,7 +388,7 @@ def test_a_failing_run_lets_the_others_finish_exits_1_and_writes_no_csvs(
     real_run = cli.run
 
     async def failing(config, run_dir, **kwargs):  # type: ignore[no-untyped-def]
-        if config.run_id == "exp-slow-s2":
+        if config.run_id == "exp-ilo-s2":
             await real_run(config, run_dir, stop_after_tick=7, **kwargs)
             raise RuntimeError("boom\nsecond line")
         return await real_run(config, run_dir, **kwargs)
@@ -321,42 +399,57 @@ def test_a_failing_run_lets_the_others_finish_exits_1_and_writes_no_csvs(
 
     assert code == 1
     assert "Traceback" not in err
-    errors = error_lines(err)
-    assert errors == ["error: exp-slow-s2 failed: RuntimeError: boom; second line"]
+    assert error_lines(err) == ["error: exp-ilo-s2 failed: RuntimeError: boom; second line"]
     assert not (runs_dir / "exp").exists()
-    for run_id in set(RUN_IDS) - {"exp-slow-s2"}:
-        assert load_result(runs_dir / run_id).world.phase_index == 4
-    assert len(load_result(runs_dir / "exp-slow-s2").records) == 7
+    for run_id in set(RUN_IDS) - {"exp-ilo-s2"}:
+        assert steps(load_result(runs_dir / run_id)) == STEPS
+    assert len(load_result(runs_dir / "exp-ilo-s2").records) == 7
 
     # Rerunning resumes the failed run and gives the same files as a run that never failed.
     code, err = experiment(config, runs_dir, capsys)
     assert code == 0, err
-    assert "exp-slow-s2: resumed at tick 7" in err
+    assert "exp-ilo-s2: resumed at tick 7" in err
     assert csv_bytes(runs_dir) == csv_bytes(reference)
     assert dump_bytes(runs_dir) == dump_bytes(reference)
 
 
-def test_llm_failures_are_one_line_each_with_tick_and_pass(
+def test_a_failing_run_removes_tables_left_by_an_earlier_invocation(
+    reference: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runs_dir = tmp_path / "runs"
+    shutil.copytree(reference, runs_dir)
+    shutil.rmtree(runs_dir / "exp-tavi-s1")
+    (runs_dir / "exp" / "notes.txt").write_text("not a table")
+
+    async def failing(config, run_dir, **kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("boom")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(cli, "run", failing)
+        code, err = experiment(write_config(tmp_path), runs_dir, capsys)
+
+    assert code == 1
+    assert error_lines(err) == ["error: exp-tavi-s1 failed: RuntimeError: boom"]
+    assert sorted(p.name for p in (runs_dir / "exp").iterdir()) == ["notes.txt"]
+
+
+def test_a_failing_model_fails_each_run_with_one_line(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    llm = CONFIG.replace("deliberate: stub", "deliberate: llm").replace(
-        "model: null", "model: test"
+    def down(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        raise RuntimeError("the provider is down")
+
+    config = write_config(
+        tmp_path, **{"deliberate: stub": "deliberate: llm", "model: null": "model: test"}
     )
-    config = write_config(tmp_path, llm + "params: {llm: {output_retries: 0}}\n")
-
-    def invalid(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, {"action": "fly"})])
-
-    with deliberate_agent.override(model=FunctionModel(invalid)):
+    with deliberate_agent.override(model=FunctionModel(down)):
         code, err = experiment(config, tmp_path / "runs", capsys, "--jobs", "2")
-
     assert code == 1
     assert "Traceback" not in err
     errors = error_lines(err)
     assert len(errors) == 4
     for line, run_id in zip(sorted(errors), sorted(RUN_IDS), strict=True):
-        assert line.startswith(f"error: {run_id} failed: UnexpectedModelBehavior: ")
-        assert "tick 1, pass 0" in line
+        assert line.startswith(f"error: {run_id} failed: RuntimeError: the provider is down")
     assert not (tmp_path / "runs" / "exp").exists()
 
 
@@ -364,6 +457,17 @@ def test_bad_config_fails_with_one_line(tmp_path: Path, capsys: pytest.CaptureFi
     code, err = experiment(tmp_path / "nope.yaml", tmp_path / "runs", capsys)
     assert code == 2
     assert len(err.splitlines()) == 1 and err.startswith("error: ")
+    assert not (tmp_path / "runs").exists()
+
+
+def test_duplicate_seeds_fail_with_one_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config = write_config(tmp_path, **{"seeds: [1, 2]": "seeds: [1, 1]"})
+    code, err = experiment(config, tmp_path / "runs", capsys)
+    assert code == 2
+    assert len(err.splitlines()) == 1 and err.startswith("error: ")
+    assert "seeds" in err and "unique" in err
     assert not (tmp_path / "runs").exists()
 
 
@@ -378,35 +482,42 @@ def test_llm_backend_without_a_model_fails_before_any_run(
     assert not (tmp_path / "runs").exists()
 
 
-@pytest.mark.parametrize("jobs", ["0", "-1"])
+def test_a_model_that_cannot_load_fails_before_any_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config = write_config(
+        tmp_path, **{"deliberate: stub": "deliberate: llm", "model: null": "model: nosuch:abc"}
+    )
+    code, err = experiment(config, tmp_path / "runs", capsys)
+    assert code == 2
+    assert len(err.splitlines()) == 1 and err.startswith("error: ")
+    assert "nosuch:abc" in err
+    assert not (tmp_path / "runs").exists()
+
+
+@pytest.mark.parametrize("jobs", ["0", "-1", "x"])
 def test_jobs_must_be_positive(jobs: str, tmp_path: Path) -> None:
     with pytest.raises(SystemExit) as info:
         cli.main(["experiment", str(write_config(tmp_path)), "--jobs", jobs])
     assert info.value.code == 2
 
 
-# --- the LLM path ---------------------------------------------------------------------------
-
-
-def test_llm_experiment_on_the_test_model_with_jobs_2(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_tables_are_written_atomically(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    text = CONFIG.replace("model: null", "model: test")
-    for phase in ("appraise", "deliberate", "evaluate"):
-        text = text.replace(f"{phase}: stub", f"{phase}: llm")
-    config = write_config(tmp_path, text)
+    written: list[Path] = []
+    real = cli.write_atomic
+
+    def recording(path: Path, text: str) -> None:
+        written.append(path)
+        real(path, text)
+
+    monkeypatch.setattr(cli, "write_atomic", recording)
     runs_dir = tmp_path / "runs"
-
-    code, err = experiment(config, runs_dir, capsys, "--jobs", "2")
-
-    assert code == 0, err
-    rows = read_csv(runs_dir / "exp" / "results.csv")
-    assert len(rows) == 4
-    assert all(r["steps"] == "42" for r in rows)
-    for run_id in RUN_IDS:
-        result = load_result(runs_dir / run_id)
-        assert result.config.model == "test"
-        assert all(p.decision.rationale for r in result.records for p in r.passes)
+    config = write_config(tmp_path, **{"ticks: null": "ticks: 3"})
+    assert experiment(config, runs_dir, capsys)[0] == 0
+    assert sorted(p.name for p in written) == CSV_FILES
+    assert sorted(p.name for p in (runs_dir / "exp").iterdir()) == CSV_FILES  # no .tmp left
 
 
 # --- the pure CSV writers -------------------------------------------------------------------
@@ -427,19 +538,63 @@ def test_format_cell_is_reproducible() -> None:
     assert format_cell(3) == "3"
     assert format_cell(True) == "True"
     assert format_cell("a") == "a"
+    assert format_cell(None) == ""
+    assert format_cell(Channel.HEAT) == "heat"
 
 
 def test_writers_are_pure_and_deterministic(results: list[RunResult]) -> None:
-    for writer in (results_csv, phases_csv, stability_csv):
+    for writer in (results_csv, trace_csv, stability_csv):
         assert writer(results) == writer(list(results))
     assert results_csv(results).endswith("\n")
     assert "\r" not in results_csv(results)
 
 
+def test_experiment_tables_are_the_writers(results: list[RunResult]) -> None:
+    tables = experiment_tables(results)
+    assert {name: tables[name] for name in ("results.csv", "trace.csv", "stability.csv")} == {
+        "results.csv": results_csv(results),
+        "trace.csv": trace_csv(results),
+        "stability.csv": stability_csv(results),
+    }
+    assert sorted(tables) == CSV_FILES
+    one_seed = [r for r in results if r.config.seed == 1]
+    assert sorted(experiment_tables(one_seed)) == ["pairs.csv", "results.csv", "trace.csv"]
+
+
+def test_pairs_csv_holds_the_opposite_value_steps_of_each_seed(results: list[RunResult]) -> None:
+    run = {(r.config.agent.name, r.config.seed): r for r in results}
+    rows = list(csv.DictReader(io.StringIO(experiment_tables(results)["pairs.csv"])))
+    assert rows == [
+        {
+            "seed": str(seed),
+            "agent_a": "ilo",
+            "agent_b": "tavi",
+            "opposite_value_steps": str(opposite_value_steps(run["ilo", seed], run["tavi", seed])),
+        }
+        for seed in (1, 2)
+    ]
+
+
+def test_no_pairs_csv_unless_exactly_two_agents(results: list[RunResult]) -> None:
+    ilo = [r for r in results if r.config.agent.name == "ilo"]
+    assert "pairs.csv" not in experiment_tables(ilo)
+    third = [
+        r.model_copy(
+            update={
+                "config": r.config.model_copy(
+                    update={"agent": r.config.agent.model_copy(update={"name": "ada"})}
+                )
+            }
+        )
+        for r in ilo
+    ]
+    assert "pairs.csv" not in experiment_tables([*results, *third])
+
+
 def test_writers_follow_the_given_order(results: list[RunResult]) -> None:
     reordered = results[2:] + results[:2]
     rows = list(csv.DictReader(io.StringIO(results_csv(reordered))))
-    assert [(r["agent"], r["seed"]) for r in rows][0] == ("fast", "1")
+    assert [(r["agent"], r["seed"]) for r in rows][0] == ("tavi", "1")
 
 
 def test_stability_is_icc1_over_seeds_within_agent(results: list[RunResult]) -> None:
@@ -454,7 +609,6 @@ def test_stability_is_icc1_over_seeds_within_agent(results: list[RunResult]) -> 
 
 
 def test_stability_of_a_constant_metric_is_nan(results: list[RunResult]) -> None:
-    # every run reaches the schedule's end, so no metric is constant by accident here; force one
     same = [results[0], results[0], results[0], results[0]]
     relabelled = [
         r.model_copy(
@@ -474,62 +628,29 @@ def test_stability_of_a_constant_metric_is_nan(results: list[RunResult]) -> None
     assert all((r["n_agents"], r["n_seeds"]) == ("2", "2") for r in rows)
 
 
-def test_llm_traits_config_is_the_real_model_experiment() -> None:
-    experiment = load_config(Path(__file__).resolve().parent.parent / "experiments/llm_traits.yaml")
-    assert len(experiment.agents) == 4 and experiment.seeds == [1, 2]
-    assert experiment.model is None and experiment.ticks is None
-    assert set(experiment.backends.model_dump().values()) == {"llm"}
-    assert sum(phase.steps for phase in experiment.world.schedule) == 150
+# --- write errors ---------------------------------------------------------------------------
 
 
-# --- fix round 1 ----------------------------------------------------------------------------
-
-
-def test_duplicate_seeds_fail_with_one_line(
+def test_tables_that_cannot_be_written_fail_with_one_line(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    config = write_config(tmp_path, **{"seeds: [1, 2]": "seeds: [1, 1]"})
-    code, err = experiment(config, tmp_path / "runs", capsys)
-    assert code == 2
-    assert len(err.splitlines()) == 1 and err.startswith("error: ")
-    assert "seeds" in err and "unique" in err
-    assert not (tmp_path / "runs").exists()
-
-
-def test_run_capped_by_ticks_is_complete_and_not_rerun(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    config = write_config(tmp_path, **{"ticks: null": "ticks: 5"})
     runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    (runs_dir / "exp").write_text("a file where the tables go")
+    config = write_config(tmp_path, **{"ticks: null": "ticks: 3"})
     code, err = experiment(config, runs_dir, capsys)
-    assert code == 0, err
-    for run_id in RUN_IDS:
-        result = load_result(runs_dir / run_id)
-        assert len(result.records) == 5 and result.world.phase_index == 0  # world not done
-        assert is_complete(result)
-    first, before = csv_bytes(runs_dir), mtimes(runs_dir)
-
-    async def must_not_run(*args: object, **kwargs: object) -> RunResult:
-        raise AssertionError("a run complete by its tick cap was run again")
-
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(cli, "run", must_not_run)
-        code, err = experiment(config, runs_dir, capsys, "--jobs", "4")
-
-    assert code == 0, err
-    assert err.count("complete, not rerun") == 4
-    assert csv_bytes(runs_dir) == first
-    assert mtimes(runs_dir) == before
-    assert all(r["truncated"] == "True" for r in read_csv(runs_dir / "exp" / "results.csv"))
+    assert code == 2
+    assert "Traceback" not in err
+    assert error_lines(err) == [f"error: {runs_dir / 'exp'}: cannot write: File exists"]
+    assert err.splitlines()[-1] == error_lines(err)[0]
 
 
-def test_a_failing_run_removes_tables_left_by_an_earlier_invocation(
-    reference: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_a_failed_run_with_a_file_where_the_tables_go_reports_the_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     runs_dir = tmp_path / "runs"
-    shutil.copytree(reference, runs_dir)
-    shutil.rmtree(runs_dir / "exp-fast-s1")
-    (runs_dir / "exp" / "notes.txt").write_text("not a table")
+    runs_dir.mkdir()
+    (runs_dir / "exp").write_text("a file where the tables go")
 
     async def failing(config, run_dir, **kwargs):  # type: ignore[no-untyped-def]
         raise RuntimeError("boom")
@@ -537,78 +658,30 @@ def test_a_failing_run_removes_tables_left_by_an_earlier_invocation(
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(cli, "run", failing)
         code, err = experiment(write_config(tmp_path), runs_dir, capsys)
-
     assert code == 1
-    assert error_lines(err) == ["error: exp-fast-s1 failed: RuntimeError: boom"]
-    assert sorted(p.name for p in (runs_dir / "exp").iterdir()) == ["notes.txt"]
+    assert "Traceback" not in err
+    assert len(error_lines(err)) == 4
+    assert (runs_dir / "exp").read_text() == "a file where the tables go"
 
 
-def test_tables_are_written_atomically(
+def test_a_tick_file_that_cannot_be_written_fails_that_run_with_one_line(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    written: list[Path] = []
-    real = cli.write_atomic
-
-    def recording(path: Path, text: str) -> None:
-        written.append(path)
-        real(path, text)
-
-    monkeypatch.setattr(cli, "write_atomic", recording)
     runs_dir = tmp_path / "runs"
-    assert experiment(write_config(tmp_path), runs_dir, capsys)[0] == 0
-    assert sorted(p.name for p in written) == CSV_FILES
-    assert sorted(p.name for p in (runs_dir / "exp").iterdir()) == CSV_FILES  # no .tmp left
+    blocked = runs_dir / "exp-tavi-s2" / "tick_000002.json"
+    real_replace = os.replace
 
+    def replace(src: str | Path, dst: str | Path) -> None:
+        if Path(dst) == blocked:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        real_replace(src, dst)
 
-# --- final fix wave -------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("model", "expected"),
-    [("nosuch:abc", "Unknown model"), ("openrouter:provider/model", "OPENROUTER_API_KEY")],
-)
-def test_a_model_that_cannot_load_fails_before_any_run(
-    model: str,
-    expected: str,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    text = CONFIG.replace("deliberate: stub", "deliberate: llm")
-    config = write_config(tmp_path, text, **{"model: null": f"model: {model}"})
-
-    code, err = experiment(config, tmp_path / "runs", capsys)
-
-    assert code == 2
-    assert len(err.splitlines()) == 1 and err.startswith("error: ")
-    assert model in err and expected in err
-    assert not (tmp_path / "runs").exists()
-
-
-def test_tables_of_a_complete_llm_experiment_regenerate_without_the_model(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    text = CONFIG.replace("deliberate: stub", "deliberate: llm")
-    config = write_config(tmp_path, text)
-    runs_dir = tmp_path / "runs"
-    monkeypatch.setenv("SURPRISE_LOOP_MODEL", "test")
-    code, err = experiment(config, runs_dir, capsys, "--jobs", "4")
-    assert code == 0, err
-    first, before = csv_bytes(runs_dir), mtimes(runs_dir)
-    for name in CSV_FILES:
-        (runs_dir / "exp" / name).unlink()
-
-    monkeypatch.delenv("SURPRISE_LOOP_MODEL")
-    code, err = experiment(config, runs_dir, capsys)
-
-    assert code == 0, err
-    assert err.count("complete, not rerun") == 4
-    assert csv_bytes(runs_dir) == first
-    assert mtimes(runs_dir) == before
-
-    # a run that still has to execute needs the model again
-    shutil.rmtree(runs_dir / "exp-fast-s2")
-    code, err = experiment(config, runs_dir, capsys)
-    assert code == 2 and "SURPRISE_LOOP_MODEL" in err
-    assert not (runs_dir / "exp-fast-s2").exists()
+    monkeypatch.setattr(os, "replace", replace)
+    config = write_config(tmp_path, **{"ticks: null": "ticks: 3"})
+    code, err = experiment(config, runs_dir, capsys, "--jobs", "2")
+    assert code == 1
+    assert "Traceback" not in err
+    assert error_lines(err) == [
+        f"error: exp-tavi-s2 failed: RunError: {blocked}: cannot write: No space left on device"
+    ]
+    assert not (runs_dir / "exp").exists()

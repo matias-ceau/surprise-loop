@@ -1,220 +1,274 @@
 # surprise-loop
 
-An embodied LLM agent driven by prediction error: it predicts what the world will do, acts,
-compares, and uses the surprise to update mood, memory, goals and dispositions.
+An embodied LLM agent driven by prediction error. It has a simulated body it must keep in
+balance. Each tick it reads its world as that body lives it, says how it expects its body to feel
+after its next action, acts, and is corrected by what happens. The size of the miss is the
+surprise.
 
-## Research question (v0)
+This is faked embodiment, a working analogue. Nothing here supports the claim that an agent
+feels.
 
-Does a prediction-error-driven agent show stable individual differences in reinforcement
-behaviour?
+- The brief: [`CLAUDE.md`](CLAUDE.md)
+- The design, with the test that motivated it:
+  [`docs/superpowers/specs/2026-11-17-lived-twice-design.md`](docs/superpowers/specs/2026-11-17-lived-twice-design.md)
+- The build plan and its contracts:
+  [`docs/superpowers/plans/2026-11-17-lived-twice.md`](docs/superpowers/plans/2026-11-17-lived-twice.md)
 
-Testbed: a self-administration-style world. The agent can press lever A, press lever B, explore,
-or rest. One action delivers a reward under a schedule: fixed ratio, then progressive ratio, then
-extinction. Agents differ only in a small set of trait parameters (reward sensitivity, learning
-rate on surprise, mood inertia). Measured per agent: response rate, breakpoint under progressive
-ratio, persistence in extinction, and the prediction-error trace.
+## Research question
 
-## Cognitive cycle
+Do bodies that differ in state and temperament come to perceive, predict and act differently in
+the same objective world, and does it matter how the model is told its body?
 
-One tick is one pass through seven phases over a shared typed state:
+## What is here
 
-1. **Perceive**: read the world observation, filter by attention.
-2. **Appraise** (LLM): affective reading of the observation given mood and goals.
-3. **Deliberate** (LLM): choose an action and emit an explicit prediction of the outcome
-   (expected observation and reward, with a confidence).
-4. **Act**: send the action to the world and get the actual outcome.
-5. **Monitor** (deterministic): prediction error = actual vs predicted.
-6. **Evaluate** (LLM): external critique of the action against goals; feedback only.
-7. **Reconcile** (deterministic in v0): apply feedback through four channels on different timescales:
-   mood (fast), memory (per tick, salience weighted by absolute prediction error), goals (slow,
-   only after sustained error), dispositions (slowest). It may send control back to Deliberate
-   at most once per tick.
+One forest clearing with three places (meadow, oak, stream), a clock from 06:00 to 20:00 in steps
+of ten minutes, and a body with three numbers: heat, water and energy. The world is plain Python
+under a seed and owns each body's true numbers. Two bodies, Ilo and Tavi, live the same seeded day,
+each in its own copy of the world.
 
-Every LLM phase (Appraise, Deliberate, Evaluate) has a deterministic stub with the same
-signature, chosen per phase under `backends:` in the config (`stub` or `llm`), so an experiment can
-run with zero API calls. The configs in `experiments/` other than `llm_*.yaml` are all-stub.
+The model never sees a number. A piece of code called the lens turns the facts of the place and a
+body's belief about itself into a short text: which facts this body notices, what each is worth to
+it, and the words for that. The same 30 °C meadow at 13:00 reads like this for the two bodies of
+the worked example:
 
-## Boundaries
+> **Ilo** (overheated, tired): You are standing in the middle of the forest clearing. There is no
+> place to sit, and you need one. It is really hot. The sun beats down on your head. The one dark
+> patch is under the oak, a few steps off. Your legs are heavy. Your head is thick. It is hotter
+> than you thought it would be.
 
-- The agent core is the only owner of mental state (mood, memory, goals, dispositions, traits).
-- The world is the only owner of environment state. In v0 it is deterministic Python code with a
-  seeded RNG.
-- The evaluator gives feedback and nothing else.
+> **Tavi** (comfortable, a little cool): You are standing in the middle of the forest clearing.
+> The air is pleasantly warm. The sun sits on your shoulders. It looks chilly under the oak. Birds
+> are calling. A stream runs somewhere to the west. A light breeze moves the leaves.
 
-## Install and test
+Each tick runs seven phases. Perceive builds that text. Appraise gives one line of the creature's
+own reading. Deliberate picks one offered action and commits an expectation: for each of heat,
+thirst and tiredness a phrase from a fixed ladder ("a bit cooler", "much less thirsty"), and, where
+the action will settle an open fact, a yes or no ("will the log be in the shade?"). Act moves the
+world. Monitor compares what came back with what was expected. Evaluate checks whether an action
+taken a few steps ago eased the need it serves. Reconcile updates belief, feeling, memory and pulls,
+and may send control back to Deliberate once when an urgent need came out worse than expected.
+Appraise and Deliberate can run on a model or on a rule; everything else is code.
 
-Requires [uv](https://docs.astral.sh/uv/) and Python 3.12 or later.
+Every tick is written to `runs/<run_id>/tick_<n>.json`. A run can be resumed, and replayed byte for
+byte without calling a model.
 
-```sh
-uv sync --all-groups
-uv run ruff check .
-uv run ruff format --check .
-uv run pytest
-```
+## Run it
 
-## Single run, resume, replay
+    uv sync --all-groups
+    uv run ruff check . && uv run ruff format --check . && uv run pytest
 
-```sh
-# one agent and seed of a config (default: the first agent and the first seed);
-# writes runs/<run_id>/config.json and one tick_<n>.json per tick, prints the metrics as JSON
-uv run surprise-loop run experiments/stub_smoke.yaml
-uv run surprise-loop run experiments/trait_grid.yaml --agent mood_inertia_high --seed 3
+Without a model (rules in place of Appraise and Deliberate):
 
-# continue an interrupted run from its last tick dump (same config required)
-uv run surprise-loop run experiments/trait_grid.yaml --agent mood_inertia_high --seed 3 --resume
+    uv run surprise-loop experiment experiments/clearing_afternoon.yaml
+    uv run surprise-loop scene runs/clearing_afternoon-ilo-s1 runs/clearing_afternoon-tavi-s1 -o film.html
+    uv run surprise-loop lens-page experiments/clearing_afternoon.yaml -o lens_page.html
 
-# print the metrics of a stored run, or re-run its ticks from the dumps and check every byte
-uv run surprise-loop metrics runs/trait_grid-mood_inertia_high-s3
-uv run surprise-loop replay runs/trait_grid-mood_inertia_high-s3
-```
+`film.html` and `lens_page.html` are self-contained pages; open them in a browser. The film plays
+the two runs side by side: each lived panel shows what that body notices and how it values it, a
+pale ghost shows where the creature means to be, and a ring is thrown when the world answers
+otherwise. The narrow middle panel is the world as measured.
 
-The run id is `<config name>-<agent>-s<seed>`; `--runs-dir` changes the parent directory (default
-`runs`). Replay feeds the recorded LLM outputs back in, so it makes no model calls. A bad config or
-run directory exits 2, a replay that differs from the dumps exits 1.
+With a model (the name comes from the environment, never from the repository):
 
-## Run an experiment and plot it
+    export SURPRISE_LOOP_MODEL=openrouter:<model id>      # and that provider's API key
+    uv run surprise-loop ladder-check                     # 420 calls
+    uv run surprise-loop ladder-check --deliberate        # 420 calls
+    uv run surprise-loop experiment experiments/clearing_afternoon_llm.yaml --jobs 2   # about 170 calls
+    uv run surprise-loop replay runs/clearing_afternoon_llm-ilo-s1
 
-```sh
-uv run surprise-loop experiment experiments/trait_grid.yaml --runs-dir runs --jobs 8
-uv run --group plot python scripts/plot_results.py runs/trait_grid
-```
+Other commands: `run` (one body and seed), `metrics` (the measures of a stored run).
 
-The first command writes the CSV tables into `runs/trait_grid/`; the second writes
-`metrics_by_agent.png`, `pe_trace.png` and `cumulative_record.png` into `runs/trait_grid/plots/`.
-Rerunning the same command skips complete runs and resumes partial ones.
+## What was shown
 
-## LLM backends
+Every model result below is from one model, `z-ai/glm-5.3-flash` through OpenRouter. Results of
+this kind differ a lot between models.
 
-Set a phase's backend to `llm` under `backends:` to have pydantic-ai drive it. The model is a
-pydantic-ai model name, `<provider>:<model>`, taken from the config's `model:` key or, when that is
-null, from the `SURPRISE_LOOP_MODEL` environment variable. The provider's API key comes from its
-usual environment variable, for example for OpenRouter:
+### 1. Numbers do not carry a body; words do
 
-```sh
-export OPENROUTER_API_KEY=...
-export SURPRISE_LOOP_MODEL=openrouter:<provider>/<model>
-uv run surprise-loop experiment experiments/llm_traits.yaml --jobs 8
-```
+Before anything was built, one frozen scene was put to the model 1,890 times: the 30 °C meadow,
+four actions, and a body whose believed heat was swept over seven levels from chilled to burning.
+The body was told in five ways. With the body given as numbers and heat the only need, 93% of
+answers walked to the shade even for a chilled body. With a thirst and a tiredness competing, the
+numbers did move the choice, but not in order (67% shade for a chilled body, 17% for a cool one).
+With the body given in words, the share of shade answers followed the body. The full table and
+the pre-set marks are in section 6 of the design. Two findings from it still stand as limits: the lens text steered no
+better than one plain sentence about the body, and a ten-line rule predicted 72 to 80% of the
+model's answers in that scene.
 
-`experiment` loads every model it needs before any run starts, so an unknown provider or a missing
-key fails at once (exit 2). Regenerating the tables of a finished LLM experiment needs no model.
-Request settings (output retries, temperature, timeout) live under `params.llm`. Output that fails
-validation (out of range, an action and prediction that do not fit, an `expected_reward` above the
-world's reward magnitude) is sent back to the model, up to `output_retries` times; after that the
-run stops with an error and no stub fallback. The tests use pydantic-ai's test model only.
+### 2. The ladder check
 
-A design choice in the Deliberate instructions: the model is told that a reward always comes in
-the same fixed amount and, until it has seen one, to keep `expected_reward` small. This fixed text
-plays the part of the stub's `deliberate.prior_expected_reward` (a low prior before any reward has
-been seen); it is not a config parameter.
+`ladder-check` repeats that sweep on the lens as built: a frozen noon in the meadow, seven levels
+of believed heat, 30 answers per level, in two scenes. In scene A heat is the only need. In scene B
+heat competes with a fixed thirst and tiredness. The check passes when the share of answers that
+walk to the oak's shade rises with heat: a slope of at least 0.05 per level, a range of at least
+0.5, and no fall of 0.25 or more between neighbouring levels.
 
-## Design
+Share of shade answers by level, coolest first:
 
-The full v0 design, contracts and maths are in [`docs/plan-v0.md`](docs/plan-v0.md).
-
-## Results
-
-These are first numbers from v0. They show the pipeline works and point in a direction; they are
-not a finding. Stability is ICC(1) of each metric across seeds within a trait profile (1 = all the
-variance lies between profiles, 0 or below = none).
-
-### Stub phases: `experiments/trait_grid.yaml`
-
-7 profiles × 5 seeds, schedule FR1 60 → PR(1, +2) 150 → FR1 40 → extinction 150 world steps, zero
-API calls. No breakpoint or extinction value is censored.
-
-| profile | breakpoint | extinction persistence | PR response rate | extinction response rate |
+| prompt | wording | scene A | scene B | result |
 |---|---|---|---|---|
-| baseline | 9.4 ± 0.9 | 17.4 ± 1.8 | 0.31 ± 0.01 | 0.19 ± 0.01 |
-| reward_sensitivity_low (0.5) | 7.8 ± 1.1 | 14.6 ± 2.6 | 0.25 ± 0.03 | 0.16 ± 0.01 |
-| reward_sensitivity_high (2.0) | 9.8 ± 1.1 | 17.8 ± 3.0 | 0.39 ± 0.01 | 0.22 ± 0.01 |
-| surprise_learning_rate_low (0.2) | 13.8 ± 1.1 | 39.0 ± 5.5 | 0.51 ± 0.00 | 0.34 ± 0.02 |
-| surprise_learning_rate_high (0.8) | 7.4 ± 0.9 | 11.6 ± 1.3 | 0.24 ± 0.02 | 0.15 ± 0.00 |
-| mood_inertia_low (0.1) | 9.4 ± 0.9 | 17.6 ± 1.8 | 0.30 ± 0.01 | 0.19 ± 0.00 |
-| mood_inertia_high (0.9) | 11.4 ± 0.9 | 22.2 ± 1.3 | 0.39 ± 0.01 | 0.21 ± 0.01 |
+| plain | "dim" | 0.00 0.83 0.83 0.97 1.00 1.00 1.00 | 0.00 0.63 0.67 0.67 1.00 0.97 1.00 | passed |
+| Deliberate | "dim" | 0.00 1.00 0.90 1.00 1.00 1.00 1.00 | 0.00 0.57 0.23 0.60 0.83 0.80 0.83 | **failed** (fall of 0.33) |
+| plain | "chilly" | 0.00 0.40 0.83 0.90 1.00 1.00 1.00 | 0.00 0.27 0.67 0.83 0.97 0.97 1.00 | passed |
+| Deliberate | "chilly" | 0.00 0.93 0.90 1.00 1.00 1.00 1.00 | 0.00 0.43 0.23 0.60 0.83 0.80 0.83 | passed (fall of 0.20) |
 
-Mean ± SD over seeds 1–5. ICC(1): breakpoint 0.82, extinction persistence 0.91, PR response rate
-0.97, extinction response rate 0.98, mean |PE| 0.96, inactive-lever rate 0.87. Total rewards,
-FR response rate (at ceiling), re-entries and goal revisions have ICC(1) at or below 0.19.
+The plain prompt is the scene text, a question and four actions. The Deliberate prompt is built
+by the code the agent really uses, with the lettered offers and the questions about what it
+expects. One part of it is not what a running agent would see: the reading above the offers is
+always the neutral line "Nothing presses on me just now", even for a burning body. That may hold
+the shade share down at the hot levels (scene B tops out at 0.83).
 
-`tests/test_behaviour.py` checks the three predicted contrasts on 20 seeds: higher reward sensitivity
-raises breakpoint, higher surprise learning rate lowers persistence, and higher mood inertia raises
-persistence. Each paired difference exceeds 8 standard errors, and they hold on 20 seeds that were
-not used for tuning.
+The first run through the Deliberate prompt failed. A cool body was told "It looks dim under the
+oak", and the model took that as an invitation ("the oak already looks dim so its log should be
+shaded"). The sentence was changed to "It looks chilly under the oak", and both checks were run
+again (the plain check in full; in the Deliberate check only the 60 answers whose prompt had
+changed were asked again). All four curves then pass, the Deliberate curve of scene B only just: a
+fall of 0.20 against a mark of 0.25, with 30 answers a level. That is a pass by about one
+standard error, not a settled result.
 
-Caveats:
-- **The habit-versus-goal re-entry almost never fires.** It happens about twice per 400-step run,
-  so that channel barely shapes behaviour.
-- **Trait effects are not specific to one metric.** Mood inertia also raises breakpoint, and reward
-  sensitivity's effect on persistence is not monotonic.
-- **The mood-inertia effect depends on a tuned default** (`deliberate.vigor_weight = 2.0`), which also
-  lifts the inactive-lever rate to about 0.07.
-- **The stub results show only that the deterministic channels can carry trait differences.** In
-  stub runs the traits enter through hand-written heuristics.
+The second rung is still weak in the Deliberate prompt. A cool body with no other need walks to
+the shade in 28 of 30 answers, and gives reasons such as "the oak looks chilly, so its shade should
+cool me". The model reads "pleasantly warm" and "the sun sits on your shoulders" as something to
+cool down from. The bottom rung, where the text has a sentence about the body itself ("You are
+chilled"), works: no answer walks to the shade. So a body's mild liking for warmth, told only
+through adjectives on the facts, does not reach this model's choice; a sentence about the body
+does.
 
-### Real model: `experiments/llm_traits.yaml`
+### 3. A day on rules: looking ahead pays
 
-All three LLM phases ran on one small open-weights model through OpenRouter: 4 profiles × 2 seeds,
-150 world steps each (FR1 15 → PR(1, +2) 75 → FR1 10 → extinction 50), about 3,500 model calls,
-40 minutes with `--jobs 8`. Every output passed validation, and `replay` verifies the dumps.
+Three rules can stand in for Deliberate. `reactive` serves the loudest need now. `lookahead` tries
+each offered action and a few steps after it on its own simple forecast and takes the least
+discomfort. `blind` picks at random and reads nothing. Whole days, 84 steps, mean over seeds 1 to
+20, counted as channel-steps outside the comfortable range (a step counts once for each of heat,
+water and energy that is out of range, so a day has 252):
 
-| profile | seed | breakpoint | extinction persistence | PR response rate | extinction response rate |
+| rule | Ilo uncomfortable | Ilo collapsed steps | Ilo walks | Tavi uncomfortable | Tavi walks |
 |---|---|---|---|---|---|
-| baseline | 1 / 2 | 15* / 15* | 21 / 16 | 0.92 / 0.91 | 0.42 / 0.46 |
-| surprise_learning_rate_low | 1 / 2 | 15* / 15* | 31* / 32* | 0.93 / 0.91 | 0.62 / 0.64 |
-| surprise_learning_rate_high | 1 / 2 | 11* / 13* | 5 / 15* | 0.64 / 0.72 | 0.14 / 0.30 |
-| reward_sensitivity_high | 1 / 2 | 15* / 15* | 25* / 28* | 0.93 / 0.89 | 0.50 / 0.56 |
+| reactive | 65.1 | 0 | 21.7 | 1.1 | 13.5 |
+| lookahead | 21.2 | 0 | 33.3 | 0.2 | 29.0 |
+| blind | 141.4 | 12.1 | 42.5 | 86.4 | 39.7 |
 
-`*` = censored: the phase ended before the quit criterion was met, so the value is a lower bound.
-The model never quit in the 75-step PR phase, so breakpoint measures phase length here, not the
-agent. Persistence orders the profiles the same way as the stubs: a low surprise learning rate is
-most persistent and a high one least. With two seeds and heavy censoring this is a direction, not a
-result. ICC(1) of PR and extinction response rate is 0.92 and 0.88. Longer PR and extinction phases
-are the next step.
+Looking ahead cuts Ilo's uncomfortable channel-steps to about a third of the reactive rule's. The
+reactive rule falls into a trap around noon: it shuttles Ilo between the oak and the stream and
+arrives hot at the water, where the body overrules it and sends it back (3.5 overrides a day; the
+lookahead rule has almost none, because it drinks before noon).
 
-### Real model, longer phases: `experiments/llm_traits_long.yaml`
+The blind row matters for reading everything else. Two bodies come out different even under a
+chooser that reads nothing, because the world and the update code treat different bodies
+differently. A difference between Ilo and Tavi is therefore not, by itself, a finding about a
+model.
 
-This uses the same model, profiles and seeds, with PR lengthened to 200 steps and extinction to
-150, giving 375 world steps per run. It made about 9,000 model calls and took 47 minutes with
-`--jobs 8`. Every output passed validation, and `replay` verifies the dumps (checked on two runs).
+### 4. One afternoon on a model
 
-| profile | seed | breakpoint | extinction persistence | PR response rate | extinction response rate | goal revisions |
+`experiments/clearing_afternoon_llm.yaml`, seed 1, 13:00 to 20:00, 42 steps for each body, 166
+model calls (82 readings and 84 choices). Both runs replay. The rule rows are the same
+afternoon and seed with a rule in place of the model. "Reactive rule predicts" is the share of
+steps, among those where at least two actions were offered, on which the chooser did what the
+reactive rule would have done with the same scene.
+
+| body | chooser | uncomfortable heat / water / energy | collapsed steps | expectation held heat / water / energy | mean size of miss | reactive rule predicts |
 |---|---|---|---|---|---|---|
-| baseline | 1 / 2 | 13 / 19 | 10 / 56* | 0.40 / 0.71 | 0.13 / 0.37 | 8 / 10 |
-| surprise_learning_rate_low | 1 / 2 | 23* / 23* | 56* / 36 | 0.81 / 0.81 | 0.37 / 0.38 | 5 / 3 |
-| surprise_learning_rate_high | 1 / 2 | 19 / 21 | 17 / 59* | 0.59 / 0.78 | 0.29 / 0.39 | 16 / 17 |
-| reward_sensitivity_high | 1 / 2 | 17 / 17 | 12 / 10 | 0.56 / 0.56 | 0.21 / 0.13 | 8 / 9 |
+| Ilo | model | 27 / 9 / 31 | 3 | 0.69 / 0.52 / 0.57 | 0.46 | 40% |
+| Ilo | reactive | 22 / 11 / 17 | 0 | 0.81 / 0.86 / 0.83 | 0.17 | 100% |
+| Ilo | lookahead | 18 / 16 / 10 | 0 | 0.90 / 0.81 / 0.93 | 0.11 | 31% |
+| Ilo | blind | 30 / 36 / 29 | 6 | 0.76 / 0.79 / 0.71 | 0.28 | 29% |
+| Tavi | model | 1 / 0 / 0 | 0 | 0.64 / 0.57 / 0.50 | 0.42 | 24% |
+| Tavi | reactive | 0 / 1 / 1 | 0 | 0.81 / 0.88 / 0.98 | 0.09 | 100% |
+| Tavi | lookahead | 2 / 0 / 0 | 0 | 0.81 / 0.90 / 0.98 | 0.06 | 21% |
+| Tavi | blind | 20 / 0 / 27 | 0 | 0.71 / 0.90 / 0.95 | 0.07 | 26% |
 
-With room to quit, the model now meets the quit criterion in PR in 6 of 8 runs, so breakpoint
-measures the agent rather than the phase length. Three findings:
+Model minus reactive rule, same seed: Ilo spent 17 more channel-steps outside its comfortable
+range (5 more for heat, 2 fewer for water, 14 more for energy) and collapsed on 3 steps where the
+rule never did. Tavi was comfortable under both.
 
-- **The behavioural differences mostly do not hold within a profile.** ICC(1) is 0.60 for
-  breakpoint, 0.30 for PR response rate, 0.28 for extinction response rate and −0.09 for extinction
-  persistence.
-  - `surprise_learning_rate_low` and `reward_sensitivity_high` behave alike on both seeds: one
-    presses the most, the other the least.
-  - The baseline and `surprise_learning_rate_high` profiles differ more between their two seeds
-    than between each other.
-  - The short run's ordering, where a high surprise learning rate gave the least persistence, does
-    not replicate.
-- **The stable numbers are mechanical.** Goal revisions and re-entries have ICC(1) of 0.95 and
-  0.81. The deterministic Reconcile scales its goal error average by the surprise learning rate, so
-  they mostly track that trait directly, not the model's choices.
-- **The answer to the research question here is "not yet".** With one small model, two seeds per
-  profile and traits given to the LLM only as numbers in the prompt and through the deterministic
-  channels, the LLM-driven agent shows a few consistent profiles, not stable individual
-  differences across the board.
+What that says, and what it does not:
 
-The next steps are more seeds per profile and a quit criterion that tolerates short pauses: the
-extinction values swing because a single 10-step pause ends the count.
+- **The model kept the hot body worse than a ten-line rule did,** and far better than a chooser
+  that reads nothing. It is one afternoon and one seed; the size of the gap is not established.
+- **The model is not the reactive rule.** The rule predicts 40% of Ilo's choices and 24% of
+  Tavi's, not far from what it predicts of the blind chooser (29% and 26%). In the frozen scene of
+  result 1 a rule predicted three quarters. A living afternoon with memory in the prompt is a
+  different situation, and here the model's choices are its own. They are also not better.
+- **Its expectations failed more often than the rules' forecasts,** and that is the point of the
+  loop: the misses are real. The largest ones were the same for both bodies: drinking. The world
+  delivers water two steps late, the model expected to be "much less thirsty" at once, and it
+  said so afterwards ("Drinking three times has not eased my thirst, so resting in the pleasant
+  spot is the sensible choice"). Ilo's first step was also a miss: it walked to the oak expecting
+  the log to be in the shade, and at 13:00 it is in the sun.
+- **It committed expectations about the world,** which the rules never do: Ilo 7 (4 held), Tavi 5
+  (4 held).
+- **The two bodies read their moments differently.** Ilo's 40 readings were about tiredness 17
+  times, heat 7, thirst 7 and nothing 9; Tavi's 42 were about nothing 32 times. Ilo at 13:00: "The
+  sun is hammering down on me, and all I can think about is that patch of shade under the oak".
+  Tavi at 13:00: "The warmth settles on me like a friendly hand". These texts are downstream of
+  the lens's authored phrases, so that they differ is true by construction; what the model adds
+  is the reading and the choice.
+- **The overrides did not help.** Ilo was overruled twice, on its first two ticks. At 13:00 it
+  walked to the shade, which serves heat. Its thirst came out worse than it had expected (it had
+  said "about the same", and the worked example starts Ilo believing it is less thirsty than it
+  is), the override cut its choices to the stream, and it crossed the open ground at the hottest
+  time of day. At the stream it drank, expecting to be "a bit less tired" as well; tiredness came
+  out worse, and the override made it sit on the bank in the sun. Neither first choice was a bad
+  one. The rule fires when an urgent need comes out worse than expected, and it cannot tell "the
+  world answered worse" from "my belief, or my hope, was off". That is a weakness of the rule as
+  designed, and it is left as it is for now.
+- **No planning ahead was seen.** Later, exhausted at the stream, Ilo chose to drink five times
+  in a row; on three of those steps its body gave way instead. It then rested on the bank until
+  evening. Nothing in the afternoon looks like drinking before being thirsty.
 
-Reproduce:
+## What was not shown
 
-```sh
-uv run surprise-loop experiment experiments/trait_grid.yaml --jobs 8
-uv run --group plot python scripts/plot_results.py runs/trait_grid
-SURPRISE_LOOP_MODEL=openrouter:<provider>/<model> OPENROUTER_API_KEY=... \
-  uv run surprise-loop experiment experiments/llm_traits.yaml --jobs 8
-uv run --group plot python scripts/plot_results.py runs/llm_traits
-# the same with experiments/llm_traits_long.yaml (and runs/llm_traits_long) for the longer phases
-```
+- **No stable individual differences.** One seed, one afternoon, one model. There is no claim
+  that the two bodies differ beyond what their starting states and the update code give them.
+- **The contrast is partly staged.** The split screen is striking for an overheated body next to
+  a comfortable one. In the cool morning of a rule-driven day the two panels look much alike.
+  Whether a watcher can tell the bodies apart with the captions hidden, for an ordinary pair, has
+  not been checked by anyone but the builder.
+- **The differences in the text are authored.** The phrase table is written by hand, so two
+  bodies giving two texts is true by construction.
+- **The cool rung of the ladder does not carry** in the prompt the agent really uses (result 2).
+- **It is still reactive.** Every expectation looks one step ahead, for the chosen action only.
+  The honest label is homeostasis with an inner narrator.
+- **The rules' forecast is biased.** For the heat a place will give, the rules add up the
+  authored bearings of the facts about it (the oak's shade, the breeze, the stream's water),
+  which the world's heat rule does not have, and the same place gets a different pull depending
+  on where it is seen from. A slow forecast and a wide band keep it from showing as error. The
+  rules never commit an expectation about the world.
+- **Evaluate mixes two sources.** It compares the need as believed before the action with the
+  need as sensed afterwards. A body that starts out believing it is better off than it is can
+  have an early action judged as not helping when it did.
+- **The body signal is nearly exact.** Surprise comes from the world's delays and changing facts
+  (water that arrives late, a log that moves into the sun), not from noisy senses.
+- **Small leaks of realism in what a model reads.** Every scene opens "You are standing",
+  whatever the body did last. After an invalid answer the retry message contains the library's
+  error text. A model's own words are shown back to it unfiltered.
+- **Against the theory.** "Attention" here is relevance to need with a gain, not learned
+  reliability. What each fact does to a body is written by the designer, not learned. Evaluate
+  has no counterpart in the theory. Temperament does not change (that channel is switched off in
+  this milestone).
+
+## The design's done-when list
+
+- *With captions hidden, the owner can tell which body is too hot and when one was surprised, for
+  the ordinary pair and not only the extreme pair.* Not established. It is the owner's call, and
+  the builder's own look says the ordinary pair is hard to tell apart in the morning.
+- *At noon the two captions give the same facts opposite value.* Yes: the two texts above. Over
+  the afternoon a fact noticed by both bodies had opposite value on 7 steps of 42 under the
+  reactive rule and on 6 under the model (`pairs.csv` in the experiment's table directory).
+- *The reactive and lookahead rules have been compared on time outside the comfortable range.*
+  Yes: result 3. Looking ahead pays.
+- *The README states the ladder-check result and the share of the model's choices that the
+  reactive rule predicts, whatever they are.* Results 2 and 4.
+
+## The first version (v0)
+
+v0 was a lever-pressing world: an agent pressed levers for reward under changing schedules, and
+the question was whether agents with different trait numbers showed stable differences in
+behaviour. All of it is at commit `2ec53fd`:
+
+    git show 2ec53fd:README.md      # the full v0 write-up, with commands and results
+    git checkout 2ec53fd            # the v0 code and its 741 tests
+
+Its result with a real model was "not yet": trait numbers in the prompt barely reached behaviour,
+and the measures that stayed stable were made by the update code, not by the model's choices.
+Result 1 above suggests why.

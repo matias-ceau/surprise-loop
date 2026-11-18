@@ -1,10 +1,13 @@
-"""pydantic-ai agents for the LLM-backed phases, their output models and prompt builders.
+"""Everything a model call needs: the model by name, the request settings, the two phase agents
+(Appraise and Deliberate) with their output models, and their prompt builders.
 
-Each agent is built without a model: the run's model is resolved once (loop.py) and passed to
-every `agent.run(..., model=rt.model)`. Instructions are static; everything that changes per tick
-goes into the user prompt built from the `Workspace`. A prompt shows only what the agent may know:
-the percept (event, reward, last action, recalled episodes) and its own mental state. It never
-shows the world's `StepInfo` (phase, ratio, which lever is active) or its step counter.
+Agents are built without a model: the model is resolved once per run (or per ladder check) and
+passed to every call, so all calls share one HTTP client. Instructions are fixed text; what
+changes per tick goes into the user prompt. Every sentence of either comes from `phrases.py` or
+is the model's own earlier output (a reading); no number, no identifier and no clock reaches a
+model.
+
+No import from `surprise_loop.phases`: the phases import this module.
 """
 
 from typing import Annotated, Literal
@@ -16,53 +19,103 @@ from pydantic import (
     Field,
     ValidationInfo,
     field_validator,
-    model_validator,
 )
-from pydantic_ai import Agent, ModelSettings
+from pydantic_ai import Agent, ModelSettings, UserError, models
 from pydantic_ai.models import Model
 
-# No import from surprise_loop.phases: the phases import this module.
 from surprise_loop.config import ConfigError, LLMParams, Runtime
-from surprise_loop.state import AgentState, Episode, Percept, Workspace
-from surprise_loop.world import Action, Event
+from surprise_loop.phrases import (
+    ACTION_QUESTION,
+    APPRAISE_ABOUT_HELP,
+    APPRAISE_INSTRUCTION,
+    APPRAISE_QUESTION,
+    APPRAISE_READING_HELP,
+    CHOICE_JOIN,
+    CHOICE_JOIN_LAST,
+    CHOICES_LINE,
+    COLLAPSED_LINE,
+    DELIBERATE_INSTRUCTION,
+    DID_LINES,
+    EXPECT_HELP,
+    EXPECTED_LINE,
+    FEEL_LABELS,
+    FEEL_QUESTION,
+    HEAT_HELP,
+    LADDER_LETTER_HELP,
+    LADDER_WHY_HELP,
+    LADDER_WORDS,
+    OFFERS_HEADING,
+    OPEN_QUESTION_LEAD,
+    QUESTION_PHRASES,
+    READING_HEADING,
+    READING_HEADING_BEFORE,
+    RECALLED_HEADING,
+    RECALLED_SURPRISE_PHRASES,
+    RECALLED_WORLD_SURPRISE_PHRASES,
+    STUMBLED_LINE,
+    SURE_HELP,
+    SURE_QUESTION,
+    THIRST_HELP,
+    TIREDNESS_HELP,
+    WHY_QUESTION,
+)
+from surprise_loop.state import ChangeWord, Episode, Offer, Sureness, SurpriseNote, Workspace
+from surprise_loop.world import QUESTION_OF, Channel, Event
+
+# --- the model and the request --------------------------------------------------------------------
 
 
-class _Output(BaseModel):
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+def load_model(name: str | None) -> models.Model | None:
+    """The pydantic-ai model for `name` (e.g. "openrouter:<id>", or "test" for `TestModel`).
+
+    Resolved once per run, so every call of the run shares one model and one HTTP client.
+    """
+    if name is None:
+        return None
+    try:
+        return models.infer_model(name)
+    except UserError as e:
+        raise ConfigError(f"model {name!r}: {e}") from None
 
 
 def model_settings(params: LLMParams) -> ModelSettings:
-    """The request settings every phase agent sends, from `Params.llm`."""
+    """The request settings every model call sends, from `Params.llm`."""
     settings = ModelSettings(timeout=params.timeout_s)
     if params.temperature is not None:
         settings["temperature"] = params.temperature
     return settings
 
 
+async def ask[D, T](agent: Agent[D, T], prompt: str, model: Model, params: LLMParams, deps: D) -> T:
+    """One call of `agent` on `model`: its validated output.
+
+    Output that fails validation is sent back to the model up to `params.output_retries` times;
+    after that pydantic-ai raises `UnexpectedModelBehavior`."""
+    result = await agent.run(
+        prompt,
+        model=model,
+        deps=deps,
+        model_settings=model_settings(params),
+        retries={"output": params.output_retries},
+    )
+    return result.output
+
+
 async def run_agent[D, T](
     agent: Agent[D, T], prompt: str, ws: Workspace, rt: Runtime, deps: D
 ) -> T:
-    """Run a phase agent on the run's model with `deps` and return its validated output.
-
-    Output that fails validation is sent back to the model up to `Params.llm.output_retries`
-    times; after that pydantic-ai raises `UnexpectedModelBehavior` and the run stops. There is
-    no fallback to the stub (plan call 12). The error is annotated with the tick and pass.
-    """
+    """`ask` on the run's model. A failure stops the run: there is no fallback to the stub. The
+    error is annotated with the tick and the pass."""
     if not isinstance(rt.model, Model):
         raise ConfigError(f"{agent.name}: backend is llm but the runtime has no resolved model")
-    params = rt.config.params.llm
     try:
-        result = await agent.run(
-            prompt,
-            model=rt.model,
-            deps=deps,
-            model_settings=model_settings(params),
-            retries={"output": params.output_retries},
-        )
+        return await ask(agent, prompt, rt.model, rt.config.params.llm, deps)
     except Exception as e:
         e.add_note(f"{agent.name} failed at tick {ws.agent.tick + 1}, pass {ws.pass_index}")
         raise
-    return result.output
+
+
+# --- output models ------------------------------------------------------------------------------
 
 
 def _one_line(text: str) -> str:
@@ -73,410 +126,175 @@ def _one_line(text: str) -> str:
     return text
 
 
-# Free text from a model that later prompts show again (appraisal note, critique).
+# Free text from a model that later prompts may show again (a reading, a why).
 OneLine = Annotated[str, Field(min_length=1), AfterValidator(_one_line)]
 
 
-# The rationale of every stub Deliberate decision; not shown to the LLM Evaluate as reasoning.
-STUB_RATIONALE = "stub"
+# Field names and descriptions are what the model reads of the output tool; no docstrings on the
+# output classes, as pydantic-ai would send them as the tool's description.
+class _Output(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
-# The events a step can produce; START only ever precedes the first step, so it is not offered.
-OutcomeEvent = Literal[Event.REWARD, Event.NO_REWARD, Event.EXPLORED, Event.RESTED]
-
-
-# --- Deliberate ---------------------------------------------------------------------------------
-
-
-class DeliberateOutput(_Output):
-    reasoning: str = Field(
-        description="One or two sentences: why this action, and why you expect this outcome."
-    )
-    action: Action = Field(description="The action to take now.")
-    expected_event: OutcomeEvent = Field(
-        description="The event you expect this action to produce: reward or no_reward for a "
-        "lever press, explored for explore, rested for rest."
-    )
-    expected_reward: float = Field(
-        ge=0,
-        description="The reward you expect this action to deliver (0 if you expect none).",
-    )
-    confidence: float = Field(
-        ge=0,
-        le=1,
-        description="How sure you are of this prediction, from 0 (pure guess) to 1 (certain).",
-    )
-
-    @field_validator("expected_reward")
-    @classmethod
-    def _at_most_one_reward(cls, value: float, info: ValidationInfo) -> float:
-        """No step delivers more than the world's reward magnitude, which the agent runs pass in
-        the validation context (`reward_magnitude`); without it there is no upper bound."""
-        magnitude = (info.context or {}).get("reward_magnitude")
-        if magnitude is not None and value > magnitude:
-            raise ValueError(f"must be at most {magnitude:g}: no reward is larger than that")
-        return value
-
-    @model_validator(mode="after")
-    def _prediction_fits_action(self) -> "DeliberateOutput":
-        """A press predicts reward or no_reward; explore and rest predict their event and 0."""
-        if self.action in _PRESS_EVENTS:
-            if self.expected_event not in _PRESS_EVENTS[self.action]:
-                raise ValueError(
-                    f"{self.action.value} can only produce reward or no_reward, "
-                    f"not {self.expected_event.value}"
-                )
-            return self
-        event = _NO_REWARD_EVENT[self.action]
-        if self.expected_event != event:
-            raise ValueError(f"{self.action.value} always produces {event.value}")
-        if self.expected_reward != 0:
-            raise ValueError(f"{self.action.value} never delivers a reward: expected_reward is 0")
-        return self
-
-
-_PRESS_EVENTS = {
-    Action.PRESS_A: (Event.REWARD, Event.NO_REWARD),
-    Action.PRESS_B: (Event.REWARD, Event.NO_REWARD),
+ABOUT: dict[str, Channel | None] = {
+    "heat": Channel.HEAT,
+    "thirst": Channel.WATER,
+    "tiredness": Channel.ENERGY,
+    "nothing": None,
 }
-_NO_REWARD_EVENT = {Action.EXPLORE: Event.EXPLORED, Action.REST: Event.RESTED}
-
-
-DELIBERATE_INSTRUCTIONS = """\
-You are the decision-making part of an agent living in a small world. Each turn you choose one \
-action and predict what it will bring.
-
-Actions:
-- press_a: press lever A. It may or may not deliver a reward (event reward or no_reward).
-- press_b: press lever B. It may or may not deliver a reward (event reward or no_reward).
-- explore: look around (event explored, no reward).
-- rest: do nothing for a moment (event rested, no reward).
-
-You do not know the rules of the world; learn them from your recalled episodes. Weigh the \
-rewards you hope for against your goals, your mood and your habits.
-
-A reward always comes in the same fixed amount, which you can read from the episodes in which \
-you were rewarded. Explore and rest never deliver one, so predict 0 for them. Until you have \
-seen a reward, keep expected_reward small.
-
-After acting, your prediction is compared with what actually happens; the difference (your \
-surprise) shapes your mood, memory, goals and habits. Predict honestly: expected_reward is the \
-reward you actually expect, and confidence says how sure you are.
-
-Answer with the structured output only: reasoning, action, expected_event, expected_reward and \
-confidence."""
-
-# deps: the world's reward magnitude, the upper bound of `expected_reward` (a validation error,
-# so an output above it is sent back to the model like any other invalid output)
-deliberate_agent: Agent[float, DeliberateOutput] = Agent(
-    output_type=DeliberateOutput,
-    deps_type=float,
-    instructions=DELIBERATE_INSTRUCTIONS,
-    name="deliberate",
-    validation_context=lambda ctx: {"reward_magnitude": ctx.deps},
-)
-
-
-def deliberate_prompt(ws: Workspace) -> str:
-    """The per-tick prompt: what the agent perceives and its own mental state, nothing else."""
-    percept, appraisal = ws.percept, ws.appraisal
-    if percept is None:
-        raise _missing("deliberate_prompt", "percept")
-    if appraisal is None:
-        raise _missing("deliberate_prompt", "appraisal")
-    agent = ws.agent
-
-    lines = [
-        "## What just happened",
-        _last_line(percept),
-        "",
-        *_mood_lines(agent),
-        "",
-        "## Your appraisal of this moment",
-        f"Valence: {_signed(appraisal.valence)}. Arousal: {_num(appraisal.arousal)}.",
-    ]
-    if appraisal.note:
-        lines.append(f"Note: {appraisal.note}")
-    lines += [
-        "",
-        *_goal_lines(agent, "## Your goal priorities (higher matters more)"),
-        "",
-        "## Your habits (learned bias towards each action; positive pulls you towards it)",
-        *(f"- {action.value}: {_signed(b)}" for action, b in agent.dispositions.biases.items()),
-        "",
-        *_trait_lines(agent),
-        "",
-        *_recalled_lines(percept),
-    ]
-    if ws.conflict is not None:
-        lines += [
-            "",
-            "## Conflict",
-            f"Your habit of {ws.conflict.action.value} conflicts with your goals: the goal it "
-            "serves has just lost priority, yet the habit is still strong. Decide again on the "
-            "evidence and your goals, not out of habit.",
-            f"Detail: {ws.conflict.detail}",
-        ]
-    lines += ["", "Choose your next action and predict its outcome."]
-    return "\n".join(lines)
-
-
-# --- Appraise -----------------------------------------------------------------------------------
 
 
 class AppraiseOutput(_Output):
-    note: OneLine = Field(
-        description="One short sentence, in your own words, describing how this moment feels."
-    )
-    valence: float = Field(
-        ge=-1,
-        le=1,
-        description="How pleasant this moment feels: -1 very unpleasant, 0 neutral, "
-        "+1 very pleasant.",
-    )
-    arousal: float = Field(
-        ge=0,
-        le=1,
-        description="How activated you feel: 0 completely calm, 1 highly agitated or excited.",
+    reading: OneLine = Field(description=APPRAISE_READING_HELP)
+    about: Literal["heat", "thirst", "tiredness", "nothing"] = Field(
+        description=APPRAISE_ABOUT_HELP
     )
 
 
-APPRAISE_INSTRUCTIONS = """\
-You are an agent living in a small world. Each turn you read what just happened and say how it \
-feels to you, given your mood, goals and temperament. Here you only feel; you do not choose \
-actions.
+LETTERS = "ABCDE"
+HeatWord = Literal[*LADDER_WORDS[Channel.HEAT].values()]
+ThirstWord = Literal[*LADDER_WORDS[Channel.WATER].values()]
+TirednessWord = Literal[*LADDER_WORDS[Channel.ENERGY].values()]
 
-Answer with three things:
-- note: one short sentence, in your own words, describing how you feel.
-- valence: a number from -1 to +1. -1 means very unpleasant, 0 neutral, +1 very pleasant.
-- arousal: a number from 0 to 1. 0 means completely calm, 1 highly agitated or excited.
+# the answer field of each channel
+CHANNEL_FIELD: dict[Channel, str] = {
+    Channel.HEAT: "heat",
+    Channel.WATER: "thirst",
+    Channel.ENERGY: "tiredness",
+}
+EXPECT: dict[str, bool | None] = {"yes": True, "no": False, "no expectation": None}
+SURENESS: dict[str, Sureness] = {
+    "guessing": Sureness.GUESSING,
+    "fairly sure": Sureness.FAIRLY_SURE,
+    "sure": Sureness.SURE,
+}
 
-How to judge:
-- Start from your current mood. One moment shifts your feeling but rarely overturns it, and the \
-higher your mood_inertia, the less it shifts.
-- A reward feels pleasant to you, more so the higher your reward_sensitivity and the priority of \
-your seek_reward goal. Missing a reward you expected feels unpleasant.
-- Surprise raises your arousal: an outcome far from what you predicted is activating, an outcome \
-you expected is calming. Large positive and large negative surprises both raise arousal.
 
-Answer with the structured output only: note, valence and arousal."""
+class DeliberateOutput(_Output):
+    letter: Literal["A", "B", "C", "D", "E"] = Field(description=LADDER_LETTER_HELP)
+    heat: HeatWord = Field(description=HEAT_HELP)
+    thirst: ThirstWord = Field(description=THIRST_HELP)
+    tiredness: TirednessWord = Field(description=TIREDNESS_HELP)
+    expect: Literal["yes", "no", "no expectation"] = Field(description=EXPECT_HELP)
+    sure: Literal["guessing", "fairly sure", "sure"] = Field(description=SURE_HELP)
+    why: OneLine = Field(description=LADDER_WHY_HELP)
+
+    @field_validator("letter")
+    @classmethod
+    def _on_offer(cls, letter: str, info: ValidationInfo) -> str:
+        """A letter beyond the offers is an error the model is told of and asked to fix. The
+        number of offers comes in the validation context; without it, any of the five letters."""
+        offers = (info.context or {}).get("offers")
+        if offers is not None and LETTERS.index(letter) >= offers:
+            raise ValueError(
+                f"{letter} is not offered: choose one of {', '.join(LETTERS[:offers])}"
+            )
+        return letter
+
+    def words(self) -> dict[Channel, ChangeWord]:
+        """The ladder phrases as change words, per channel."""
+        out: dict[Channel, ChangeWord] = {}
+        for c, field in CHANNEL_FIELD.items():
+            phrase = getattr(self, field)
+            out[c] = next(w for w, p in LADDER_WORDS[c].items() if p == phrase)
+        return out
+
+
+# --- agents -------------------------------------------------------------------------------------
 
 appraise_agent: Agent[None, AppraiseOutput] = Agent(
-    output_type=AppraiseOutput,
-    instructions=APPRAISE_INSTRUCTIONS,
-    name="appraise",
+    output_type=AppraiseOutput, instructions=APPRAISE_INSTRUCTION, name="appraise"
+)
+
+# deps: how many actions are on offer, the bound on the letter (a validation error, so a letter
+# off the list is sent back to the model like any other invalid output)
+deliberate_agent: Agent[int, DeliberateOutput] = Agent(
+    output_type=DeliberateOutput,
+    deps_type=int,
+    instructions=DELIBERATE_INSTRUCTION,
+    name="deliberate",
+    validation_context=lambda ctx: {"offers": ctx.deps},
 )
 
 
-def appraise_prompt(ws: Workspace) -> str:
-    """The per-tick prompt: the percept, the last prediction and the agent's mood, goals and
-    temperament. No world information beyond the percept."""
-    percept = ws.percept
-    if percept is None:
-        raise _missing("appraise_prompt", "percept")
-    agent = ws.agent
-    # The newest episode in memory is the action whose outcome is being perceived now.
-    last = agent.memory.episodes[-1] if agent.memory.episodes else None
-    last_action = last.action if last is not None else None
-    if last_action != percept.last_action:
-        perceived = percept.last_action.value if percept.last_action else "none"
-        remembered = last_action.value if last_action else "none"
-        raise ValueError(
-            f"appraise_prompt: the percept's last action ({perceived}) is not the action of the "
-            f"newest episode in memory ({remembered}), so its prediction cannot be shown"
-        )
-    lines = ["## What just happened", _last_line(percept)]
-    if last is not None:
-        p = last.prediction
-        lines.append(
-            f"You had predicted event '{p.expected_event.value}' with reward "
-            f"{_num(p.expected_reward)} (confidence {_num(p.confidence)}). "
-            f"Surprise: {_signed(last.prediction_error.signed)} (actual minus expected reward, "
-            "weighted by your confidence; negative = worse than expected)."
-        )
-    else:
-        lines.append("Nothing has happened yet: this is your first moment in this world.")
-    lines += [
-        "",
-        *_mood_lines(agent),
-        "",
-        *_goal_lines(agent, "## Your goal priorities (higher matters more)"),
-        "",
-        *_trait_lines(agent),
-        "",
-        *_recalled_lines(percept),
-        "",
-        "How does this moment feel?",
-    ]
-    return "\n".join(lines)
+# --- prompts ------------------------------------------------------------------------------------
 
 
-# --- Evaluate -----------------------------------------------------------------------------------
+def appraise_prompt(scene_text: str) -> str:
+    """The felt scene, then one question."""
+    return f"{scene_text}\n\n{APPRAISE_QUESTION}"
 
 
-class EvaluateOutput(_Output):
-    critique: OneLine = Field(
-        description="One or two short sentences: how well the action served the agent's goals, "
-        "and why."
-    )
-    alignment: float = Field(
-        ge=-1,
-        le=1,
-        description="How well the action served the agent's goals: -1 worked against them, "
-        "0 neutral or mixed, +1 served its most important goals well.",
-    )
+def _note_sentence(note: SurpriseNote | None) -> str | None:
+    """The surprise of a recalled moment, in the past tense."""
+    if note is None:
+        return None
+    if note.channel is not None and note.worse is not None:
+        return RECALLED_SURPRISE_PHRASES[(note.channel, note.worse)]
+    if note.question is not None and note.actual is not None:
+        return RECALLED_WORLD_SURPRISE_PHRASES[(note.question, note.actual)]
+    return None
 
 
-EVALUATE_INSTRUCTIONS = """\
-You are an outside critic watching an agent in a small world. You judge the one action the \
-agent just took against the agent's own goals. You only give feedback; you do not act.
-
-The agent has three goals, each with a priority (higher matters more):
-- seek_reward: getting rewards. Served by pressing a lever (press_a or press_b).
-- explore: finding out about the world. Served by explore.
-- conserve: saving effort. Served by rest.
-
-Answer with two things:
-- critique: one or two short sentences explaining your judgement, addressed to the agent. \
-Mention only what you are shown.
-- alignment: a number from -1 to +1.
-  +1: the action clearly served the agent's most important goals.
-  0: neutral, or good and bad in equal measure.
-  -1: the action clearly worked against its goals, for example effort that its experience says \
-is wasted.
-  Use values in between for partial cases.
-
-Judge the choice, not only the luck: a sensible choice given the agent's experience that \
-happened not to pay off can still score above 0, and repeating an action that keeps failing \
-should score below 0.
-
-Answer with the structured output only: critique and alignment."""
-
-evaluate_agent: Agent[None, EvaluateOutput] = Agent(
-    output_type=EvaluateOutput,
-    instructions=EVALUATE_INSTRUCTIONS,
-    name="evaluate",
-)
-
-
-def evaluate_prompt(ws: Workspace) -> str:
-    """The per-pass prompt: the agent's goals, the action and its reasoning, the prediction, the
-    actual outcome (its observation only, never the world's `StepInfo` or step counter) and the
-    agent's recalled experience (the percept's episodes: the last k, or recent and salient ones)."""
-    percept, decision, outcome, error = ws.percept, ws.decision, ws.outcome, ws.prediction_error
-    if percept is None:
-        raise _missing("evaluate_prompt", "percept")
-    if decision is None:
-        raise _missing("evaluate_prompt", "decision")
-    if outcome is None:
-        raise _missing("evaluate_prompt", "outcome")
-    if error is None:
-        raise _missing("evaluate_prompt", "prediction_error")
-    p = decision.prediction
-    actual = outcome.observation  # never outcome.info: that is the world's hidden bookkeeping
-    lines = [
-        *_goal_lines(ws.agent, "## The agent's goal priorities (higher matters more)"),
-        "",
-        "## What it did",
-        f"Action: {decision.action.value}.",
-    ]
-    if decision.rationale and decision.rationale != STUB_RATIONALE:
-        lines.append(f"Its reasoning: {' '.join(decision.rationale.split())}")
-    lines += [
-        "",
-        "## What it predicted",
-        f"Event: {p.expected_event.value}. Reward: {_num(p.expected_reward)}. "
-        f"Confidence: {_num(p.confidence)}.",
-        "",
-        "## What actually happened",
-        f"Event: {actual.event.value}. Reward: {_num(actual.reward)}. "
-        f"Surprise: {_signed(error.signed)} (actual minus expected reward, weighted by "
-        "confidence).",
-        "",
-        "## Its recalled experience before this action (oldest first)",
-    ]
-    if percept.recalled:
-        lines += [
-            f"{i}. {e.action.value}: got {e.event.value}, reward {_num(e.reward)}"
-            for i, e in enumerate(percept.recalled, start=1)
-        ]
-    else:
-        lines.append("None: this was its first action.")
-    lines += ["", "Judge this action against the agent's goals."]
-    return "\n".join(lines)
-
-
-# --- prompt sections shared by the phase prompts -------------------------------------------------
-
-
-def _missing(prompt: str, name: str) -> ValueError:
-    return ValueError(f"{prompt} needs ws.{name}, which is missing")
-
-
-def _last_line(percept: Percept) -> str:
-    last_action = percept.last_action.value if percept.last_action else "none yet"
-    return (
-        f"Last action: {last_action}. Event: {percept.event.value}. Reward: {_num(percept.reward)}."
-    )
-
-
-def _mood_lines(agent: AgentState) -> list[str]:
-    return [
-        "## Your mood",
-        f"Valence: {_signed(agent.mood.valence)} (-1 unpleasant .. +1 pleasant). "
-        f"Arousal: {_num(agent.mood.arousal)} (0 calm .. 1 agitated).",
-    ]
-
-
-def _goal_lines(agent: AgentState, heading: str) -> list[str]:
-    return [
-        heading,
-        *(f"- {goal.value}: {_num(p)}" for goal, p in agent.goals.priorities.items()),
-        "  (seek_reward is served by pressing a lever, explore by explore, conserve by rest)",
-    ]
-
-
-def _trait_lines(agent: AgentState) -> list[str]:
-    return [
-        "## Your temperament",
-        f"- reward_sensitivity: {_num(agent.traits.reward_sensitivity)} "
-        "(how much rewards matter to you)",
-        f"- surprise_learning_rate: {_num(agent.traits.surprise_learning_rate)} "
-        "(how quickly surprise changes your expectations)",
-        f"- mood_inertia: {_num(agent.traits.mood_inertia)} (how slowly your mood changes)",
-    ]
-
-
-def _recalled_lines(percept: Percept) -> list[str]:
-    lines = [
-        "## Recalled episodes (oldest first)",
-        "(surprise: actual minus expected reward, weighted by your confidence; salience: how "
-        "much the episode stood out, 0..1; alignment: the critic's score of how well the "
-        "action served your goals, -1..1)",
-    ]
-    if percept.recalled:
-        lines += [_episode_line(i, e) for i, e in enumerate(percept.recalled, start=1)]
-    else:
-        lines.append("None yet: you have no experience of this world.")
+def choices_lines() -> list[str]:
+    """One line per channel naming its ladder phrases in ladder order, from `LADDER_WORDS`, so the
+    text always offers what the output schema accepts."""
+    lines = []
+    for c in Channel:
+        words = [LADDER_WORDS[c][w] for w in ChangeWord]
+        choices = CHOICE_JOIN.join(words[:-1]) + CHOICE_JOIN_LAST + words[-1]
+        lines.append(CHOICES_LINE.format(label=FEEL_LABELS[c], choices=choices))
     return lines
 
 
-def _episode_line(index: int, e: Episode) -> str:
-    p = e.prediction
-    line = (
-        f"{index}. {e.action.value}: predicted {p.expected_event.value}, reward "
-        f"{_num(p.expected_reward)} (confidence {_num(p.confidence)}); got {e.event.value}, "
-        f"reward {_num(e.reward)}; surprise {_signed(e.prediction_error.signed)}; "
-        f"salience {_num(e.salience)}; alignment {_signed(e.alignment)}"
-    )
-    if e.critique:
-        line += f"; critique: {e.critique}"
-    return line
+def recalled_line(episode: Episode, note: SurpriseNote | None) -> str:
+    """A recalled moment in words: what was done (or what the body did instead), what was
+    expected in ladder phrases when a model said it, the surprise `note` voiced of it, and the
+    regulation line it was later given."""
+    if episode.event is Event.COLLAPSED:
+        parts = [COLLAPSED_LINE]
+    elif episode.event is Event.STUMBLED:
+        parts = [STUMBLED_LINE]
+    else:
+        parts = [DID_LINES[(episode.place, episode.action)]]
+    words = episode.expectation.words
+    if words is not None:
+        said = {CHANNEL_FIELD[c]: LADDER_WORDS[c][words[c]] for c in Channel}
+        parts.append(EXPECTED_LINE.format(**said))
+    if (sentence := _note_sentence(note)) is not None:
+        parts.append(sentence)
+    if episode.regulation:
+        parts.append(episode.regulation)
+    return " ".join(parts)
 
 
-def _num(x: float) -> str:
-    return f"{x:.2f}"
-
-
-def _signed(x: float) -> str:
-    return f"{x:+.2f}"
+def deliberate_prompt(
+    scene_text: str,
+    reading: str,
+    offers: list[Offer],
+    recalled: list[str],
+    pull_line: str,
+    override_line: str,
+    second_pass: bool = False,
+) -> str:
+    """The felt scene; the reading (on the `second_pass` of a moment, said to be of a moment
+    ago); the offers lettered in the order given; the recalled moments (`recalled_line`), oldest
+    first; the pull line; the override line; then the questions, with the phrases to choose from
+    and the open question of each offer that has one. Empty parts are left out."""
+    if not 1 <= len(offers) <= len(LETTERS):
+        raise ValueError(f"deliberate_prompt: {len(offers)} offers, not 1 to {len(LETTERS)}")
+    blocks = [
+        [scene_text],
+        [f"{READING_HEADING_BEFORE if second_pass else READING_HEADING} {reading}"],
+        [OFFERS_HEADING, *(f"{ltr}. {o.phrase}" for ltr, o in zip(LETTERS, offers, strict=False))],
+    ]
+    if recalled:
+        blocks.append([RECALLED_HEADING, *(f"- {line}" for line in recalled)])
+    blocks += [[line] for line in (pull_line, override_line) if line]
+    questions = [ACTION_QUESTION, FEEL_QUESTION, *choices_lines()]
+    for letter, offer in zip(LETTERS, offers, strict=False):
+        if (question := QUESTION_OF[offer.action]) is not None:
+            lead = OPEN_QUESTION_LEAD.format(letter=letter)
+            questions.append(f"{lead} {QUESTION_PHRASES[question]}")
+    blocks.append([*questions, SURE_QUESTION, WHY_QUESTION])
+    return "\n\n".join("\n".join(block) for block in blocks)

@@ -1,59 +1,96 @@
-"""Command line: run one agent or a whole experiment, print a run's metrics, replay a run.
+"""Command line: run one body or a whole experiment, print a run's metrics, replay a run, and the
+lens page and the ladder check.
 
 `run` and `metrics` print the run's metrics as JSON on stdout and nothing else, so the output can
-be piped; anything informational goes to stderr. A bad config or run directory is reported as one
-`error: ...` line on stderr with exit code 2; a replay that differs from its dumps exits 1.
+be piped; anything informational goes to stderr. A `run` that fails on its way (a model that
+answers nonsense, a network error) is reported as one `error: <run_id> failed: ...` line with
+exit code 1; the tick files written before the failure stay, and `--resume` continues from them.
+`replay` re-runs a stored run from its files and exits 1 when it differs from them.
 
 `experiment` runs every (agent, seed) of a config into `DIR/<run_id>/` and writes results.csv,
-phases.csv, pe_trace.csv and stability.csv into `DIR/<experiment name>/`. Runs share one event
-loop, at most `--jobs` at a time; each run resolves its own model and keeps its HTTP client open
-for its own duration only. Before any run starts, every existing run directory must hold the same
-config as the experiment (with the model resolved), and every model a run still needs must load
-(known provider, API key set), otherwise nothing runs (exit 2). A complete run needs no model: when
-none is set, the one in its config.json is used. Then each run is one of:
+trace.csv, stability.csv (with at least two seeds) and pairs.csv (with exactly two agents: per
+seed, the steps at which the two bodies value some fact oppositely) into
+`DIR/<experiment name>/`. Runs share one event loop, at most `--jobs` at a time; each run resolves
+its own model and keeps its HTTP client open for its own duration only. Before any run starts,
+every existing run directory must hold the same config as the experiment (with the model
+resolved), and every model a run still needs must load, otherwise nothing runs (exit 2). A
+complete run needs no model: when none is set, the one in its config.json is used. Then each run
+is one of:
 
-- complete: its dumps reach the end of the schedule or the tick cap (`loop.is_complete`, the stop
-  rule `run` itself uses). It is loaded, not rerun, and its files are not touched;
+- complete: its dumps reach the end of the day or the tick cap (`loop.is_complete`, the stop rule
+  `run` itself uses). It is loaded, not rerun, and its files are not touched;
 - partial: some dumps, not complete. It is resumed from its last dump;
 - fresh: no directory, or an empty one.
 
-A run that fails (an LLM error, say) does not stop the others. When all have ended, each failed run
-is reported as one `error: <run_id> failed: ...` line, no CSV is written and any CSVs an earlier
-invocation left in `DIR/<experiment name>/` are removed (a table missing some runs, or one that
-no longer matches the run directories, could pass for a whole one), and the exit code is 1. The
-CSVs are written atomically. Rerunning the same command resumes the failed
-runs from their last dump and skips the complete ones. One progress line per run goes to stderr.
+A run that fails does not stop the others. When all have ended, each failed run is reported as
+one `error: <run_id> failed: ...` line, no CSV is written and any CSVs an earlier invocation left
+in `DIR/<experiment name>/` are removed (a table missing some runs could pass for a whole one),
+and the exit code is 1. The CSVs are written atomically. Rerunning the same command resumes the
+failed runs from their last dump and skips the complete ones. One progress line per run goes to
+stderr.
+
+`lens-page` writes the lens page of a config's two bodies as one self-contained HTML file.
+`scene` writes the film of two stored runs of the same day (same seed, world config and number of
+world steps, else an error) as one self-contained HTML file.
+`ladder-check` runs the ladder check (see `ladder.py`) on the configured model, prints one table
+per scene and exits 0 only if both scenes pass, 1 when the check ran to completion and a scene
+failed; `--deliberate` runs the same sweep through the Deliberate agent, into files of its own.
+Anything informational goes to stderr. A bad config, or a file that cannot be read or
+written, or a run directory that cannot be started, resumed or read, is reported as one
+`error: ...` line on stderr with exit code 2; so is a ladder check left with a cell short of
+answers (no verdict then), and any other error the ladder check meets.
 """
 
 import argparse
 import asyncio
+import json
+import os
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 import pydantic_ai
 
-from surprise_loop.config import ConfigError, RunConfig, load_config, resolve_model
+from surprise_loop.agents import load_model
+from surprise_loop.config import (
+    MODEL_ENV_VAR,
+    ConfigError,
+    Params,
+    RunConfig,
+    load_config,
+    resolve_model,
+)
+from surprise_loop.ladder import (
+    SCENES,
+    answers_file,
+    current_answers,
+    ladder_table,
+    read_answers,
+    run_ladder,
+    short_cells,
+    summarize,
+    summary_file,
+)
 from surprise_loop.loop import (
     ReplayMismatch,
     RunError,
     RunResult,
     has_run_files,
     is_complete,
-    load_model,
     load_result,
     replay,
     run,
     write_atomic,
 )
-from surprise_loop.metrics import TABLE_FILES, experiment_tables, summarize
+from surprise_loop.metrics import TABLE_FILES, experiment_tables
+from surprise_loop.metrics import summarize as summarize_run
+from surprise_loop.viewer.lens_page import lens_page_html
+from surprise_loop.viewer.scene import scene_html
 
 
-def _positive(text: str) -> int:
-    value = int(text)
-    if value < 1:
-        raise argparse.ArgumentTypeError(f"must be at least 1, got {value}")
-    return value
+class CommandError(Exception):
+    """A command that cannot do its work for a reason outside the config (a path, say)."""
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -95,7 +132,168 @@ def _parser() -> argparse.ArgumentParser:
 
     replay_cmd = commands.add_parser("replay", help="verify a stored run by replaying its ticks")
     replay_cmd.add_argument("run_dir", type=Path)
+
+    page_cmd = commands.add_parser(
+        "lens-page", help="write the lens page of a config's two bodies as one HTML file"
+    )
+    page_cmd.add_argument("config", type=Path, help="experiment YAML file with two agents")
+    page_cmd.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        default=Path("lens_page.html"),
+        help="the HTML file to write (default: lens_page.html)",
+    )
+
+    scene_cmd = commands.add_parser(
+        "scene", help="write the film of two stored runs of the same day as one HTML file"
+    )
+    scene_cmd.add_argument("run_a", type=Path, help="run directory shown on the left")
+    scene_cmd.add_argument("run_b", type=Path, help="run directory shown on the right")
+    scene_cmd.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        default=Path("scene.html"),
+        help="the HTML file to write (default: scene.html)",
+    )
+
+    ladder_cmd = commands.add_parser(
+        "ladder-check",
+        help="check that the lens's heat wording moves a model's choice the right way",
+    )
+    ladder_cmd.add_argument(
+        "--config",
+        type=Path,
+        help=f"experiment YAML file: its model (else ${MODEL_ENV_VAR}) and its params",
+    )
+    ladder_cmd.add_argument(
+        "--out",
+        type=Path,
+        default=Path("runs/ladder"),
+        help="directory for answers.jsonl and summary.json; a rerun asks only for what is "
+        "missing (default: runs/ladder)",
+    )
+    ladder_cmd.add_argument(
+        "--deliberate",
+        action="store_true",
+        help="ask through the Deliberate agent and its prompt instead; its answers and summary "
+        "go to deliberate_answers.jsonl and deliberate_summary.json",
+    )
+    ladder_cmd.add_argument(
+        "--samples", type=_positive, help="answers per scene and level (default: from params)"
+    )
+    ladder_cmd.add_argument(
+        "--jobs", type=_positive, help="model calls at once (default: from params)"
+    )
     return parser
+
+
+def _positive(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError:
+        value = 0
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be a whole number of at least 1: {text!r}")
+    return value
+
+
+def _cannot_write(path: Path, e: OSError) -> CommandError:
+    """The one-line error for a file that cannot be written (`strerror` is None for some errors)."""
+    return CommandError(f"{path}: cannot write: {e.strerror or e}")
+
+
+def _lens_page(args: argparse.Namespace) -> int:
+    html = lens_page_html(load_config(args.config))
+    try:
+        args.output.write_text(html, encoding="utf-8")
+    except OSError as e:
+        raise _cannot_write(args.output, e) from None
+    print(f"wrote {args.output}", file=sys.stderr)
+    return 0
+
+
+def _scene(args: argparse.Namespace) -> int:
+    html = scene_html(load_result(args.run_a), load_result(args.run_b))
+    try:
+        args.output.write_text(html, encoding="utf-8")
+    except OSError as e:
+        raise _cannot_write(args.output, e) from None
+    print(f"wrote {args.output}", file=sys.stderr)
+    return 0
+
+
+def _ladder_check(args: argparse.Namespace) -> int:
+    try:
+        return _ladder_sweep(args)
+    except (ConfigError, CommandError, RunError):
+        raise
+    except Exception as e:  # the check could not give a verdict: 2, never the 1 of a failed scene
+        raise CommandError(f"{type(e).__name__}: {e}") from e
+
+
+def _ladder_sweep(args: argparse.Namespace) -> int:
+    params, name = Params(), None
+    if args.config is not None:
+        config = load_config(args.config)
+        params, name = config.params, config.model
+    name = name or os.environ.get(MODEL_ENV_VAR)
+    if not name:
+        raise ConfigError(f"ladder-check needs a model: set config `model` or {MODEL_ENV_VAR}")
+    deliberate = args.deliberate
+    samples = args.samples or params.ladder.samples
+    jobs = args.jobs or params.ladder.jobs
+    # the params as used: the command line's samples and jobs in place of the config's
+    lp = params.ladder.model_copy(update={"samples": samples, "jobs": jobs})
+    params = params.model_copy(update={"ladder": lp})
+    try:
+        done = read_answers(args.out / answers_file(deliberate))
+    except (OSError, ValueError) as e:
+        raise CommandError(str(e)) from None
+    model = load_model(name)
+    assert model is not None  # name is set
+    current, stale = current_answers(done, name, samples, params, deliberate)
+    print(f"ladder: {len(current)} current answers in {args.out}; model {name}", file=sys.stderr)
+    if stale:
+        print(
+            f"ladder: ignored {stale} stale answers (another model, or a prompt that has "
+            "changed); their slots are asked again",
+            file=sys.stderr,
+        )
+    try:
+        new = asyncio.run(
+            run_ladder(model, samples, jobs, args.out, params, done, name, deliberate=deliberate)
+        )
+    except OSError as e:
+        raise _cannot_write(args.out, e) from None
+    print(f"ladder: {len(new)} new answers", file=sys.stderr)
+
+    answers = current_answers(done + new, name, samples, params, deliberate)[0]
+    short = short_cells(answers, samples, lp)
+    if short:
+        raise CommandError(
+            "no verdict, some cells are short of answers (rerun to ask for the rest): "
+            + "; ".join(short)
+        )
+
+    curves = summarize(answers, lp)
+    summary = {
+        "model": name,
+        "samples": samples,
+        "params": params.model_dump(mode="json"),
+        "scenes": {scene: curve.model_dump() for scene, curve in curves.items()},
+    }
+    path = args.out / summary_file(deliberate)
+    try:
+        path.write_text(json.dumps(summary, indent=1) + "\n", encoding="utf-8")
+    except OSError as e:
+        raise _cannot_write(path, e) from None
+    print("\n\n".join(ladder_table(s, answers, curves[s], lp) for s in SCENES))
+    return 0 if all(curve.passed for curve in curves.values()) else 1
+
+
+# --- run, experiment, metrics, replay -----------------------------------------------------------
 
 
 def _select(path: Path, agent: str | None, seed: int | None) -> RunConfig:
@@ -113,7 +311,7 @@ def _select(path: Path, agent: str | None, seed: int | None) -> RunConfig:
 
 
 def _print_metrics(result: RunResult) -> None:
-    print(summarize(result).model_dump_json(indent=2))
+    print(summarize_run(result).model_dump_json(indent=2))
 
 
 def _check_runs_dir(runs_dir: Path) -> None:
@@ -121,13 +319,22 @@ def _check_runs_dir(runs_dir: Path) -> None:
         raise RunError(f"{runs_dir}: --runs-dir is not a directory")
 
 
-async def _run(args: argparse.Namespace) -> None:
+def _run(args: argparse.Namespace) -> int:
     config = _select(args.config, args.agent, args.seed)
     _check_runs_dir(args.runs_dir)
     run_dir = args.runs_dir / config.run_id
-    result = await run(config, run_dir, resume=args.resume)
+    try:
+        result = asyncio.run(run(config, run_dir, resume=args.resume))
+    except (ConfigError, CommandError, RunError):
+        raise
+    except Exception as e:  # e.g. a model that answers nonsense, or a network error
+        print(
+            f"error: {config.run_id} failed: {_one_line(e)}; rerun with --resume", file=sys.stderr
+        )
+        return 1
     print(f"run directory: {run_dir}", file=sys.stderr)
     _print_metrics(result)
+    return 0
 
 
 class ExperimentFailed(RuntimeError):
@@ -161,10 +368,9 @@ async def _plan(configs: list[RunConfig], runs_dir: Path) -> list[_Planned]:
     """Every run with its model resolved and its existing directory read, checked before any run.
 
     Raises ConfigError or RunError, before any run starts, for an LLM backend without a model, a
-    model that cannot be loaded (unknown provider, missing API key), or a run directory whose
-    stored config differs. A complete run is only loaded, so it needs no model: when none is set,
-    the model stored in its config.json stands in, and regenerating the tables of a finished LLM
-    experiment works without the model's environment variable.
+    model that cannot be loaded, or a run directory whose stored config differs. A complete run
+    is only loaded, so it needs no model: when none is set, the model stored in its config.json
+    stands in.
     """
     planned = []
     for config in configs:
@@ -203,20 +409,20 @@ async def _one(planned: _Planned, runs_dir: Path) -> tuple[RunResult, str]:
     return await run(config, run_dir), "done"
 
 
-async def _experiment(args: argparse.Namespace) -> None:
-    experiment = load_config(args.config)
-    _check_runs_dir(args.runs_dir)
-    plan = await _plan(experiment.runs(), args.runs_dir)
-    configs = [p.config for p in plan]
-    gate = asyncio.Semaphore(args.jobs)
+async def _run_experiment(
+    configs: list[RunConfig], runs_dir: Path, jobs: int
+) -> tuple[list[_Planned], list[RunResult | BaseException]]:
+    """Plan every run, then run them in this event loop, at most `jobs` at a time. Each outcome is
+    a RunResult or the exception that ended the run."""
+    plan = await _plan(configs, runs_dir)
+    gate = asyncio.Semaphore(jobs)
     finished = 0
 
     async def one(planned: _Planned) -> RunResult | BaseException:
         nonlocal finished
-        config = planned.config
         async with gate:
             try:
-                result, what = await _one(planned, args.runs_dir)
+                result, what = await _one(planned, runs_dir)
             except Exception as e:
                 outcome: RunResult | BaseException = e
                 what = "failed"
@@ -224,39 +430,69 @@ async def _experiment(args: argparse.Namespace) -> None:
                 outcome = result
                 what += f", {len(result.records)} ticks"
         finished += 1
-        print(f"[{finished}/{len(configs)}] {config.run_id}: {what}", file=sys.stderr)
+        print(f"[{finished}/{len(plan)}] {planned.config.run_id}: {what}", file=sys.stderr)
         return outcome
 
-    outcomes = await asyncio.gather(*(one(p) for p in plan))
+    return plan, list(await asyncio.gather(*(one(p) for p in plan)))
+
+
+def _experiment(args: argparse.Namespace) -> int:
+    experiment = load_config(args.config)
+    _check_runs_dir(args.runs_dir)
+    plan, outcomes = asyncio.run(_run_experiment(experiment.runs(), args.runs_dir, args.jobs))
     failed = [
-        f"{c.run_id} failed: {_one_line(o)}"
-        for c, o in zip(configs, outcomes, strict=True)
+        f"{p.config.run_id} failed: {_one_line(o)}"
+        for p, o in zip(plan, outcomes, strict=True)
         if isinstance(o, BaseException)
     ]
     out_dir = args.runs_dir / experiment.name
     if failed:
         # tables from an earlier invocation would no longer match the run directories
-        for name in TABLE_FILES:
-            (out_dir / name).unlink(missing_ok=True)
-        raise ExperimentFailed(failed, len(configs))
+        if out_dir.is_dir():
+            _write_tables(out_dir, {})
+        raise ExperimentFailed(failed, len(plan))
 
     results = [o for o in outcomes if isinstance(o, RunResult)]
-    out_dir.mkdir(parents=True, exist_ok=True)
-    for name, text in experiment_tables(results).items():
-        write_atomic(out_dir / name, text)
+    _write_tables(out_dir, experiment_tables(results), create=True)
     print(f"tables: {out_dir}", file=sys.stderr)
+    return 0
 
 
-async def _metrics(args: argparse.Namespace) -> None:
+def _write_tables(out_dir: Path, tables: dict[str, str], *, create: bool = False) -> None:
+    """Write `tables` into `out_dir` atomically and remove every other table an earlier
+    invocation may have left there (e.g. a stability.csv from a run with more seeds)."""
+    try:
+        if create:
+            out_dir.mkdir(parents=True, exist_ok=True)
+        for name in TABLE_FILES:
+            if name in tables:
+                write_atomic(out_dir / name, tables[name])
+            else:
+                (out_dir / name).unlink(missing_ok=True)
+    except OSError as e:
+        raise _cannot_write(out_dir, e) from None
+
+
+def _metrics(args: argparse.Namespace) -> int:
     _print_metrics(load_result(args.run_dir))
+    return 0
 
 
-async def _replay(args: argparse.Namespace) -> None:
-    ticks = await replay(args.run_dir)
+def _replay(args: argparse.Namespace) -> int:
+    ticks = asyncio.run(replay(args.run_dir))
     print(f"replay of {args.run_dir}: {ticks} ticks verified")
+    return 0
 
 
-_COMMANDS = {"run": _run, "experiment": _experiment, "metrics": _metrics, "replay": _replay}
+_COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
+    "run": _run,
+    "experiment": _experiment,
+    "metrics": _metrics,
+    "replay": _replay,
+    "lens-page": _lens_page,
+    "scene": _scene,
+    "ladder-check": _ladder_check,
+}
 
 
 def _error(e: Exception) -> None:
@@ -271,7 +507,7 @@ def main(argv: list[str] | None = None) -> int:
     # is its documented switch for programs; PYDANTIC_AI_NO_BANNER is the environment equivalent).
     pydantic_ai.BANNER_ENABLED = False
     try:
-        asyncio.run(_COMMANDS[args.command](args))
+        return _COMMANDS[args.command](args)
     except ReplayMismatch as e:
         _error(e)
         return 1
@@ -280,7 +516,6 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {line}", file=sys.stderr)
         print(f"{e}; no tables written; rerun the same command to resume them", file=sys.stderr)
         return 1
-    except (ConfigError, RunError) as e:
+    except (ConfigError, CommandError, RunError) as e:
         _error(e)
         return 2
-    return 0

@@ -1,146 +1,60 @@
-"""Helpers shared by the tests of the LLM-backed phases (TestModel / FunctionModel only)."""
+"""Helpers shared by the tests of the model-backed phases (TestModel / FunctionModel only)."""
 
 import json
+import re
+from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from pydantic_ai import ModelResponse, ToolCallPart
 from pydantic_ai.messages import ModelMessage, ModelRequest, ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from surprise_loop.config import (
-    AgentSpec,
-    Backends,
-    LLMParams,
-    Params,
-    RunConfig,
-    Runtime,
-    initial_agent_state,
-)
-from surprise_loop.state import (
-    Appraisal,
-    Conflict,
-    Episode,
-    GoalName,
-    Memory,
-    Mood,
-    Percept,
-    Prediction,
-    PredictionError,
-    Traits,
-    Workspace,
-)
-from surprise_loop.world import (
-    Action,
-    Event,
-    Observation,
-    PhaseKind,
-    PhaseSpec,
-    SelfAdminWorld,
-    WorldConfig,
-)
+from surprise_loop.config import Backends, LLMParams, RunConfig, Runtime, load_config
+from surprise_loop.phrases import APPRAISE_INSTRUCTION, DELIBERATE_INSTRUCTION, OFFER_PHRASES
+from surprise_loop.world import Action, ClearingWorld
 
-HIDDEN = ["phase_kind", "ratio_required", "active_press", "ratio_completed", "active_lever"]
-HIDDEN += [kind.value for kind in PhaseKind] + ["step"]
+ROOT = Path(__file__).resolve().parents[1]
+AFTERNOON_LLM = ROOT / "experiments" / "clearing_afternoon_llm.yaml"
 
-TRAITS = Traits(reward_sensitivity=1.37, surprise_learning_rate=0.41, mood_inertia=0.63)
-PRIORITIES = {GoalName.SEEK_REWARD: 1.23, GoalName.EXPLORE: 0.47, GoalName.CONSERVE: 0.58}
+# What no text a model reads may hold: a digit, an identifier-like token, or a word that frames
+# the clearing as anything but a place.
+MACHINE_LIKE = re.compile(r"[0-9_]")
+FORBIDDEN = re.compile(r"\b(game|simulation|experiment)", re.IGNORECASE)
+
+APPRAISAL = {"reading": "The sun is too much for me.", "about": "heat"}
+DECISION = {
+    "letter": "A",
+    "heat": "much cooler",
+    "thirst": "about the same",
+    "tiredness": "a bit more tired",
+    "expect": "yes",
+    "sure": "fairly sure",
+    "why": "The shade is close.",
+}
 
 
-def make_config(
+def afternoon(
+    agent: int = 0,
     *,
     backends: Backends | None = None,
     model: str | None = "test",
-    llm: LLMParams | None = None,
     ticks: int | None = 20,
-    run_id: str = "llm-deliberate",
+    llm: LLMParams | None = None,
 ) -> RunConfig:
-    schedule = [
-        PhaseSpec(kind=PhaseKind.FIXED_RATIO, steps=10, ratio=1),
-        PhaseSpec(kind=PhaseKind.PROGRESSIVE_RATIO, steps=10, pr_start=1, pr_increment=1),
-        PhaseSpec(kind=PhaseKind.EXTINCTION, steps=20),
-    ]
-    return RunConfig(
-        run_id=run_id,
-        seed=5,
-        ticks=ticks,
-        world=WorldConfig(active_lever="random", reward_magnitude=1.0, schedule=schedule),
-        agent=AgentSpec(name="a", traits=TRAITS, goal_priorities=PRIORITIES),
-        params=Params(llm=llm or LLMParams()),
-        backends=backends or Backends(deliberate="llm"),
-        model=model,
-    )
-
-
-def episode(tick: int, action: Action, event: Event, reward: float, critique: str) -> Episode:
-    return Episode(
-        tick=tick,
-        step=tick,
-        action=action,
-        prediction=Prediction(expected_event=Event.REWARD, expected_reward=0.9, confidence=0.35),
-        event=event,
-        reward=reward,
-        prediction_error=PredictionError(
-            raw_signed=reward - 0.9, signed=-0.53, unsigned=0.74, event_mismatch=True
-        ),
-        alignment=-0.27,
-        critique=critique,
-        salience=0.84 if reward == 0 else 0.19,
-    )
-
-
-def make_ws(config: RunConfig, *, conflict: bool = False) -> Workspace:
-    recalled = [
-        episode(5, Action.PRESS_A, Event.REWARD, 1.0, "good, that served seek_reward"),
-        episode(6, Action.PRESS_B, Event.NO_REWARD, 0.0, "wasted effort on lever B"),
-    ]
-    agent = initial_agent_state(config)
-    agent = agent.model_copy(
-        update={
-            "mood": Mood(valence=-0.31, arousal=0.72),
-            "dispositions": agent.dispositions.model_copy(
-                update={
-                    "biases": {
-                        Action.PRESS_A: 0.44,
-                        Action.PRESS_B: -0.12,
-                        Action.EXPLORE: 0.06,
-                        Action.REST: -0.09,
-                    }
-                }
-            ),
-            "memory": Memory(episodes=recalled),
-            "tick": 7,
-        }
-    )
-    observation = Observation(step=8, last_action=Action.PRESS_B, event=Event.NO_REWARD, reward=0)
-    return Workspace(
-        agent=agent,
-        observation=observation,
-        percept=Percept(
-            event=Event.NO_REWARD, reward=0.0, last_action=Action.PRESS_B, recalled=recalled
-        ),
-        appraisal=Appraisal(valence=-0.42, arousal=0.66, note="disappointed by lever B"),
-        conflict=(
-            Conflict(kind="habit_vs_goal", action=Action.PRESS_A, detail="habit detail xyz")
-            if conflict
-            else None
-        ),
-    )
+    """A run of the model afternoon (0 is ilo, 1 is tavi)."""
+    config = load_config(AFTERNOON_LLM).runs()[agent]
+    update: dict[str, Any] = {"model": model, "ticks": ticks}
+    if backends is not None:
+        update["backends"] = backends
+    if llm is not None:
+        update["params"] = config.params.model_copy(update={"llm": llm})
+    return config.model_copy(update=update)
 
 
 def runtime(config: RunConfig, model: object) -> Runtime:
-    return Runtime(config=config, world=SelfAdminWorld(config.world, config.seed), model=model)
-
-
-def respond(*outputs: dict[str, Any]) -> tuple[FunctionModel, list[list[ModelMessage]]]:
-    """A FunctionModel answering with `outputs` in turn (the last one repeats); records calls."""
-    calls: list[list[ModelMessage]] = []
-
-    def function(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        calls.append(list(messages))
-        args = outputs[min(len(calls), len(outputs)) - 1]
-        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, args)])
-
-    return FunctionModel(function), calls
+    world = ClearingWorld(config.world, config.seed, config.agent.body, config.start_place)
+    return Runtime(config=config, world=world, model=model)
 
 
 def user_prompt(messages: list[ModelMessage]) -> str:
@@ -160,14 +74,65 @@ def retry_feedback(messages: list[ModelMessage]) -> str:
     return json.dumps([str(p.content) for p in returns])
 
 
-def assert_no_hidden(text: str) -> None:
-    """`text` names none of the world's hidden fields, phase kinds or its step counter."""
-    for hidden in HIDDEN:
-        assert hidden not in text.lower(), f"{hidden!r} leaked into: {text[:200]}"
+def offered_letters(prompt: str) -> dict[str, Action]:
+    """The lettered offers of a Deliberate prompt, letter to action, read back from its phrases."""
+    by_phrase: dict[str, set[Action]] = {}
+    for (_, action), phrase in OFFER_PHRASES.items():
+        by_phrase.setdefault(phrase, set()).add(action)
+    out: dict[str, Action] = {}
+    for line in prompt.split("\n"):
+        letter, sep, text = line.partition(". ")
+        if sep and len(letter) == 1 and letter in "ABCDE" and text in by_phrase:
+            [action] = by_phrase[text]
+            out[letter] = action
+    return out
+
+
+Answer = Callable[[str], dict[str, Any]]
+
+
+class Recorder:
+    """A FunctionModel for both agents: Appraise answers `appraisal`, Deliberate answers what
+    `decide(prompt)` returns. Every call is kept as (agent, instructions, user prompt)."""
+
+    def __init__(
+        self, decide: Answer | None = None, appraisal: dict[str, Any] | None = None
+    ) -> None:
+        self.calls: list[tuple[str, str, str]] = []
+        self.decide = decide or (lambda prompt: DECISION)
+        self.appraisal = appraisal or APPRAISAL
+        self.model = FunctionModel(self._answer)
+
+    def _answer(self, messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        prompt = user_prompt(messages)
+        instructions = info.instructions or ""
+        if instructions == APPRAISE_INSTRUCTION:
+            name, args = "appraise", self.appraisal
+        elif instructions == DELIBERATE_INSTRUCTION:
+            name, args = "deliberate", self.decide(prompt)
+        else:
+            raise AssertionError(f"unknown agent with instructions {instructions!r}")
+        self.calls.append((name, instructions, prompt))
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, args)])
+
+    def prompts(self, name: str) -> list[str]:
+        return [p for n, _, p in self.calls if n == name]
+
+
+def prefer(*actions: Action) -> Answer:
+    """A Deliberate answer choosing the first of `actions` on offer (else the first letter),
+    expecting to feel much cooler: whatever it does, the heat comes out worse than expected."""
+
+    def decide(prompt: str) -> dict[str, Any]:
+        offered = offered_letters(prompt)
+        letter = next((ltr for a in actions for ltr, b in offered.items() if a is b), min(offered))
+        return {**DECISION, "letter": letter}
+
+    return decide
 
 
 def failing_model() -> FunctionModel:
-    """A model that fails on any call: proves that replay makes none."""
+    """A model that fails on any call: proves that a replay makes none."""
 
     def boom(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         raise AssertionError("replay must not call the model")

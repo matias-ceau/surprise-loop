@@ -1,7 +1,7 @@
 # Lived Twice: one clearing, two bodies
 
-Design for the redirect of surprise-loop. Status: **draft, waiting for the owner's approval**.
-Nothing in this document is built yet.
+Design for the redirect of surprise-loop. Status: **approved by the owner on 2026-11-17**.
+The build plan is `docs/superpowers/plans/2026-11-17-lived-twice.md`.
 
 Terms used throughout:
 
@@ -629,8 +629,13 @@ birdsong.
 
 **Tavi is told:**
 > You are standing in the middle of the forest clearing. The air is pleasantly warm. The sun sits
-> on your shoulders. It looks dim under the oak. Birds are calling. A stream runs somewhere to the
+> on your shoulders. It looks chilly under the oak. Birds are calling. A stream runs somewhere to the
 > west. A light breeze moves the leaves.
+
+*Changed on 2026-11-18.* This text first read "It looks dim under the oak." The ladder check
+run through the full Deliberate prompt showed that the model took "dim" as an invitation: a
+cool body walked to the shade more often than a neutral one. The sentence now says "chilly".
+The README gives both runs.
 
 Air, sun and oak appear in both with opposite value, from one formula. "No place to sit" exists
 only for Ilo; the birds exist only for Tavi. Ilo's thirst goes unspoken, crowded out by heat and
@@ -762,7 +767,7 @@ Phrases used by the two texts (fact, sign, grade):
     oak      +3   The one dark patch is under the oak, a few steps off.
     air      +1   The air is pleasantly warm.
     sun      +1   The sun sits on your shoulders.
-    oak      -1   It looks dim under the oak.
+    oak      -1   It looks chilly under the oak.
     birdsong  0   Birds are calling.
     stream    0   A stream runs somewhere to the west.
     breeze    0   A light breeze moves the leaves.
@@ -848,7 +853,7 @@ the table has no phrases yet for the oak's log, the trickle, or the hours of the
     oak, good      There is shade under the oak. / The oak's shade is close. / The one dark patch
                    is under the oak, a few steps off. / Under the oak it is dark; nothing else
                    matters.
-    oak, bad       It looks dim under the oak. / Under the oak it looks cold. (grades 2 to 4)
+    oak, bad       It looks chilly under the oak. / Under the oak it looks cold. (grades 2 to 4)
     oak, neutral   An oak stands a few steps off.
     stream, good   A stream runs somewhere to the west. / You can hear water to the west. /
                    Water. You can hear it, west of here. / Water. West. You can hear it.

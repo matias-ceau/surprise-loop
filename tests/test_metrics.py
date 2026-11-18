@@ -1,635 +1,393 @@
+"""The measures of a run: hand-built pass lists, a real stub afternoon, a body collapsed all day,
+`opposite_value_steps` and `icc1`."""
+
 import asyncio
 import math
+from pathlib import Path
 
 import pytest
 
-from surprise_loop.config import (
-    AgentSpec,
-    Backends,
-    ConflictParams,
-    MetricsParams,
-    Params,
-    RunConfig,
-    initial_agent_state,
-)
+from surprise_loop.config import MetricsParams, RunConfig, load_config
 from surprise_loop.loop import RunResult, run
-from surprise_loop.metrics import (
-    Censored,
-    PEPoint,
-    PhaseMetrics,
-    RunMetrics,
-    breakpoint,
-    extinction_persistence,
-    flatten,
-    icc1,
-    pe_trace,
-    phase_table,
-    response_rate,
-    summarize,
-)
-from surprise_loop.state import (
-    Appraisal,
-    Decision,
-    Feedback,
-    GoalName,
-    Mood,
-    PassRecord,
-    Prediction,
-    PredictionError,
-    TickRecord,
-    Traits,
-)
-from surprise_loop.world import (
-    Action,
-    Event,
-    Observation,
-    Outcome,
-    PhaseKind,
-    PhaseSpec,
-    SelfAdminWorld,
-    StepInfo,
-    WorldConfig,
-)
+from surprise_loop.metrics import RunMetrics, flatten, icc1, opposite_value_steps, summarize
+from surprise_loop.state import Comparison, FeltFact, Override, PassRecord, TickRecord
+from surprise_loop.world import Action, BodyState, Channel, FactName, Levels
 
-FR, PR, EXT = PhaseKind.FIXED_RATIO, PhaseKind.PROGRESSIVE_RATIO, PhaseKind.EXTINCTION
-ACTIVE, INACTIVE = Action.PRESS_A, Action.PRESS_B
+ROOT = Path(__file__).resolve().parents[1]
+AFTERNOON = ROOT / "experiments" / "clearing_afternoon.yaml"
+DAY = ROOT / "experiments" / "clearing_day.yaml"
 
-# --- helpers ------------------------------------------------------------------------------------
+ZERO_FELT = {c: 0.0 for c in Channel}
+
+
+def runs_of(path: Path) -> list[RunConfig]:
+    return load_config(path).runs()
+
+
+@pytest.fixture(scope="module")
+def ilo_afternoon() -> RunResult:
+    return asyncio.run(run(runs_of(AFTERNOON)[0]))
+
+
+@pytest.fixture(scope="module")
+def tavi_afternoon() -> RunResult:
+    return asyncio.run(run(runs_of(AFTERNOON)[1]))
+
+
+# --- hand-built pass lists ------------------------------------------------------------------
+
+
+def comparison(
+    heat: float = 0.0,
+    water: float = 0.0,
+    energy: float = 0.0,
+    *,
+    world: bool | None = None,
+    size: float = 0.0,
+) -> Comparison:
+    body = {Channel.HEAT: heat, Channel.WATER: water, Channel.ENERGY: energy}
+    return Comparison(body=body, body_felt=dict(body), world=world, better=0.0, size=size)
 
 
 def make_pass(
-    step: int,
-    phase_index: int,
-    phase_kind: PhaseKind,
-    action: Action = Action.REST,
+    base: PassRecord,
     *,
-    completed: int | None = None,
-    pe: float = 0.0,
-    tick: int | None = None,
-    pass_index: int = 0,
+    action: Action,
+    body: tuple[float, float, float],
+    comparison: Comparison,
+    arousal: float,
+    collapsed: bool = False,
+    stumbled: bool = False,
+    override: Override | None = None,
 ) -> PassRecord:
-    """One pass with the lever A active: pressing A is an active press, B an inactive one.
-
-    `completed` marks a reinforced press that completed a ratio of that size.
-    """
-    active = action == ACTIVE
-    reinforced = completed is not None
-    if reinforced:
-        assert active, "only an active press can be reinforced"
-        event, reward = Event.REWARD, 1.0
-    else:
-        event = {
-            Action.PRESS_A: Event.NO_REWARD,
-            Action.PRESS_B: Event.NO_REWARD,
-            Action.EXPLORE: Event.EXPLORED,
-            Action.REST: Event.RESTED,
-        }[action]
-        reward = 0.0
-    prediction = Prediction(expected_event=Event.NO_REWARD, expected_reward=0.0, confidence=0.5)
-    return PassRecord(
-        tick=step if tick is None else tick,
-        pass_index=pass_index,
-        decision=Decision(action=action, prediction=prediction),
-        outcome=Outcome(
-            observation=Observation(step=step, last_action=action, event=event, reward=reward),
-            info=StepInfo(
-                step=step,
-                phase_index=phase_index,
-                phase_kind=phase_kind,
-                ratio_required=None if phase_kind == EXT else (completed or 1),
-                active_press=active,
-                ratio_completed=completed,
-            ),
-        ),
-        prediction_error=PredictionError(
-            raw_signed=pe, signed=pe / 2, unsigned=abs(pe) / 2, event_mismatch=False
-        ),
-        feedback=Feedback(alignment=0.0),
-        goal_revised=None,
-        conflict=None,
+    """`base` with the fields the metrics read replaced. Its scene feels nothing, so the
+    reactive rule on it chooses LOOK (offered at every place)."""
+    heat, water, energy = body
+    info = base.outcome.info.model_copy(
+        update={
+            "body": BodyState(heat=heat, water=water, energy=energy),
+            "collapsed": collapsed,
+            "stumbled": stumbled,
+        }
+    )
+    assert Action.LOOK in base.offers
+    return base.model_copy(
+        update={
+            "scene": base.scene.model_copy(update={"felt": ZERO_FELT}),
+            "decision": base.decision.model_copy(update={"action": action}),
+            "outcome": base.outcome.model_copy(update={"info": info}),
+            "comparison": comparison,
+            "feeling_after": base.feeling_after.model_copy(update={"arousal": arousal}),
+            "override": override,
+        }
     )
 
 
-_CODES = {"a": ACTIVE, "i": INACTIVE, ".": Action.REST, "e": Action.EXPLORE}
-
-
-def passes(*phases: tuple[PhaseKind, str]) -> list[PassRecord]:
-    """Consecutive phases, one pass per tick, steps numbered from 1.
-
-    Each phase is (kind, pattern); per step: `a` active press, `i` inactive press, `.` rest,
-    `e` explore, a digit d a reinforced active press completing a ratio of d.
-    """
-    out: list[PassRecord] = []
-    for phase_index, (kind, pattern) in enumerate(phases):
-        for code in pattern:
-            step = len(out) + 1
-            if code.isdigit():
-                out.append(make_pass(step, phase_index, kind, ACTIVE, completed=int(code)))
-            else:
-                out.append(make_pass(step, phase_index, kind, _CODES[code]))
-    return out
-
-
-# --- flatten ------------------------------------------------------------------------------------
-
-
-def _record(tick: int, *ps: PassRecord) -> TickRecord:
-    return TickRecord(
-        tick=tick,
-        observation=Observation(step=0, last_action=None, event=Event.START, reward=0.0),
-        appraisal=Appraisal(valence=0.0, arousal=0.0),
-        passes=list(ps),
-    )
-
-
-def test_flatten_orders_passes_by_tick_then_pass() -> None:
-    p1 = make_pass(1, 0, FR, tick=1)
-    p2 = make_pass(2, 0, FR, tick=2, pass_index=0)
-    p3 = make_pass(3, 0, FR, tick=2, pass_index=1)
-    p4 = make_pass(4, 0, FR, tick=3)
-    records = [_record(1, p1), _record(2, p2, p3), _record(3, p4)]
-    assert flatten(records) == [p1, p2, p3, p4]
-    assert flatten([]) == []
-
-
-# --- phase_table and response_rate --------------------------------------------------------------
-
-
-def test_phase_table_keeps_two_fr_phases_separate() -> None:
-    ps = passes((FR, "a1.."), (FR, "iaa2aa"), (PR, "e."))
-    ps[0] = make_pass(1, 0, FR, ACTIVE, pe=-0.4)
-    ps[1] = make_pass(2, 0, FR, ACTIVE, completed=1, pe=0.8)
-    ps[4] = make_pass(5, 1, FR, INACTIVE, pe=0.6)
-    rows = [row.model_dump() for row in phase_table(ps)]
-    assert rows == [
-        {
-            "phase_index": 0,
-            "phase_kind": FR,
-            "steps": 4,
-            "active_presses": 2,
-            "response_rate": 0.5,
-            "rewards": 1,
-            "mean_abs_pe": pytest.approx(0.3),
-        },
-        {
-            "phase_index": 1,
-            "phase_kind": FR,
-            "steps": 6,
-            "active_presses": 5,
-            "response_rate": pytest.approx(5 / 6),
-            "rewards": 1,
-            "mean_abs_pe": pytest.approx(0.1),
-        },
-        {
-            "phase_index": 2,
-            "phase_kind": PR,
-            "steps": 2,
-            "active_presses": 0,
-            "response_rate": 0.0,
-            "rewards": 0,
-            "mean_abs_pe": 0.0,
-        },
-    ]
-
-
-def test_phase_table_has_no_row_for_unreached_phases() -> None:
-    ps = passes((FR, "aa"))
-    assert [row.phase_index for row in phase_table(ps)] == [0]
-    assert phase_table([]) == []
-
-
-@pytest.mark.parametrize(
-    ("phase_index", "expected"),
-    [(None, 6 / 10), (0, 2 / 4), (1, 4 / 6), (2, 0.0)],
-)
-def test_response_rate_per_phase_and_overall(phase_index: int | None, expected: float) -> None:
-    ps = passes((FR, "a1i."), (FR, "aai2ae"))
-    assert response_rate(ps, phase_index) == pytest.approx(expected)
-
-
-def test_response_rate_is_zero_without_steps() -> None:
-    assert response_rate([]) == 0.0
-    assert response_rate([], 0) == 0.0
-
-
-# --- breakpoint and extinction persistence ------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("pr_pattern", "quit_steps", "expected"),
-    [
-        # last completion before a run of quit_steps non-press steps; later completions ignored
-        ("1a2a3...a4", 3, Censored(value=3, censored=False)),
-        # exactly quit_steps non-press steps: the criterion is met
-        ("12...", 3, Censored(value=2, censored=False)),
-        # quit_steps - 1 non-press steps: not met; the phase ends first
-        ("12..a3..", 3, Censored(value=3, censored=True)),
-        # a quit run cut short by the end of the phase
-        ("12a..", 3, Censored(value=2, censored=True)),
-        # active presses (unreinforced) reset the run; inactive presses do not
-        ("1.i.a3i.i.5", 4, Censored(value=3, censored=False)),
-        # no completion before quitting
-        ("aa....1", 4, Censored(value=0, censored=False)),
-        # the quit run starts at the first step
-        ("...12", 3, Censored(value=0, censored=False)),
-    ],
-)
-def test_breakpoint(pr_pattern: str, quit_steps: int, expected: Censored) -> None:
-    ps = passes((FR, "a1"), (PR, pr_pattern), (EXT, "...."))
-    assert breakpoint(ps, quit_steps) == expected
-
-
-def test_breakpoint_quit_run_does_not_straddle_a_phase_boundary() -> None:
-    # Two non-press steps end FR and two begin PR: four in a row, but only two inside PR.
-    ps = passes((FR, "1a.."), (PR, "..12..a"), (EXT, ".."))
-    assert breakpoint(ps, 3) == Censored(value=2, censored=True)
-    # And the PR phase's trailing non-presses do not run on into extinction.
-    ps = passes((FR, "1"), (PR, "12.."), (EXT, "...."))
-    assert breakpoint(ps, 3) == Censored(value=2, censored=True)
-
-
-def test_breakpoint_uses_the_first_pr_phase() -> None:
-    ps = passes((PR, "12..."), (PR, "123456"))
-    assert breakpoint(ps, 3) == Censored(value=2, censored=False)
-
-
-@pytest.mark.parametrize(
-    ("ext_pattern", "quit_steps", "expected"),
-    [
-        ("aaa.a...aa", 3, Censored(value=4, censored=False)),  # later presses ignored
-        ("aa...", 3, Censored(value=2, censored=False)),  # exactly quit_steps
-        ("aa..a..", 3, Censored(value=3, censored=True)),  # quit_steps - 1: not met
-        ("a..", 3, Censored(value=1, censored=True)),  # cut short by the phase end
-        ("aia.i...", 3, Censored(value=2, censored=False)),  # inactive presses do not count
-        ("...aaa", 3, Censored(value=0, censored=False)),
-    ],
-)
-def test_extinction_persistence(ext_pattern: str, quit_steps: int, expected: Censored) -> None:
-    ps = passes((FR, "a1"), (EXT, ext_pattern), (FR, "...."))
-    assert extinction_persistence(ps, quit_steps) == expected
-
-
-def test_extinction_quit_run_does_not_straddle_a_phase_boundary() -> None:
-    ps = passes((PR, "1a.."), (EXT, ".aa..a"), (FR, "...."))
-    assert extinction_persistence(ps, 3) == Censored(value=3, censored=True)
-
-
-def test_extinction_uses_the_first_extinction_phase() -> None:
-    ps = passes((EXT, "aa..."), (EXT, "aaaaa"))
-    assert extinction_persistence(ps, 3) == Censored(value=2, censored=False)
-
-
-def test_extinction_cut_short_by_the_end_of_the_run() -> None:
-    ps = passes((FR, "1"), (EXT, "aaa.."))
-    assert extinction_persistence(ps, 3) == Censored(value=3, censored=True)
-
-
-def test_agent_that_never_presses() -> None:
-    ps = passes((FR, "....."), (PR, "e.e.e."), (EXT, "....."))
-    assert response_rate(ps) == 0.0
-    assert all(row.response_rate == 0.0 for row in phase_table(ps))
-    assert breakpoint(ps, 3) == Censored(value=0, censored=False)
-    assert extinction_persistence(ps, 3) == Censored(value=0, censored=False)
-
-
-@pytest.mark.parametrize(
-    "ps",
-    [
-        passes((FR, "a1aa1")),
-        passes((FR, "a1"), (FR, "a1")),
-        [],
-    ],
-)
-def test_missing_pr_or_extinction_phase_is_censored_zero(ps: list[PassRecord]) -> None:
-    assert breakpoint(ps, 3) == Censored(value=0, censored=True)
-    assert extinction_persistence(ps, 3) == Censored(value=0, censored=True)
-
-
-def test_missing_only_one_of_the_phases() -> None:
-    ps = passes((FR, "1"), (EXT, "a...."))
-    assert breakpoint(ps, 3) == Censored(value=0, censored=True)
-    assert extinction_persistence(ps, 3) == Censored(value=1, censored=False)
-    ps = passes((FR, "1"), (PR, "1...."))
-    assert breakpoint(ps, 3) == Censored(value=1, censored=False)
-    assert extinction_persistence(ps, 3) == Censored(value=0, censored=True)
-
-
-@pytest.mark.parametrize("quit_steps", [0, -1])
-def test_quit_steps_must_be_positive(quit_steps: int) -> None:
-    ps = passes((PR, "1.."), (EXT, "a.."))
-    with pytest.raises(ValueError, match="quit_steps"):
-        breakpoint(ps, quit_steps)
-    with pytest.raises(ValueError, match="quit_steps"):
-        extinction_persistence(ps, quit_steps)
-
-
-def test_metric_functions_do_not_mutate_their_input() -> None:
-    ps = passes((FR, "a1."), (PR, "12..."), (EXT, "a..."))
-    before = list(ps)
-    phase_table(ps)
-    response_rate(ps)
-    breakpoint(ps, 2)
-    extinction_persistence(ps, 2)
-    pe_trace(ps)
-    assert ps == before
-
-
-# --- pe_trace -----------------------------------------------------------------------------------
-
-
-def test_pe_trace_has_one_point_per_pass_in_step_order() -> None:
-    ps = [
-        make_pass(1, 0, FR, ACTIVE, pe=0.5, tick=1),
-        make_pass(2, 0, FR, ACTIVE, completed=2, pe=-0.25, tick=2, pass_index=0),
-        make_pass(3, 1, PR, INACTIVE, pe=1.0, tick=2, pass_index=1),
-        make_pass(4, 2, EXT, Action.REST, pe=-1.5, tick=3),
-    ]
-    assert pe_trace(ps) == [
-        PEPoint(
-            step=1,
-            tick=1,
-            pass_index=0,
-            phase_index=0,
-            phase_kind=FR,
-            action=ACTIVE,
-            active_press=True,
-            raw_signed=0.5,
-            signed=0.25,
-            unsigned=0.25,
-        ),
-        PEPoint(
-            step=2,
-            tick=2,
-            pass_index=0,
-            phase_index=0,
-            phase_kind=FR,
-            action=ACTIVE,
-            active_press=True,
-            raw_signed=-0.25,
-            signed=-0.125,
-            unsigned=0.125,
-        ),
-        PEPoint(
-            step=3,
-            tick=2,
-            pass_index=1,
-            phase_index=1,
-            phase_kind=PR,
-            action=INACTIVE,
-            active_press=False,
-            raw_signed=1.0,
-            signed=0.5,
-            unsigned=0.5,
-        ),
-        PEPoint(
-            step=4,
-            tick=3,
-            pass_index=0,
-            phase_index=2,
-            phase_kind=EXT,
-            action=Action.REST,
-            active_press=False,
-            raw_signed=-1.5,
-            signed=-0.75,
-            unsigned=0.75,
-        ),
-    ]
-    assert pe_trace([]) == []
-
-
-# --- models -------------------------------------------------------------------------------------
-
-
-def test_metric_models_are_frozen_flat_and_strict() -> None:
-    c = Censored(value=1, censored=False)
-    with pytest.raises(ValueError):
-        c.value = 2  # type: ignore[misc]
-    with pytest.raises(ValueError):
-        Censored(value=1, censored=False, extra=1)  # type: ignore[call-arg]
-    with pytest.raises(ValueError):
-        PEPoint(
-            step=1,
-            tick=1,
-            pass_index=0,
-            phase_index=0,
-            phase_kind=FR,
-            action=ACTIVE,
-            active_press=True,
-            raw_signed=math.nan,
-            signed=0.0,
-            unsigned=0.0,
+def with_ticks(base: RunResult, ticks: list[list[PassRecord]], valence: float) -> RunResult:
+    """`base` holding the given passes, one inner list per tick, and a final valence."""
+    template = base.records[0]
+    records = [
+        TickRecord(
+            tick=n,
+            observation=template.observation,
+            appraisal=template.appraisal,
+            passes=[p.model_copy(update={"tick": n, "pass_index": i}) for i, p in enumerate(tick)],
         )
-    for model in (PhaseMetrics, Censored, PEPoint, RunMetrics):
-        for name, field in model.model_fields.items():
-            assert field.annotation in (int, float, bool, PhaseKind, Action), (model, name)
-
-
-# --- summarize ----------------------------------------------------------------------------------
-
-TRAITS = Traits(reward_sensitivity=1.0, surprise_learning_rate=0.3, mood_inertia=0.5)
-PRIORITIES = {GoalName.SEEK_REWARD: 1.0, GoalName.EXPLORE: 0.5, GoalName.CONSERVE: 0.5}
-QUIT_STEPS = 4
-PARAMS = Params(
-    conflict=ConflictParams(enabled=False), metrics=MetricsParams(quit_steps=QUIT_STEPS)
-)
-
-
-def make_config(schedule: list[PhaseSpec], ticks: int | None, seed: int = 5) -> RunConfig:
-    return RunConfig(
-        run_id="metrics-test",
-        seed=seed,
-        ticks=ticks,
-        world=WorldConfig(active_lever="random", reward_magnitude=1.0, schedule=schedule),
-        agent=AgentSpec(
-            name="a", traits=TRAITS, mood=Mood(valence=0.0, arousal=0.0), goal_priorities=PRIORITIES
-        ),
-        params=PARAMS,
-        backends=Backends(),
-        model=None,
-    )
-
-
-SCHEDULES = {
-    # exactly 100 steps: two FR phases, PR, extinction; the run finishes its schedule
-    "complete": [
-        PhaseSpec(kind=FR, steps=15, ratio=1),
-        PhaseSpec(kind=FR, steps=15, ratio=2),
-        PhaseSpec(kind=PR, steps=40, pr_start=1, pr_increment=2),
-        PhaseSpec(kind=EXT, steps=30),
-    ],
-    # 150 steps: 100 ticks stop inside extinction; a trailing FR phase follows the PR phase
-    "truncated": [
-        PhaseSpec(kind=FR, steps=20, ratio=1),
-        PhaseSpec(kind=PR, steps=30, pr_start=1, pr_increment=1),
-        PhaseSpec(kind=FR, steps=10, ratio=1),
-        PhaseSpec(kind=EXT, steps=90),
-    ],
-}
-
-
-def _quit_start(phase_passes: list[PassRecord], quit_steps: int) -> int | None:
-    """Index in `phase_passes` where the first run of `quit_steps` non-press steps starts."""
-    for start in range(len(phase_passes) - quit_steps + 1):
-        window = phase_passes[start : start + quit_steps]
-        if not any(p.outcome.info.active_press for p in window):
-            return start
-    return None
-
-
-# (schedule, seed): seed 3 on "complete" quits inside PR, so the uncensored breakpoint path is
-# hand-checked too (the other runs are censored in PR)
-HAND_CASES = [("complete", 5), ("truncated", 5), ("complete", 3)]
-
-
-@pytest.mark.parametrize(("name", "seed"), HAND_CASES)
-def test_summarize_a_100_tick_stub_run_matches_hand_computation(name: str, seed: int) -> None:
-    config = make_config(SCHEDULES[name], ticks=100, seed=seed)
-    result = asyncio.run(run(config))
-    before = result.model_copy(deep=True)
-    m = summarize(result)
-    assert result == before  # summarize leaves its input as it was
-
-    ps = [p for record in result.records for p in record.passes]
-    kinds = {i: spec.kind for i, spec in enumerate(config.world.schedule)}
-    assert len(result.records) == 100
-
-    first_pr = min(i for i, k in kinds.items() if k == PR)
-    first_ext = min(i for i, k in kinds.items() if k == EXT)
-
-    def rate(selected: list[PassRecord]) -> float:
-        hits = 0
-        for p in selected:
-            if p.outcome.info.active_press:
-                hits += 1
-        return hits / len(selected) if selected else 0.0
-
-    fr_before_pr = [
-        p for p in ps if p.outcome.info.phase_kind == FR and p.outcome.info.phase_index < first_pr
+        for n, tick in enumerate(ticks, start=1)
     ]
-    pr_steps = [p for p in ps if p.outcome.info.phase_kind == PR]
-    ext_steps = [p for p in ps if p.outcome.info.phase_kind == EXT]
-
-    inactive = 0
-    rewards = 0
-    abs_pe = 0.0
-    for p in ps:
-        if (
-            p.decision.action in (Action.PRESS_A, Action.PRESS_B)
-            and not p.outcome.info.active_press
-        ):
-            inactive += 1
-        if p.outcome.observation.event == Event.REWARD:
-            rewards += 1
-        abs_pe += abs(p.prediction_error.raw_signed)
-
-    pr_phase = [p for p in ps if p.outcome.info.phase_index == first_pr]
-    start = _quit_start(pr_phase, QUIT_STEPS)
-    bp = 0
-    for p in pr_phase[: len(pr_phase) if start is None else start]:
-        if p.outcome.info.ratio_completed is not None:
-            bp = p.outcome.info.ratio_completed
-
-    ext_phase = [p for p in ps if p.outcome.info.phase_index == first_ext]
-    start_ext = _quit_start(ext_phase, QUIT_STEPS)
-    persistence = 0
-    for p in ext_phase[: len(ext_phase) if start_ext is None else start_ext]:
-        if p.outcome.info.active_press:
-            persistence += 1
-
-    expected = RunMetrics(
-        steps=len(ps),
-        ticks=100,
-        truncated=name == "truncated",
-        rewards=rewards,
-        response_rate_fr=rate(fr_before_pr),
-        response_rate_pr=rate(pr_steps),
-        response_rate_ext=rate(ext_steps),
-        inactive_rate=inactive / len(ps),
-        breakpoint=bp,
-        breakpoint_censored=start is None,
-        extinction_persistence=persistence,
-        extinction_censored=start_ext is None,
-        mean_abs_pe=abs_pe / len(ps),
-        reentries=sum(1 for r in result.records if len(r.passes) == 2),
-        goal_revisions=result.agent.goals.revisions,
+    feeling = base.agent.feeling.model_copy(update={"valence": valence})
+    return base.model_copy(
+        update={"records": records, "agent": base.agent.model_copy(update={"feeling": feeling})}
     )
-    for field, value in expected.model_dump().items():
-        got = getattr(m, field)
-        if isinstance(value, float):
-            assert got == pytest.approx(value), field
-        else:
-            assert got == value, field
-    # the run exercised the measures
-    assert m.steps == 100 and m.rewards > 0 and m.response_rate_fr > 0
-    if (name, seed) == ("complete", 3):
-        assert m.breakpoint > 0 and not m.breakpoint_censored
 
 
-def test_summarize_counts_reentries_revisions_and_truncation() -> None:
-    schedule = [
-        PhaseSpec(kind=FR, steps=2, ratio=1),
-        PhaseSpec(kind=PR, steps=3, pr_start=1, pr_increment=1),
-        PhaseSpec(kind=EXT, steps=4),
-    ]
-    config = make_config(schedule, ticks=None)
-    ps = passes((FR, "1i"), (PR, "12"))
-    re = [
-        p.model_copy(update={"tick": t, "pass_index": i})
-        for p, (t, i) in zip(ps, [(1, 0), (1, 1), (2, 0), (3, 0)], strict=True)
-    ]
-    records = [_record(1, re[0], re[1]), _record(2, re[2]), _record(3, re[3])]
-    agent = initial_agent_state(config)
-    agent = agent.model_copy(
-        update={"goals": agent.goals.model_copy(update={"revisions": 7}), "tick": 3}
+INJECTED = Override(channel=Channel.WATER, actions=[Action.GO_STREAM], detail="injected")
+
+
+@pytest.fixture(scope="module")
+def hand_built(ilo_afternoon: RunResult) -> RunResult:
+    """Four passes in three ticks (the third tick has two passes), under Ilo's temperament:
+    setpoint heat -0.1, water 0.8, energy 0.7; tightness heat 3, water 6, energy 6.
+    Felt per pass (heat, water, energy):
+      p0 ( 1.2, -0.9, -1.2)   p1 (0.0, 1.2, 1.2)   p2 (0.9, 0.6, -1.8)   p3 (-1.2, -1.2, 3.0)
+    """
+    b = ilo_afternoon.records[0].passes[0]
+    p0 = make_pass(
+        b,
+        action=Action.LOOK,
+        body=(0.3, 0.95, 0.9),
+        comparison=comparison(size=0.5),
+        arousal=0.2,
     )
-    world = (
-        SelfAdminWorld(config.world, config.seed)
-        .snapshot()
-        .model_copy(update={"phase_index": 1, "step": 4})
+    p1 = make_pass(
+        b,
+        action=Action.REST,
+        body=(-0.1, 0.6, 0.5),
+        comparison=comparison(heat=0.1, world=True, size=1.5),
+        arousal=0.4,
+        collapsed=True,
     )
-    m = summarize(RunResult(config=config, records=records, agent=agent, world=world))
-    assert (m.steps, m.ticks, m.reentries, m.goal_revisions) == (4, 3, 1, 7)
-    assert m.truncated is True
-    assert m.rewards == 3
-    assert m.response_rate_fr == 0.5
-    assert m.response_rate_pr == 1.0
-    assert m.response_rate_ext == 0.0
-    assert m.inactive_rate == 0.25
-    assert (m.breakpoint, m.breakpoint_censored) == (2, True)
-    assert (m.extinction_persistence, m.extinction_censored) == (0, True)
+    p2 = make_pass(
+        b,
+        action=Action.LOOK,
+        body=(0.2, 0.7, 1.0),
+        comparison=comparison(water=-0.05, world=False, size=0.0),
+        arousal=0.6,
+        stumbled=True,
+        override=INJECTED,
+    )
+    p3 = make_pass(
+        b,
+        action=Action.GO_OAK,
+        body=(-0.5, 1.0, 0.2),
+        comparison=comparison(water=0.01, energy=0.02, world=False, size=1.0),
+        arousal=0.8,
+    )
+    return with_ticks(ilo_afternoon, [[p0], [p1], [p2, p3]], valence=-0.3)
 
-    done = world.model_copy(update={"phase_index": 3})
+
+def test_flatten_is_tick_order_then_pass_order(hand_built: RunResult) -> None:
+    passes = flatten(hand_built.records)
+    assert [(p.tick, p.pass_index) for p in passes] == [(1, 0), (2, 0), (3, 0), (3, 1)]
+
+
+def test_every_metric_of_a_hand_built_run(hand_built: RunResult) -> None:
+    assert summarize(hand_built) == RunMetrics(
+        steps=4,
+        ticks=3,
+        truncated=False,
+        uncomfortable_heat=2,  # p0 1.2 and p3 -1.2; p2's 0.9 is below 1
+        uncomfortable_water=1,  # p1 1.2; p0's and p3's surpluses do not count
+        uncomfortable_energy=2,  # p1 1.2 and p3 3.0; p0's -1.2 and p2's -1.8 are surpluses
+        collapsed_steps=1,
+        stumbles=1,
+        n_go_meadow=0,
+        n_go_oak=1,
+        n_go_stream=0,
+        n_drink=0,
+        n_rest=1,
+        n_look=2,
+        mean_size=0.75,  # (0.5 + 1.5 + 0 + 1) / 4
+        band_hits_heat=0.75,  # p1 misses
+        band_hits_water=0.5,  # p2 and p3 miss
+        band_hits_energy=0.75,  # p3 misses
+        world_expectations=3,
+        world_held=2,
+        overrides=1,
+        rule_agreement=0.5,  # the rule says LOOK on a scene that feels nothing: p0 and p2
+        final_valence=-0.3,
+        mean_arousal=0.5,  # (0.2 + 0.4 + 0.6 + 0.8) / 4
+    )
+
+
+def test_rule_agreement_leaves_out_passes_with_a_single_offer(hand_built: RunResult) -> None:
+    # one more tick whose only offer is REST: chooser and rule both take it, so it says nothing
+    b = flatten(hand_built.records)[0]
+    one = make_pass(b, action=Action.REST, body=(0.0, 0.8, 0.7), comparison=comparison(),
+                    arousal=0.0).model_copy(update={"offers": [Action.REST]})  # fmt: skip
+    ticks = [record.passes for record in hand_built.records]
+    metrics = summarize(with_ticks(hand_built, [*ticks, [one]], valence=-0.3))
+    assert metrics.steps == 5
+    assert metrics.rule_agreement == 0.5  # still p0 and p2 of the four passes with a choice
+
+
+def test_rule_agreement_is_zero_when_no_pass_had_a_choice(hand_built: RunResult) -> None:
+    b = flatten(hand_built.records)[0]
+    one = make_pass(b, action=Action.LOOK, body=(0.0, 0.8, 0.7), comparison=comparison(),
+                    arousal=0.0).model_copy(update={"offers": [Action.LOOK]})  # fmt: skip
+    assert summarize(with_ticks(hand_built, [[one]], valence=0.0)).rule_agreement == 0.0
+
+
+def test_one_action_count_per_action() -> None:
+    counts = [f for f in RunMetrics.model_fields if f.startswith("n_")]
+    assert counts == [f"n_{a.value}" for a in Action]
+
+
+def test_comfort_counts_at_exactly_comfort_felt(hand_built: RunResult) -> None:
+    # p0's heat felt is 3 * (0.3 + 0.1) = 1.2 (to float precision), p3's is -1.2
+    felt_p0 = 3 * (0.3 + 0.1)
+    params = hand_built.config.params.model_copy(
+        update={"metrics": MetricsParams(comfort_felt=felt_p0)}
+    )
+    config = hand_built.config.model_copy(update={"params": params})
+    assert summarize(hand_built.model_copy(update={"config": config})).uncomfortable_heat >= 1
+    above = params.model_copy(update={"metrics": MetricsParams(comfort_felt=felt_p0 + 0.01)})
+    config = hand_built.config.model_copy(update={"params": above})
+    assert summarize(hand_built.model_copy(update={"config": config})).uncomfortable_heat == 0
+
+
+def test_comfort_follows_the_true_body_not_the_belief_or_the_scene(
+    ilo_afternoon: RunResult,
+) -> None:
+    """Under Ilo's temperament the body (0.3, 0.6, 0.5) feels 1.2 on every channel and the
+    setpoint (-0.1, 0.8, 0.7) feels nothing. Pass 0's true body strains while its belief and its
+    scene feel nothing; pass 1 is the reverse."""
+    b = ilo_afternoon.records[0].passes[0]
+    strained, setpoint = (
+        Levels(heat=0.3, water=0.6, energy=0.5),
+        Levels(heat=-0.1, water=0.8, energy=0.7),
+    )
+    loud = {c: 1.2 for c in Channel}
+    hidden = make_pass(
+        b, action=Action.LOOK, body=(0.3, 0.6, 0.5), comparison=comparison(), arousal=0.2
+    ).model_copy(update={"belief_after": setpoint})
+    imagined = make_pass(
+        b, action=Action.LOOK, body=(-0.1, 0.8, 0.7), comparison=comparison(), arousal=0.2
+    )
+    imagined = imagined.model_copy(
+        update={"belief_after": strained, "scene": imagined.scene.model_copy(update={"felt": loud})}
+    )
+    metrics = summarize(with_ticks(ilo_afternoon, [[hidden], [imagined]], valence=0.0))
     assert (
-        summarize(RunResult(config=config, records=records, agent=agent, world=done)).truncated
-        is False
+        metrics.uncomfortable_heat,
+        metrics.uncomfortable_water,
+        metrics.uncomfortable_energy,
+    ) == (1, 1, 1)
+    only_hidden = summarize(with_ticks(ilo_afternoon, [[hidden]], valence=0.0))
+    assert only_hidden.uncomfortable_heat == only_hidden.uncomfortable_water == 1
+    assert only_hidden.uncomfortable_energy == 1
+    only_imagined = summarize(with_ticks(ilo_afternoon, [[imagined]], valence=0.0))
+    assert only_imagined.uncomfortable_heat == only_imagined.uncomfortable_water == 0
+    assert only_imagined.uncomfortable_energy == 0
+
+
+def test_a_run_with_no_passes_is_all_zeros(ilo_afternoon: RunResult) -> None:
+    empty = ilo_afternoon.model_copy(update={"records": []})
+    metrics = summarize(empty)
+    assert metrics.steps == metrics.ticks == 0
+    assert metrics.mean_size == metrics.mean_arousal == metrics.rule_agreement == 0.0
+    assert metrics.band_hits_heat == metrics.band_hits_water == metrics.band_hits_energy == 0.0
+    assert metrics.final_valence == ilo_afternoon.agent.feeling.valence
+    for name, value in metrics.model_dump().items():
+        if name not in {"truncated", "final_valence"}:
+            assert value == 0, name
+
+
+def test_truncated_when_the_tick_cap_ends_the_run_before_the_world() -> None:
+    capped = runs_of(AFTERNOON)[0].model_copy(update={"ticks": 5})
+    metrics = summarize(asyncio.run(run(capped)))
+    assert metrics.truncated is True
+    assert metrics.ticks == 5
+
+
+# --- a real stub afternoon ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("agent", [0, 1])
+def test_a_stub_afternoon_has_no_world_expectation_and_follows_the_rule(
+    agent: int, ilo_afternoon: RunResult, tavi_afternoon: RunResult
+) -> None:
+    result = (ilo_afternoon, tavi_afternoon)[agent]
+    passes = flatten(result.records)
+    metrics = summarize(result)
+    assert metrics.steps == len(passes) == 42 and metrics.ticks == len(result.records)
+    assert metrics.truncated is False
+    # the stubs never commit to an answer about the world: nothing to compare, nothing divided
+    assert metrics.world_expectations == 0 and metrics.world_held == 0
+    # the reactive stub is the rule
+    assert metrics.rule_agreement == 1.0
+    assert sum(getattr(metrics, f"n_{a.value}") for a in Action) == metrics.steps
+    assert metrics.mean_size == pytest.approx(sum(p.comparison.size for p in passes) / len(passes))
+    assert metrics.final_valence == result.agent.feeling.valence
+    for value in metrics.model_dump().values():
+        assert math.isfinite(value)
+
+
+def test_metrics_are_pure(ilo_afternoon: RunResult) -> None:
+    before = ilo_afternoon.model_dump_json()
+    assert summarize(ilo_afternoon) == summarize(ilo_afternoon)
+    assert ilo_afternoon.model_dump_json() == before
+
+
+# --- a body stuck at a limit ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("agent", [0, 1])
+def test_a_body_collapsed_all_day_gives_defined_metrics(agent: int) -> None:
+    config = runs_of(DAY)[agent]
+    # no water and nothing in the gut: the body is at the water floor on every step
+    body = config.agent.body.model_copy(update={"water": 0.0, "energy": 0.0})
+    config = config.model_copy(update={"agent": config.agent.model_copy(update={"body": body})})
+    result = asyncio.run(run(config))
+    metrics = summarize(result)
+    assert metrics.truncated is False  # the day still ends
+    assert metrics.steps == len(flatten(result.records)) > 0
+    # a body that starts at a limit collapses after its first step, then on every step
+    assert metrics.collapsed_steps == metrics.steps - 1
+    assert metrics.uncomfortable_water == metrics.steps
+    for value in metrics.model_dump().values():
+        assert math.isfinite(value)
+
+
+# --- opposite_value_steps -------------------------------------------------------------------
+
+
+def fact(name: FactName, sign: str, noticed: bool = True) -> FeltFact:
+    value = {"+": 0.5, "-": -0.5, "0": 0.0}[sign]
+    return FeltFact(
+        name=name,
+        about=None,
+        weight=0.2,
+        value=value,
+        sign=sign,  # type: ignore[arg-type]
+        grade=0 if sign == "0" else 1,
+        noticed=noticed,
+        phrase=None,
     )
 
 
-def test_summarize_with_no_records_has_zero_rates() -> None:
-    config = make_config(SCHEDULES["complete"], ticks=None)
-    agent = initial_agent_state(config)
-    world = SelfAdminWorld(config.world, config.seed).snapshot()
-    m = summarize(RunResult(config=config, records=[], agent=agent, world=world))
-    assert m == RunMetrics(
-        steps=0,
-        ticks=0,
-        truncated=True,
-        rewards=0,
-        response_rate_fr=0.0,
-        response_rate_pr=0.0,
-        response_rate_ext=0.0,
-        inactive_rate=0.0,
-        breakpoint=0,
-        breakpoint_censored=True,
-        extinction_persistence=0,
-        extinction_censored=True,
-        mean_abs_pe=0.0,
-        reentries=0,
-        goal_revisions=0,
+def with_scenes(base: RunResult, scenes: list[list[FeltFact]]) -> RunResult:
+    p = base.records[0].passes[0]
+    scenes_of = [p.scene.model_copy(update={"facts": facts}) for facts in scenes]
+    return with_ticks(base, [[p.model_copy(update={"scene": s})] for s in scenes_of], valence=0.0)
+
+
+def test_opposite_value_steps_counts_facts_noticed_by_both_with_opposite_signs(
+    ilo_afternoon: RunResult,
+) -> None:
+    a = with_scenes(
+        ilo_afternoon,
+        [
+            [fact(FactName.AIR, "+"), fact(FactName.SUN, "+")],  # AIR opposite: counts
+            [fact(FactName.AIR, "+")],  # b does not notice AIR
+            [fact(FactName.SUN, "+")],  # same sign
+            [fact(FactName.AIR, "0")],  # neutral is not a sign
+            [fact(FactName.AIR, "-")],  # b has another fact
+            [fact(FactName.BREEZE, "-"), fact(FactName.SHADE, "+")],  # two opposite: counts once
+            [fact(FactName.AIR, "+")],  # beyond b's length
+        ],
     )
+    b = with_scenes(
+        ilo_afternoon,
+        [
+            [fact(FactName.SUN, "+"), fact(FactName.AIR, "-")],
+            [fact(FactName.AIR, "-", noticed=False)],
+            [fact(FactName.SUN, "+")],
+            [fact(FactName.AIR, "-")],
+            [fact(FactName.SUN, "+")],
+            [fact(FactName.BREEZE, "+"), fact(FactName.SHADE, "-")],
+        ],
+    )
+    assert opposite_value_steps(a, b) == 2
+    assert opposite_value_steps(b, a) == 2
 
 
-# --- icc1 ---------------------------------------------------------------------------------------
+def test_opposite_value_steps_of_a_run_with_itself_or_an_empty_run_is_zero(
+    ilo_afternoon: RunResult,
+) -> None:
+    assert opposite_value_steps(ilo_afternoon, ilo_afternoon) == 0
+    empty = ilo_afternoon.model_copy(update={"records": []})
+    assert opposite_value_steps(ilo_afternoon, empty) == 0
+
+
+def test_the_afternoon_pair_values_some_fact_oppositely(
+    ilo_afternoon: RunResult, tavi_afternoon: RunResult
+) -> None:
+    # at the first step Ilo finds the warm air a burden and Tavi finds it pleasant
+    assert opposite_value_steps(ilo_afternoon, tavi_afternoon) >= 1
+
+
+# --- icc1 (as v0) ---------------------------------------------------------------------------
 
 
 def test_icc1_is_one_for_distinct_means_without_within_group_variance() -> None:

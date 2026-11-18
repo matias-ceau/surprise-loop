@@ -1,9 +1,10 @@
 """The tick loop, tick dumps, resume and replay.
 
 One tick is Perceive, Appraise, then pass 0 (Deliberate, Act, Monitor, Evaluate, Reconcile) and,
-when Reconcile raises a conflict and the world is not done, exactly one more pass. `run` loops
-ticks and, given a run directory, writes `config.json` once and one `tick_<n>.json` per tick, so a
-run can be resumed and replayed from its files. Every written byte is deterministic.
+when Reconcile raises an override and the world is not done, exactly one more pass, offered only
+the actions that serve the urgent need. `run` loops ticks and, given a run directory, writes
+`config.json` once and one `tick_<n>.json` per tick, so a run can be resumed and replayed from its
+files. Every written byte is deterministic.
 """
 
 import asyncio
@@ -15,20 +16,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic import ValidationError
-from pydantic_ai import UserError, models
 
 from surprise_loop import phases as real
-from surprise_loop.config import (
-    ConfigError,
-    RunConfig,
-    Runtime,
-    initial_agent_state,
-    resolve_model,
-)
+from surprise_loop.agents import load_model
+from surprise_loop.config import RunConfig, Runtime, initial_agent_state, resolve_model
 from surprise_loop.phases.heuristics import require
 from surprise_loop.phases.perceive import build_percept
 from surprise_loop.state import AgentState, PassRecord, TickDump, TickRecord, Workspace
-from surprise_loop.world import Frozen, SelfAdminWorld, WorldState
+from surprise_loop.world import ClearingWorld, Frozen, WorldState
 
 Phase = Callable[[Workspace, Runtime], Awaitable[Workspace]]
 
@@ -90,6 +85,8 @@ async def _pass(ws: Workspace, rt: Runtime, ph: _Phases) -> Workspace:
 
 
 async def _tick(agent: AgentState, rt: Runtime, ph: _Phases) -> tuple[AgentState, TickRecord]:
+    # During the tick `agent.tick` stays at the completed count, so the phases read the number of
+    # the tick in progress as `agent.tick + 1`; it is advanced only after the last pass.
     number = agent.tick + 1
     observation = rt.world.observe()
     ws = Workspace(agent=agent, observation=observation)
@@ -98,15 +95,18 @@ async def _tick(agent: AgentState, rt: Runtime, ph: _Phases) -> tuple[AgentState
     appraisal = require(ws.appraisal, "appraisal", "tick")
 
     ws = await _pass(ws, rt, ph)
-    if ws.conflict is not None and not rt.world.done:
+    if ws.override is not None and not rt.world.done:
         outcome = require(ws.outcome, "outcome", "tick")
+        params = rt.config.params
         ws = Workspace(
             agent=ws.agent,
             observation=outcome.observation,
             pass_index=1,
-            percept=build_percept(outcome.observation, ws.agent, rt.config.params),
+            percept=build_percept(
+                outcome.observation, ws.agent, params, offers=ws.override.actions
+            ),
             appraisal=appraisal,
-            conflict=ws.conflict,
+            override=ws.override,
             passes=ws.passes,
         )
         ws = await _pass(ws, rt, ph)
@@ -130,11 +130,20 @@ def write_atomic(path: Path, text: str) -> None:
     os.replace(temp, path)
 
 
+def _write_run_file(path: Path, text: str) -> None:
+    """`write_atomic` for a file of a run (a tick dump, config.json): an `OSError` becomes a
+    `RunError` naming the path, so the command reports it in one line."""
+    try:
+        write_atomic(path, text)
+    except OSError as e:
+        raise RunError(f"{path}: cannot write: {e.strerror or e}") from None
+
+
 def _dump_name(tick: int) -> str:
     return f"tick_{tick:06d}.json"
 
 
-def _dump(config: RunConfig, agent: AgentState, world: SelfAdminWorld, rec: TickRecord) -> TickDump:
+def _dump(config: RunConfig, agent: AgentState, world: ClearingWorld, rec: TickRecord) -> TickDump:
     """The dump of the tick `rec` records, after it: the agent and the world as they now are."""
     return TickDump(
         run_id=config.run_id, tick=rec.tick, agent=agent, world=world.snapshot(), record=rec
@@ -144,7 +153,7 @@ def _dump(config: RunConfig, agent: AgentState, world: SelfAdminWorld, rec: Tick
 def write_dump(run_dir: Path, dump: TickDump) -> Path:
     """Write `dump` to `run_dir/tick_<tick>.json` atomically and return its path."""
     path = Path(run_dir) / _dump_name(dump.tick)
-    write_atomic(path, dump.model_dump_json())
+    _write_run_file(path, dump.model_dump_json())
     return path
 
 
@@ -189,21 +198,9 @@ def read_config(run_dir: Path) -> RunConfig:
         raise RunError(f"{run_dir}: cannot read {CONFIG_FILE}: {problem}") from None
 
 
-def load_model(name: str | None) -> models.Model | None:
-    """The pydantic-ai model for `name` (e.g. "openrouter:<id>", or "test" for `TestModel`).
-
-    Resolved once per run, so every call of the run shares one model and one HTTP client.
-    """
-    if name is None:
-        return None
-    try:
-        return models.infer_model(name)
-    except UserError as e:
-        raise ConfigError(f"model {name!r}: {e}") from None
-
-
-def _initial(config: RunConfig) -> tuple[AgentState, SelfAdminWorld]:
-    return initial_agent_state(config), SelfAdminWorld(config.world, config.seed)
+def _initial(config: RunConfig) -> tuple[AgentState, ClearingWorld]:
+    world = ClearingWorld(config.world, config.seed, config.agent.body, config.start_place)
+    return initial_agent_state(config), world
 
 
 def load_result(run_dir: Path) -> RunResult:
@@ -228,13 +225,13 @@ def has_run_files(run_dir: Path) -> bool:
 
 
 def _finished(config: RunConfig, ticks_done: int, world_done: bool) -> bool:
-    """Whether a run has nothing left to do: the schedule has ended or the tick cap is reached."""
+    """Whether a run has nothing left to do: the day has ended or the tick cap is reached."""
     return world_done or (config.ticks is not None and ticks_done >= config.ticks)
 
 
 def is_complete(result: RunResult) -> bool:
     """Whether `run` would add no tick to `result`: the same stop rule `run` uses."""
-    world_done = SelfAdminWorld.restore(result.config.world, result.world).done
+    world_done = ClearingWorld.restore(result.config.world, result.world).done
     return _finished(result.config, len(result.records), world_done)
 
 
@@ -281,19 +278,20 @@ async def _run(
                 raise RunError(f"{run_dir}: {CONFIG_FILE} differs from the given config")
             dumps = load_dumps(run_dir)
             if dumps and (
-                dumps[-1].run_id != config.run_id or dumps[-1].agent.traits != config.agent.traits
+                dumps[-1].run_id != config.run_id
+                or dumps[-1].agent.temperament != config.agent.temperament
             ):
                 raise RunError(f"{run_dir}: the tick dumps do not belong to {CONFIG_FILE}")
             if dumps:
                 records = [d.record for d in dumps]
                 agent = dumps[-1].agent
-                world = SelfAdminWorld.restore(config.world, dumps[-1].world)
+                world = ClearingWorld.restore(config.world, dumps[-1].world)
         else:
             try:
                 run_dir.mkdir(parents=True, exist_ok=True)
             except OSError as e:
                 raise RunError(f"{run_dir}: cannot create: {_reason(e)}") from None
-            write_atomic(run_dir / CONFIG_FILE, config.model_dump_json())
+            _write_run_file(run_dir / CONFIG_FILE, config.model_dump_json())
 
     rt = Runtime(config=config, world=world, model=model)
     async with AsyncExitStack() as stack:
@@ -318,12 +316,13 @@ async def _run(
 
 
 async def replay(run_dir: Path) -> int:
-    """Re-run every stored tick with the recorded LLM outputs; return the ticks verified."""
+    """Re-run every stored tick with the recorded model-phase outputs; return the ticks verified."""
     return await _replay(run_dir, _REAL_PHASES)
 
 
 def _recorded(record: TickRecord, run_dir: Path, base: _Phases) -> _Phases:
-    """`base` with Appraise, Deliberate and Evaluate returning what `record` holds."""
+    """`base` with Appraise and Deliberate returning what `record` holds. Evaluate is code and
+    runs for real."""
 
     def recorded_pass(ws: Workspace) -> PassRecord:
         if ws.pass_index >= len(record.passes):
@@ -338,10 +337,7 @@ def _recorded(record: TickRecord, run_dir: Path, base: _Phases) -> _Phases:
     async def deliberate(ws: Workspace, rt: Runtime) -> Workspace:
         return ws.model_copy(update={"decision": recorded_pass(ws).decision})
 
-    async def evaluate(ws: Workspace, rt: Runtime) -> Workspace:
-        return ws.model_copy(update={"feedback": recorded_pass(ws).feedback})
-
-    return dataclasses.replace(base, appraise=appraise, deliberate=deliberate, evaluate=evaluate)
+    return dataclasses.replace(base, appraise=appraise, deliberate=deliberate)
 
 
 async def _replay(run_dir: Path, base: _Phases) -> int:
@@ -349,7 +345,7 @@ async def _replay(run_dir: Path, base: _Phases) -> int:
     config = read_config(run_dir)
     dumps = load_dumps(run_dir)
     agent, world = _initial(config)
-    # No model: the LLM-backed phases return their recorded outputs, so replay makes no calls.
+    # No model: the model-backed phases return their recorded outputs, so replay makes no calls.
     rt = Runtime(config=config, world=world, model=None)
     for stored in dumps:
         if world.done:

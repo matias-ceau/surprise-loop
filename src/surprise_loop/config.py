@@ -1,8 +1,7 @@
 """Experiment configuration, parameters and run setup.
 
-Every number that shapes behaviour lives in `Params` (or in `Traits`). The defaults below are
-tuned so the stub agent passes the behavioural gate in tests/test_behaviour.py on the
-experiments/trait_grid.yaml schedule. Each can be overridden from YAML.
+Every number that shapes behaviour lives here or in a body's `Temperament`. Each default can be
+overridden from YAML.
 """
 
 import os
@@ -16,15 +15,25 @@ from pydantic import Field, ValidationError, field_validator, model_validator
 
 from surprise_loop.state import (
     AgentState,
-    Dispositions,
-    GoalName,
-    Goals,
+    Feeling,
     Memory,
-    Mood,
-    Traits,
+    Pulls,
+    SurpriseNote,
+    Temperament,
     require_keys,
 )
-from surprise_loop.world import Action, Frozen, Unit, World, WorldConfig
+from surprise_loop.world import (
+    Action,
+    BodyState,
+    Channel,
+    FactKind,
+    Frozen,
+    Levels,
+    Place,
+    Unit,
+    World,
+    WorldConfig,
+)
 
 MODEL_ENV_VAR = "SURPRISE_LOOP_MODEL"
 
@@ -33,136 +42,254 @@ Positive = Annotated[float, Field(gt=0)]
 SafeName = Annotated[str, Field(pattern=r"^[A-Za-z0-9_.-]+$")]
 
 
-class MonitorParams(Frozen):
-    # minimum weight of a prediction error when the prediction had zero confidence
-    confidence_floor: Unit = 0.3
-    # extra unsigned error added when the predicted event was wrong
-    event_mismatch_weight: NonNegative = 0.5
+def _ascending_edges(value: tuple[float, ...]) -> tuple[float, ...]:
+    if not value:
+        raise ValueError("needs at least one edge")
+    if any(a >= b for a, b in zip(value, value[1:], strict=False)):
+        raise ValueError("edges must be strictly ascending")
+    return value
 
 
-class MoodParams(Frozen):
-    # how strongly unsigned prediction error drives arousal
-    arousal_gain: NonNegative = 1.0
+class LensParams(Frozen):
+    # sharpness of the softmax over fact relevance, and how arousal sharpens it
+    gain_base: NonNegative = 0.5
+    gain_arousal: NonNegative = 1.5
+    # how many facts get through: fewer when stirred up, never fewer than min_noticed
+    min_noticed: int = Field(default=3, ge=1)
+    drop_per_arousal: NonNegative = 4.0
+    # extra relevance for a fact bearing on the channel the last reading was about
+    attention_bonus: NonNegative = 0.3
+    # how many body channels may speak, at or above narrow_arousal and below it
+    narrow_arousal: Unit = 0.5
+    body_lines_narrow: int = Field(default=2, ge=0)
+    body_lines_wide: int = Field(default=3, ge=0)
+    # the least body grade that gets a sentence
+    body_speak_grade: int = Field(default=2, ge=1)
+    # grade edges for a fact's value and a channel's felt strength, positive and strictly
+    # ascending; the first value edge is also where a value stops being neutral
+    value_edges: tuple[Positive, ...] = (0.25, 1.0, 2.0, 3.0)
+    body_edges: tuple[Positive, ...] = (0.5, 1.0, 2.0, 3.0)
+
+    @field_validator("value_edges", "body_edges")
+    @classmethod
+    def _edges(cls, value: tuple[float, ...]) -> tuple[float, ...]:
+        return _ascending_edges(value)
 
 
-class MemoryParams(Frozen):
-    # how many recent episodes Perceive recalls; above quit_steps, so a pause of quit_steps steps
-    # does not empty the window and reset a press's expected reward to the prior (was 10)
-    retrieval_k: int = Field(default=20, ge=1)
-    # how those episodes are chosen: the last k, or half recent and half most salient before them
-    retrieval: Literal["last_k", "salient_k"] = "last_k"
-    # salience of an episode with zero prediction error
-    base_salience: Unit = 0.1
+class FeelingParams(Frozen):
+    # how strongly standing discomfort lowers valence
+    tone_gain: NonNegative = 0.12
+    # the phasic lift from a better-than-expected outcome, and its decay per tick
+    phasic_gain: NonNegative = 0.3
+    phasic_decay: Unit = 0.5
+    # arousal's target: surprise size, plus the loudest need relative to strain_full
+    surprise_gain: NonNegative = 0.5
+    strain_gain: NonNegative = 0.6
+    strain_full: Positive = 3.0
+    arousal_inertia: Unit = 0.5
+    mood_inertia: Unit = 0.9
 
 
-class GoalParams(Frozen):
-    # EMA rate of per-goal signed error (scaled by surprise_learning_rate)
-    ema_rate: Unit = 0.2
-    # |EMA| above which a pass counts towards an error streak
-    error_threshold: NonNegative = 0.05
-    # consecutive same-sign over-threshold passes before a goal priority is revised
-    patience: int = Field(default=3, ge=1)
-    # size of one goal priority revision
-    revision_step: NonNegative = 0.1
-    # lowest a goal priority can be revised to
-    min_priority: NonNegative = 0.1
-    # highest a goal priority can be revised to
-    max_priority: NonNegative = 2.0
+def _per_channel(heat: float, water: float, energy: float) -> dict[Channel, float]:
+    return {Channel.HEAT: heat, Channel.WATER: water, Channel.ENERGY: energy}
+
+
+class ExpectationParams(Frozen):
+    # a model's change words in felt strength: "a bit" from bit to much, "much" beyond much
+    bit: Positive = 0.25
+    much: Positive = 1.0
+    # half the width of a stub's band around its forecast, in channel units
+    stub_tolerance: dict[Channel, NonNegative] = Field(
+        default_factory=lambda: _per_channel(0.12, 0.06, 0.03)
+    )
+
+    @field_validator("stub_tolerance")
+    @classmethod
+    def _every_channel(cls, value: dict[Channel, float]) -> dict[Channel, float]:
+        return require_keys(value, Channel)
 
     @model_validator(mode="after")
-    def _ordered(self) -> "GoalParams":
-        if self.min_priority > self.max_priority:
-            raise ValueError("min_priority must be <= max_priority")
+    def _ordered(self) -> "ExpectationParams":
+        if self.bit > self.much:
+            raise ValueError("bit must be <= much")
         return self
 
 
-class DispositionParams(Frozen):
-    # rate at which an action bias drifts towards its outcome value (scaled by learning rate);
-    # fast enough that the press habit wanes within PR and extinction, not after them (was 0.1)
-    rate: Unit = 0.2
-    # action biases are clamped to [-bound, bound]
-    bound: Positive = 1.0
-    # weight of the evaluator's alignment in the outcome value
-    alignment_weight: NonNegative = 0.2
+class MonitorParams(Frozen):
+    # the size a world mismatch adds to a comparison, beside the body's felt error
+    world_weight: NonNegative = 1.0
 
 
-class ConflictParams(Frozen):
-    # whether Reconcile may send control back to Deliberate on a habit-vs-goal conflict
-    enabled: bool = True
-    # action bias at or above which a downward goal revision counts as a conflict
-    habit_threshold: float = 0.1
+class BeliefParams(Frozen):
+    # how strongly the expectation holds against the signal: k = trust / (trust + weight)
+    expectation_weight: dict[Channel, Positive] = Field(
+        default_factory=lambda: _per_channel(0.5, 0.5, 0.5)
+    )
 
-
-def _default_action_costs() -> dict[Action, float]:
-    return {Action.PRESS_A: 0.05, Action.PRESS_B: 0.05, Action.EXPLORE: 0.02, Action.REST: 0.0}
-
-
-class DeliberateParams(Frozen):
-    # softmax temperature of the stub's action choice
-    temperature: Positive = 0.1
-    # expected reward of a press before any experience of it
-    prior_expected_reward: float = 0.3
-    # pseudo-count weight of that prior
-    prior_weight: Positive = 1.0
-    # effort cost of each action
-    action_costs: dict[Action, float] = Field(default_factory=_default_action_costs)
-    # how much appraised valence pulls towards pressing
-    approach_weight: float = 0.2
-    # how much appraised arousal pulls towards pressing; strong enough that arousal lingering
-    # under high mood_inertia measurably prolongs pressing in extinction (was 0.5)
-    vigor_weight: float = 2.0
-    # base value of exploring; with rest_value, a clear alternative to a press that no longer
-    # pays, so the agent quits within a phase instead of choosing near-randomly (was 0.1)
-    explore_value: float = 0.3
-    # base value of resting (was 0.05)
-    rest_value: float = 0.3
-    # recalled episodes of an action at which prediction confidence reaches 0.5
-    confidence_halfsat: Positive = 3.0
-
-    @field_validator("action_costs")
+    @field_validator("expectation_weight")
     @classmethod
-    def _every_action(cls, value: dict[Action, float]) -> dict[Action, float]:
-        return require_keys(value, Action)
+    def _every_channel(cls, value: dict[Channel, float]) -> dict[Channel, float]:
+        return require_keys(value, Channel)
 
 
-class AppraiseParams(Frozen):
-    # how strongly an observed reward lifts the stub's appraised valence
-    reward_gain: NonNegative = 0.5
+class StubModelParams(Frozen):
+    """The stubs' private one-step model of their own body."""
+
+    # heat moves by heat_rate toward the place's heat pull times heat_per_bearing
+    heat_rate: Unit = 0.1
+    heat_per_bearing: float = 0.5
+    # water falls by water_drain, more by sweat_water per unit of heat, rises by drink_water
+    water_drain: NonNegative = 0.012
+    sweat_water: NonNegative = 0.01
+    drink_water: NonNegative = 0.04
+    # energy falls by walk_energy for a walk, rises by rest_energy for a rest
+    walk_energy: NonNegative = 0.03
+    rest_energy: NonNegative = 0.05
+
+
+class MemoryParams(Frozen):
+    # how many episodes Perceive recalls, and how they are chosen. One more than Evaluate's
+    # default window: the episode just judged is then the oldest one recalled, so its regulation
+    # line is read once, in the next prompt (spec section 8)
+    retrieval_k: int = Field(default=5, ge=1)
+    # salience = min(1, base_salience + salience_gain * comparison size)
+    base_salience: Unit = 0.2
+    salience_gain: NonNegative = 0.3
+    retrieval: Literal["last_k", "salient_k"] = "last_k"
 
 
 class EvaluateParams(Frozen):
-    # utility difference that maps to alignment tanh(1) in the stub evaluator
-    scale: Positive = 0.2
+    # an episode is judged this many episodes after it was stored
+    window: int = Field(default=4, ge=1)
+    # change of need that maps to a score of 1
+    score_scale: Positive = 1.0
+    # |score| at which an action counts as having helped or hurt
+    helped: Unit = 0.25
+
+
+class PullParams(Frozen):
+    # how far a judged score moves the pull of that action at that place
+    rate: Unit = 0.5
+    # the least |pull| that Perceive puts into words
+    speak: NonNegative = 0.2
+
+
+class OverrideParams(Frozen):
+    enabled: bool = True
+    # a need at least this loud after the update, and at least worse_margin worse than expected
+    urgent_felt: NonNegative = 1.5
+    worse_margin: NonNegative = 0.2
+
+
+class DeliberateParams(Frozen):
+    stub: Literal["reactive", "lookahead", "blind"] = "reactive"
+    # the least |need| the reactive rule acts on
+    act_threshold: NonNegative = 0.5
+    # steps the lookahead stub plans over
+    horizon: int = Field(default=6, ge=1)
+    model: StubModelParams = StubModelParams()
+
+
+class ReconcileParams(Frozen):
+    # the least |felt error| on a channel that becomes the voiced surprise
+    voice_threshold: NonNegative = 0.5
 
 
 class MetricsParams(Frozen):
-    # consecutive steps without an active press that count as quitting
-    quit_steps: int = Field(default=10, ge=1)
+    # a channel counts as comfortable while its |need| is below this
+    comfort_felt: NonNegative = 1.0
 
 
 class LLMParams(Frozen):
     # how many times a phase agent may resend an output that fails validation (out of range,
     # unknown action, malformed) before the run stops with an error; there is no stub fallback
     output_retries: int = Field(default=3, ge=0)
-    # sampling temperature sent to the model; 1.0 keeps the model's own action distribution,
-    # the analogue of the stub's softmax sampling. null sends none (for models that reject it)
+    # sampling temperature sent to the model; null sends none (for models that reject it)
     temperature: NonNegative | None = 1.0
     # per-request timeout in seconds
     timeout_s: Positive = 60.0
 
 
+Scene = Literal["A", "B"]
+
+
+class LadderScene(Frozen):
+    """The believed water and energy of one scene of the ladder check."""
+
+    water: Unit
+    energy: Unit
+
+
+class LadderParams(Frozen):
+    """The ladder check's protocol: a frozen noon in the meadow, the body's believed heat swept
+    over the levels, and the pass mark on the share of answers choosing the oak's shade."""
+
+    # believed heat at each level, coolest first: skin 21, 23, 25, 27, 30, 33 and 36 degrees C
+    heat_levels: tuple[float, ...] = (-0.4, -0.2, 0.0, 0.2, 0.5, 0.8, 1.1)
+    # the swept body: set point, tightness, arousal and the standing habit for every kind of fact
+    setpoint: Levels = Levels(heat=0.0, water=0.80, energy=0.70)
+    tightness: dict[Channel, Positive] = Field(default_factory=lambda: _per_channel(3.0, 5.0, 5.0))
+    arousal: Unit = 0.40
+    habit: dict[FactKind, float] = Field(default_factory=lambda: dict.fromkeys(FactKind, 0.3))
+    # scene A: heat is the only need; scene B: a fixed moderate thirst and tiredness compete
+    scenes: dict[Scene, LadderScene] = Field(
+        default_factory=lambda: {
+            "A": LadderScene(water=0.80, energy=0.70),
+            "B": LadderScene(water=0.50, energy=0.46),
+        }
+    )
+    # answers per cell (scene and level), and how many calls run at once
+    samples: int = Field(default=30, ge=1)
+    jobs: int = Field(default=8, ge=1)
+    # the pass mark, per scene: slope of the shade share per level at least min_slope, share at
+    # the hottest level minus the coolest at least min_range, and no level's share above the next
+    # warmer level's by max_drop or more
+    min_slope: float = 0.05
+    min_range: float = 0.5
+    max_drop: float = 0.25
+
+    @field_validator("heat_levels")
+    @classmethod
+    def _levels(cls, value: tuple[float, ...]) -> tuple[float, ...]:
+        if len(value) < 2:
+            raise ValueError("needs at least two levels")
+        if any(a >= b for a, b in zip(value, value[1:], strict=False)):
+            raise ValueError("levels must be strictly ascending")
+        return value
+
+    @field_validator("tightness")
+    @classmethod
+    def _every_channel(cls, value: dict[Channel, float]) -> dict[Channel, float]:
+        return require_keys(value, Channel)
+
+    @field_validator("habit")
+    @classmethod
+    def _every_kind(cls, value: dict[FactKind, float]) -> dict[FactKind, float]:
+        return require_keys(value, FactKind)
+
+    @field_validator("scenes")
+    @classmethod
+    def _both_scenes(cls, value: dict[Scene, LadderScene]) -> dict[Scene, LadderScene]:
+        if set(value) != {"A", "B"}:
+            raise ValueError("needs scenes A and B")
+        return value
+
+
 class Params(Frozen):
+    lens: LensParams = LensParams()
+    feeling: FeelingParams = FeelingParams()
+    expectation: ExpectationParams = ExpectationParams()
     monitor: MonitorParams = MonitorParams()
-    mood: MoodParams = MoodParams()
+    belief: BeliefParams = BeliefParams()
     memory: MemoryParams = MemoryParams()
-    goals: GoalParams = GoalParams()
-    dispositions: DispositionParams = DispositionParams()
-    conflict: ConflictParams = ConflictParams()
-    deliberate: DeliberateParams = DeliberateParams()
-    appraise: AppraiseParams = AppraiseParams()
     evaluate: EvaluateParams = EvaluateParams()
+    pulls: PullParams = PullParams()
+    override: OverrideParams = OverrideParams()
+    deliberate: DeliberateParams = DeliberateParams()
+    reconcile: ReconcileParams = ReconcileParams()
     metrics: MetricsParams = MetricsParams()
     llm: LLMParams = LLMParams()
+    ladder: LadderParams = LadderParams()
 
 
 Backend = Literal["stub", "llm"]
@@ -171,36 +298,15 @@ Backend = Literal["stub", "llm"]
 class Backends(Frozen):
     appraise: Backend = "stub"
     deliberate: Backend = "stub"
-    evaluate: Backend = "stub"
-
-
-def _default_goal_priorities() -> dict[GoalName, float]:
-    return {GoalName.SEEK_REWARD: 1.0, GoalName.EXPLORE: 0.5, GoalName.CONSERVE: 0.5}
 
 
 class AgentSpec(Frozen):
     name: SafeName
-    traits: Traits
-    mood: Mood = Mood(valence=0.0, arousal=0.0)
-    goal_priorities: dict[GoalName, float] = Field(default_factory=_default_goal_priorities)
-
-    @field_validator("goal_priorities")
-    @classmethod
-    def _every_goal(cls, value: dict[GoalName, float]) -> dict[GoalName, float]:
-        return require_keys(value, GoalName)
-
-
-def _check_priorities(agents: list[AgentSpec], goals: GoalParams) -> None:
-    """Every agent's starting goal priorities lie in [min_priority, max_priority], the range
-    Reconcile keeps them in."""
-    for agent in agents:
-        for goal, priority in agent.goal_priorities.items():
-            if not goals.min_priority <= priority <= goals.max_priority:
-                raise ValueError(
-                    f"agent {agent.name}: goal_priorities.{goal.value} = {priority:g} is outside "
-                    f"[{goals.min_priority:g}, {goals.max_priority:g}] "
-                    "(params.goals.min_priority, max_priority)"
-                )
+    temperament: Temperament
+    body: BodyState  # the true body at the start
+    belief: Levels  # the belief at the start
+    arousal: Unit = 0.2
+    voiced: SurpriseNote | None = None
 
 
 class RunConfig(Frozen):
@@ -208,22 +314,19 @@ class RunConfig(Frozen):
     seed: int
     ticks: int | None = Field(ge=1)
     world: WorldConfig
+    start_place: Place
     agent: AgentSpec
     params: Params
     backends: Backends
     model: str | None
-
-    @model_validator(mode="after")
-    def _priorities_in_range(self) -> "RunConfig":
-        _check_priorities([self.agent], self.params.goals)
-        return self
 
 
 class ExperimentConfig(Frozen):
     name: SafeName
     seeds: list[int] = Field(min_length=1)
     ticks: int | None = Field(default=None, ge=1)
-    world: WorldConfig
+    world: WorldConfig = WorldConfig()
+    start_place: Place = Place.MEADOW
     agents: list[AgentSpec] = Field(min_length=1)
     params: Params = Params()
     backends: Backends = Backends()
@@ -245,11 +348,6 @@ class ExperimentConfig(Frozen):
             raise ValueError("agent names must be unique")
         return value
 
-    @model_validator(mode="after")
-    def _priorities_in_range(self) -> "ExperimentConfig":
-        _check_priorities(self.agents, self.params.goals)
-        return self
-
     def runs(self) -> list[RunConfig]:
         """One run per agent and seed: all seeds of the first agent first."""
         return [
@@ -258,6 +356,7 @@ class ExperimentConfig(Frozen):
                 seed=seed,
                 ticks=self.ticks,
                 world=self.world,
+                start_place=self.start_place,
                 agent=agent,
                 params=self.params,
                 backends=self.backends,
@@ -312,18 +411,25 @@ def resolve_model(config: RunConfig) -> str | None:
 
 
 def initial_agent_state(config: RunConfig) -> AgentState:
+    """The spec's temperament and belief, a feeling settled from the baseline with the spec's
+    arousal, empty memory, every pull 0, the spec's voiced surprise."""
+    # feeling.py imports this module for FeelingParams, so it is imported here, not at the top
+    from surprise_loop.feeling import feel
+
     spec = config.agent
+    t = spec.temperament
+    start = Feeling(
+        discomfort=0, valence=t.baseline, arousal=spec.arousal, mood=t.baseline, phasic=0
+    )
+    feeling = feel(spec.belief, t, start, None, config.params.feeling)
     return AgentState(
-        traits=spec.traits,
-        mood=spec.mood,
+        temperament=t,
+        belief=spec.belief,
+        feeling=feeling.model_copy(update={"arousal": spec.arousal}),
         memory=Memory(episodes=[]),
-        goals=Goals(
-            priorities=dict(spec.goal_priorities),
-            error_ema={g: 0.0 for g in GoalName},
-            error_streak={g: 0 for g in GoalName},
-            revisions=0,
-        ),
-        dispositions=Dispositions(biases={a: 0.0 for a in Action}),
+        pulls=Pulls(values={place: {action: 0.0 for action in Action} for place in Place}),
+        attention=None,
+        voiced=spec.voiced,
         tick=0,
     )
 

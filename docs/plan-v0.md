@@ -1,5 +1,9 @@
 # surprise-loop v0 — implementation plan
 
+> **Kept for history.** This is the plan of the first version, the lever-pressing world. Its code is
+> no longer in the tree: it is at commit `2ec53fd`, and the commands below name files that exist only
+> there. The current plan is `docs/superpowers/plans/2026-11-17-lived-twice.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development. One fresh implementer per task, one task review after each, a whole-branch review at the end. Steps use checkbox (`- [ ]`) syntax.
 
 **Goal:** all seven build-order steps of the brief implemented, tested, committed and pushed, with a draft PR and green CI, a stub-only experiment that runs end to end with zero API calls, and one small real-model experiment through OpenRouter.

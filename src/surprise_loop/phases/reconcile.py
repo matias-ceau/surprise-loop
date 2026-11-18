@@ -1,189 +1,175 @@
-"""Reconcile: apply one pass's outcome to mental state through four channels.
+"""Reconcile: apply one pass's outcome to mental state. The only phase that changes the agent.
 
-Each channel has its own timescale (see "Deterministic maths" in docs/plan-v0.md):
-
-- mood (fast): valence and arousal move with signed and unsigned prediction error;
-- memory (per pass): one episode, salience weighted by unsigned prediction error;
-- goals (slow): a per-goal error EMA; a priority is revised only after `patience` consecutive
-  over-threshold passes of one sign;
-- dispositions (slowest): only the taken action's bias drifts towards the outcome value.
-
-On pass 0, a downward goal revision that coincides with a strong habit for the action taken is a
-`habit_vs_goal` conflict, which sends control back to Deliberate once. Reconcile never changes
+In order: the belief moves from the expectation toward the signal; the feeling follows the new
+belief and the comparison; attention goes where the reading was; the loudest surprise is voiced
+for the next scene; the episode is stored; the judged episode gets its score and its pull moves;
+and on pass 0 an urgent need that came out worse than expected, and that the action did not
+serve, sends control back to Deliberate once (the override). Reconcile never changes
 `agent.tick`; `tick()` does.
 """
 
-import math
-
 from surprise_loop.config import Params, Runtime
-from surprise_loop.phases.heuristics import clamp, require
+from surprise_loop.feeling import feel, needs
+from surprise_loop.phases.evaluate import judged_index
+from surprise_loop.phases.heuristics import (
+    require,
+    serving_actions,
+    too_much,
+    updated_belief,
+    voiced_note,
+)
 from surprise_loop.state import (
-    GOAL_OF_ACTION,
-    AgentState,
-    Conflict,
-    Decision,
-    Dispositions,
+    Comparison,
     Episode,
     Feedback,
-    GoalName,
-    Goals,
     Memory,
-    Mood,
+    Override,
     PassRecord,
-    PredictionError,
+    Pulls,
+    Temperament,
     Workspace,
 )
-from surprise_loop.world import Action, Outcome
+from surprise_loop.world import Action, Channel, Levels, Outcome, Place
 
 
-def _sign(value: float) -> int:
-    return (value > 0) - (value < 0)
-
-
-def update_mood(mood: Mood, error: PredictionError, agent: AgentState, params: Params) -> Mood:
-    """`v ← m·v + (1 − m)·tanh(RS·signed)`; `a ← m·a + (1 − m)·min(1, gain·unsigned)`."""
-    m = agent.traits.mood_inertia
-    rs = agent.traits.reward_sensitivity
-    valence = m * mood.valence + (1 - m) * math.tanh(rs * error.signed)
-    drive = min(1, params.mood.arousal_gain * error.unsigned)
-    arousal = m * mood.arousal + (1 - m) * drive
-    return Mood(valence=clamp(valence, -1, 1), arousal=clamp(arousal, 0, 1))
-
-
-def update_goals(
-    goals: Goals, goal: GoalName, error: PredictionError, alpha: float, params: Params
-) -> tuple[Goals, int]:
-    """The goals after one pass serving `goal`, and the revision's sign (0 when none)."""
-    p = params.goals
-    beta = p.ema_rate * alpha
-    ema = (1 - beta) * goals.error_ema[goal] + beta * error.signed
-    s = _sign(ema) if abs(ema) > p.error_threshold else 0
-    streak = goals.error_streak[goal]
-    if s == 0:
-        streak = 0
-    elif _sign(streak) == s:
-        streak += s
-    else:
-        streak = s
-
-    priorities = dict(goals.priorities)
-    revisions = goals.revisions
-    revised = 0
-    if abs(streak) >= p.patience:  # streak is 0 when s is (patience >= 1)
-        priorities[goal] = clamp(
-            priorities[goal] + p.revision_step * s, p.min_priority, p.max_priority
+def judged(
+    episodes: list[Episode], pulls: Pulls, feedback: Feedback, params: Params
+) -> tuple[list[Episode], Pulls]:
+    """The episodes with the judged one scored, and the pulls with its pull moved."""
+    if feedback.judged_step is None or feedback.score is None:
+        return episodes, pulls
+    i = judged_index(len(episodes), params.evaluate.window)
+    if i is None or episodes[i].step != feedback.judged_step:
+        raise ValueError(
+            f"feedback judged step {feedback.judged_step}, which is not the episode "
+            f"{params.evaluate.window} back"
         )
-        streak = 0
-        ema = 0.0
-        revisions += 1
-        revised = s
-
-    updated = Goals(
-        priorities=priorities,
-        error_ema={**goals.error_ema, goal: ema},
-        error_streak={**goals.error_streak, goal: streak},
-        revisions=revisions,
-    )
-    return updated, revised
+    episode = episodes[i]
+    scored = episode.model_copy(update={"score": feedback.score, "regulation": feedback.line})
+    v = pulls.values[episode.place][episode.action]
+    moved = v + params.pulls.rate * (feedback.score - v)
+    values = {place: dict(per_action) for place, per_action in pulls.values.items()}
+    values[episode.place][episode.action] = moved
+    return [*episodes[:i], scored, *episodes[i + 1 :]], Pulls(values=values)
 
 
-def update_dispositions(
-    dispositions: Dispositions,
+def override_for(
     action: Action,
-    reward: float,
-    feedback: Feedback,
-    agent: AgentState,
-    params: Params,
-) -> Dispositions:
-    """`bias[a] ← clamp(bias[a] + rate·α·(v − bias[a]), ±bound)`, `v = RS·reward + w·alignment`."""
-    p = params.dispositions
-    alpha = agent.traits.surprise_learning_rate
-    value = agent.traits.reward_sensitivity * reward + p.alignment_weight * feedback.alignment
-    bias = dispositions.biases[action]
-    bias = clamp(bias + p.rate * alpha * (value - bias), -p.bound, p.bound)
-    return Dispositions(biases={**dispositions.biases, action: bias})
-
-
-def _episode(
-    tick: int,
-    decision: Decision,
+    place: Place,
+    belief: Levels,
+    t: Temperament,
+    comparison: Comparison,
     outcome: Outcome,
-    error: PredictionError,
-    feedback: Feedback,
     params: Params,
-) -> Episode:
-    return Episode(
-        tick=tick,
-        step=outcome.info.step,
-        action=decision.action,
-        prediction=decision.prediction,
-        event=outcome.observation.event,
-        reward=outcome.observation.reward,
-        prediction_error=error,
-        alignment=feedback.alignment,
-        critique=feedback.critique,
-        salience=clamp(params.memory.base_salience + error.unsigned, 0, 1),
+) -> Override | None:
+    """The first channel, in `Channel` order, whose need is urgent after the update, came out
+    worse than expected by `worse_margin`, and is not served by the action taken at `place` (the
+    place before the step); an override only if an action serving it is offered now.
+
+    Worse is signed by the need's direction: for a need of too much (too hot, thirsty, tired)
+    `body_felt` above zero is worse; for too little (too cold) below zero is."""
+    p = params.override
+    if not p.enabled:
+        return None
+    need = needs(belief, t)
+
+    def worse(c: Channel) -> float:
+        return comparison.body_felt[c] * (1 if too_much(c, need[c]) else -1)
+
+    channel = next(
+        (
+            c
+            for c in Channel
+            if abs(need[c]) >= p.urgent_felt
+            and worse(c) >= p.worse_margin
+            and action not in serving_actions(c, too_much(c, need[c]), place)
+        ),
+        None,
+    )
+    if channel is None:
+        return None
+    observation = outcome.observation
+    serving = serving_actions(channel, too_much(channel, need[channel]), observation.place)
+    actions = [a for a in observation.offers if a in serving]
+    if not actions:
+        return None
+    return Override(
+        channel=channel,
+        actions=actions,
+        detail=(
+            f"{channel.value} need {need[channel]:.2f} is at least {p.urgent_felt:.2f} and came "
+            f"out {worse(channel):.2f} worse than expected; "
+            f"{action.value} does not serve it"
+        ),
     )
 
 
 async def reconcile(ws: Workspace, rt: Runtime) -> Workspace:
+    percept = require(ws.percept, "percept", "reconcile")
+    appraisal = require(ws.appraisal, "appraisal", "reconcile")
     decision = require(ws.decision, "decision", "reconcile")
     outcome = require(ws.outcome, "outcome", "reconcile")
-    error = require(ws.prediction_error, "prediction_error", "reconcile")
+    comparison = require(ws.comparison, "comparison", "reconcile")
     feedback = require(ws.feedback, "feedback", "reconcile")
     params = rt.config.params
     agent = ws.agent
-    tick = agent.tick + 1
+    t = agent.temperament
     action = decision.action
-    goal = GOAL_OF_ACTION[action]
 
-    mood = update_mood(agent.mood, error, agent, params)
-    memory = Memory(
-        episodes=[
-            *agent.memory.episodes,
-            _episode(tick, decision, outcome, error, feedback, params),
-        ]
+    belief = updated_belief(
+        outcome.observation.signal, decision.expectation.bands, t, params.belief
     )
-    goals, revised = update_goals(
-        agent.goals, goal, error, agent.traits.surprise_learning_rate, params
-    )
-    dispositions = update_dispositions(
-        agent.dispositions, action, outcome.observation.reward, feedback, agent, params
+    feeling = feel(belief, t, agent.feeling, comparison, params.feeling)
+    voiced = voiced_note(
+        action, comparison, decision.expectation.world, params.reconcile.voice_threshold
     )
 
-    conflict: Conflict | None = None
-    bias = dispositions.biases[action]
-    if (
-        ws.pass_index == 0
-        and params.conflict.enabled
-        and revised < 0
-        and bias >= params.conflict.habit_threshold
-    ):
-        conflict = Conflict(
-            kind="habit_vs_goal",
-            action=action,
-            detail=(
-                f"the priority of goal {goal.value} was just lowered to "
-                f"{goals.priorities[goal]:.2f}, yet the habit of {action.value} is still "
-                f"{bias:.2f}, at or above the conflict threshold of "
-                f"{params.conflict.habit_threshold:.2f}"
-            ),
+    salience = min(1, params.memory.base_salience + params.memory.salience_gain * comparison.size)
+    episode = Episode(
+        tick=agent.tick + 1,
+        step=outcome.observation.step,
+        place=ws.observation.place,
+        action=action,
+        event=outcome.observation.event,
+        expectation=decision.expectation,
+        comparison=comparison,
+        need_before=needs(agent.belief, t),
+        salience=salience,
+        scene=percept.scene.text(),
+        reading=appraisal.reading,
+    )
+    stored, pulls = judged(agent.memory.episodes, agent.pulls, feedback, params)
+
+    override = None
+    if ws.pass_index == 0:
+        override = override_for(
+            action, ws.observation.place, belief, t, comparison, outcome, params
         )
 
     record = PassRecord(
-        tick=tick,
+        tick=agent.tick + 1,
         pass_index=ws.pass_index,
+        scene=percept.scene,
+        offers=[o.action for o in percept.offers],
         decision=decision,
         outcome=outcome,
-        prediction_error=error,
+        comparison=comparison,
         feedback=feedback,
-        goal_revised=goal if revised else None,
-        conflict=conflict,
+        belief_after=belief,
+        feeling_after=feeling,
+        override=override,
     )
     new_agent = agent.model_copy(
-        update={"mood": mood, "memory": memory, "goals": goals, "dispositions": dispositions}
+        update={
+            "belief": belief,
+            "feeling": feeling,
+            "attention": appraisal.about,
+            "voiced": voiced,
+            "memory": Memory(episodes=[*stored, episode]),
+            "pulls": pulls,
+        }
     )
     update: dict[str, object] = {"agent": new_agent, "passes": (*ws.passes, record)}
     if ws.pass_index == 0:
-        update["conflict"] = conflict
+        update["override"] = override
     return ws.model_copy(update=update)
