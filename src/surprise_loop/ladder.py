@@ -12,19 +12,25 @@ Answers are appended to `answers.jsonl` as they arrive; a failed call is reporte
 left for a rerun, which asks only for what is missing. Each answer carries the model name and the
 exact prompt it answered: a stored answer counts only while both match the current run, so a
 rerun after a change of wording or of model asks those slots again instead of counting the old
-answers.
+answers. A last line cut off by a killed run is dropped.
+
+The deliberate variant (`deliberate=True`) is the same sweep through the Deliberate agent and its
+prompt: the meadow's four offers in the same per-index orders, the neutral stub reading, no
+memory and no pull. Its answers name the action by the plain check's key (choosing the oak counts
+as the shade) and go to `deliberate_answers.jsonl`, so neither check overwrites the other.
 """
 
 import asyncio
+import json
 import sys
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
 
-from surprise_loop.agents import model_settings
+from surprise_loop.agents import OneLine, ask, deliberate_agent, deliberate_prompt
 from surprise_loop.config import LadderParams, LensParams, Params, Scene, derive_rng
 from surprise_loop.lens import felt_scene
 from surprise_loop.phrases import (
@@ -33,15 +39,29 @@ from surprise_loop.phrases import (
     LADDER_LETTER_HELP,
     LADDER_QUESTION,
     LADDER_WHY_HELP,
+    OFFER_PHRASES,
+    STUB_READINGS,
 )
-from surprise_loop.state import Temperament
-from surprise_loop.world import Channel, Frozen, Levels, Place, frozen_noon_facts
+from surprise_loop.state import Offer, Temperament
+from surprise_loop.world import Action, Channel, Frozen, Levels, Place, frozen_noon_facts
 
 ANSWERS_FILE = "answers.jsonl"
 SUMMARY_FILE = "summary.json"
+DELIBERATE_ANSWERS_FILE = "deliberate_answers.jsonl"
+DELIBERATE_SUMMARY_FILE = "deliberate_summary.json"
 SCENES: tuple[Scene, ...] = ("A", "B")
 LETTERS = "ABCD"
 SHADE = "shade"
+
+# the meadow's offers the deliberate variant asks with, by the plain check's key
+LADDER_ACTION_OF: dict[str, Action] = {
+    "shade": Action.GO_OAK,
+    "stream": Action.GO_STREAM,
+    "sit": Action.REST,
+    "look": Action.LOOK,
+}
+# the reading the deliberate variant shows: the stub's line for a body with nothing pressing
+NEUTRAL_READING = STUB_READINGS[(None, True)]
 
 Letter = Literal["A", "B", "C", "D"]
 
@@ -50,7 +70,12 @@ def _one_line(text: str) -> str:
     return " ".join(text.split())
 
 
-OneLine = Annotated[str, AfterValidator(_one_line)]
+def answers_file(deliberate: bool) -> str:
+    return DELIBERATE_ANSWERS_FILE if deliberate else ANSWERS_FILE
+
+
+def summary_file(deliberate: bool) -> str:
+    return DELIBERATE_SUMMARY_FILE if deliberate else SUMMARY_FILE
 
 
 def ladder_body(level: int, scene: Scene, lp: LadderParams) -> tuple[Levels, Temperament, float]:
@@ -80,6 +105,30 @@ def ladder_prompt(
     ).text()
     choices = [f"{letter}. {LADDER_ACTIONS[a]}" for letter, a in zip(LETTERS, order, strict=True)]
     return "\n".join([text, "", LADDER_QUESTION, *choices])
+
+
+def deliberate_ladder_prompt(
+    level: int, scene: Scene, order: list[str], p: LensParams, lp: LadderParams
+) -> str:
+    """The Deliberate prompt of the swept body at the frozen noon: its lens text, the neutral
+    reading, the meadow's four offers lettered in `order` (the plain check's keys), no recalled
+    moment, no pull and no override."""
+    belief, t, arousal = ladder_body(level, scene, lp)
+    text = felt_scene(
+        Place.MEADOW, frozen_noon_facts(), belief, t, arousal, None, None, 0, p
+    ).text()
+    offers = [
+        Offer(action=a, phrase=OFFER_PHRASES[(Place.MEADOW, a)])
+        for a in (LADDER_ACTION_OF[key] for key in order)
+    ]
+    return deliberate_prompt(text, NEUTRAL_READING, offers, [], "", "")
+
+
+def _prompt(
+    level: int, scene: Scene, order: list[str], p: LensParams, lp: LadderParams, deliberate: bool
+) -> str:
+    build = deliberate_ladder_prompt if deliberate else ladder_prompt
+    return build(level, scene, order, p, lp)
 
 
 def answer_order(i: int) -> list[str]:
@@ -168,14 +217,33 @@ def summarize(answers: list[LadderAnswer], lp: LadderParams) -> dict[str, CurveS
     return out
 
 
+def _is_json(line: str) -> bool:
+    try:
+        json.loads(line)
+    except ValueError:
+        return False
+    return True
+
+
+def _complete_lines(text: str) -> list[str]:
+    """The lines of an answers file without a last line that is not complete JSON: the part an
+    append cut short when the run was killed."""
+    lines = text.splitlines()
+    if lines and lines[-1].strip() and not _is_json(lines[-1]):
+        lines.pop()
+    return lines
+
+
 def read_answers(path: Path) -> list[LadderAnswer]:
-    """The answers stored in `path`, in file order; none when there is no file."""
+    """The answers stored in `path`, in file order; none when there is no file. A last line that
+    is not complete JSON (a run killed mid-write) is dropped; a bad line anywhere else is an
+    error."""
     try:
         text = Path(path).read_text(encoding="utf-8")
     except FileNotFoundError:
         return []
     answers = []
-    for n, line in enumerate(text.splitlines(), start=1):
+    for n, line in enumerate(_complete_lines(text), start=1):
         if not line.strip():
             continue
         try:
@@ -187,7 +255,11 @@ def read_answers(path: Path) -> list[LadderAnswer]:
 
 
 def current_answers(
-    answers: list[LadderAnswer], name: str, samples: int, params: Params
+    answers: list[LadderAnswer],
+    name: str,
+    samples: int,
+    params: Params,
+    deliberate: bool = False,
 ) -> tuple[list[LadderAnswer], int]:
     """The stored answers that count for a sweep of `samples` per cell on model `name`, one per
     slot (scene, level, index), and how many are stale.
@@ -195,7 +267,8 @@ def current_answers(
     An answer counts when its model is `name` and its prompt is the one the current code builds
     for its slot; when several count for one slot, the last wins. Any other answer for a slot of
     the sweep, or for a level the params no longer have, is stale. Answers at an index of
-    `samples` or above are outside this sweep: neither counted nor stale."""
+    `samples` or above are outside this sweep: neither counted nor stale. `deliberate` says
+    which check's prompts the answers are held against."""
     lp = params.ladder
     prompts: dict[tuple[str, int, int], str] = {}
     slots: dict[tuple[str, int, int], LadderAnswer] = {}
@@ -208,7 +281,8 @@ def current_answers(
             stale += 1
             continue
         if key not in prompts:
-            prompts[key] = ladder_prompt(a.level, a.scene, answer_order(a.i), params.lens, lp)
+            order = answer_order(a.i)
+            prompts[key] = _prompt(a.level, a.scene, order, params.lens, lp, deliberate)
         if a.model == name and a.prompt == prompts[key] and a.order == answer_order(a.i):
             slots[key] = a
         else:
@@ -237,13 +311,16 @@ async def run_ladder(
     params: Params,
     done: list[LadderAnswer],
     name: str,
+    deliberate: bool = False,
 ) -> list[LadderAnswer]:
     """Ask `model` (named `name`) for every answer of the sweep that `done` holds no current
     answer for (see `current_answers`), at most `jobs` at a time, cells interleaved in a seeded
-    shuffle. Each answer is appended to `out_dir/answers.jsonl` as it arrives; a failed call is
-    reported on stderr in one line and not written. Returns the new answers."""
+    shuffle. Each answer is appended to `out_dir/answers.jsonl` (with `deliberate`, through the
+    Deliberate agent, to `deliberate_answers.jsonl`) as it arrives; a failed call is reported on
+    stderr in one line and not written. Returns the new answers."""
     lp = params.ladder
-    have = {(a.scene, a.level, a.i) for a in current_answers(done, name, samples, params)[0]}
+    current = current_answers(done, name, samples, params, deliberate)[0]
+    have = {(a.scene, a.level, a.i) for a in current}
     todo = [
         (scene, level, i)
         for scene in SCENES
@@ -255,22 +332,24 @@ async def run_ladder(
         return []
     derive_rng(0, "ladder-schedule").shuffle(todo)
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / ANSWERS_FILE
-    settings = model_settings(params.llm)
+    path = out_dir / answers_file(deliberate)
+    _cut_partial_tail(path)
     gate = asyncio.Semaphore(jobs)
     new: list[LadderAnswer] = []
 
+    async def letter_and_why(prompt: str) -> tuple[str, str]:
+        if deliberate:
+            choice = await ask(deliberate_agent, prompt, model, params.llm, len(LETTERS))
+            return choice.letter, choice.why
+        plain = await ask(ladder_agent, prompt, model, params.llm, None)
+        return plain.letter, plain.why
+
     async def one(scene: Scene, level: int, i: int) -> None:
         order = answer_order(i)
-        prompt = ladder_prompt(level, scene, order, params.lens, lp)
+        prompt = _prompt(level, scene, order, params.lens, lp, deliberate)
         async with gate:
             try:
-                result = await ladder_agent.run(
-                    prompt,
-                    model=model,
-                    model_settings=settings,
-                    retries={"output": params.llm.output_retries},
-                )
+                letter, why = await letter_and_why(prompt)
             except Exception as e:
                 reason = _one_line(f"{type(e).__name__}: {e}")
                 print(
@@ -278,15 +357,14 @@ async def run_ladder(
                     file=sys.stderr,
                 )
                 return
-        choice = result.output
         answer = LadderAnswer(
             scene=scene,
             level=level,
             i=i,
             order=order,
-            letter=choice.letter,
-            action=order[LETTERS.index(choice.letter)],
-            why=choice.why,
+            letter=letter,
+            action=order[LETTERS.index(letter)],
+            why=why,
             model=name,
             prompt=prompt,
         )
@@ -297,6 +375,18 @@ async def run_ladder(
     async with model:  # one HTTP client for the whole sweep
         await asyncio.gather(*(one(*key) for key in todo))
     return new
+
+
+def _cut_partial_tail(path: Path) -> None:
+    """Remove a last line cut short by a killed run, so the next append starts a line of its own
+    (`read_answers` already ignores it)."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return
+    if text and not text.endswith("\n"):
+        kept = _complete_lines(text)
+        path.write_text("".join(line + "\n" for line in kept), encoding="utf-8")
 
 
 def ladder_table(

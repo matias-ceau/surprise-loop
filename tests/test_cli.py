@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from surprise_loop.cli import main
+from surprise_loop.config import MODEL_ENV_VAR
 from surprise_loop.loop import load_result
 from surprise_loop.metrics import summarize
 from surprise_loop.state import TickDump
@@ -282,14 +283,14 @@ def test_empty_run_dir_fails(
     assert "config.json is missing" in assert_one_line_error(capsys)
 
 
-def test_a_model_backend_not_built_yet_fails_with_one_line(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_a_model_backend_with_no_model_fails_with_one_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    config = afternoon_copy(
-        tmp_path, **{"deliberate: stub": "deliberate: llm", "model: null": "model: test"}
-    )
+    monkeypatch.delenv(MODEL_ENV_VAR, raising=False)
+    config = afternoon_copy(tmp_path, **{"deliberate: stub": "deliberate: llm"})
     assert main(["run", str(config), "--runs-dir", str(tmp_path / "runs")]) == 2
-    assert "deliberate" in assert_one_line_error(capsys)
+    assert MODEL_ENV_VAR in assert_one_line_error(capsys)
+    assert not (tmp_path / "runs" / RUN_ID).exists()
 
 
 # --- entry point ---------------------------------------------------------------------------

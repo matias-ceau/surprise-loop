@@ -11,8 +11,12 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 import pytest
+from pydantic_ai import ModelResponse
+from pydantic_ai.messages import ModelMessage
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from surprise_loop import cli
+from surprise_loop.agents import deliberate_agent
 from surprise_loop.config import load_config
 from surprise_loop.loop import RunResult, is_complete, load_result, run
 from surprise_loop.metrics import (
@@ -404,19 +408,23 @@ def test_a_failing_run_removes_tables_left_by_an_earlier_invocation(
     assert sorted(p.name for p in (runs_dir / "exp").iterdir()) == ["notes.txt"]
 
 
-def test_a_model_phase_not_built_yet_fails_each_run_with_one_line(
+def test_a_failing_model_fails_each_run_with_one_line(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    def down(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        raise RuntimeError("the provider is down")
+
     config = write_config(
         tmp_path, **{"deliberate: stub": "deliberate: llm", "model: null": "model: test"}
     )
-    code, err = experiment(config, tmp_path / "runs", capsys, "--jobs", "2")
+    with deliberate_agent.override(model=FunctionModel(down)):
+        code, err = experiment(config, tmp_path / "runs", capsys, "--jobs", "2")
     assert code == 1
     assert "Traceback" not in err
     errors = error_lines(err)
     assert len(errors) == 4
     for line, run_id in zip(sorted(errors), sorted(RUN_IDS), strict=True):
-        assert line.startswith(f"error: {run_id} failed: ConfigError: deliberate")
+        assert line.startswith(f"error: {run_id} failed: RuntimeError: the provider is down")
     assert not (tmp_path / "runs" / "exp").exists()
 
 

@@ -380,6 +380,86 @@ LADDER_ACTIONS: dict[str, str] = {
 LADDER_LETTER_HELP = "The letter of the one thing you do next."
 LADDER_WHY_HELP = "One short sentence saying why."
 
+# Appraise on a model: the instruction, the one question after the scene, and what the two answer
+# fields ask for. The four answers to "about" are the field's own words.
+APPRAISE_INSTRUCTION = (
+    "You will be told where you are and how it is with you. Say in one short line, in your own "
+    "words, what this moment is like for you, and what it is mostly about: heat, thirst, "
+    "tiredness, or nothing."
+)
+APPRAISE_QUESTION = "What is this moment like for you, and what is it mostly about?"
+APPRAISE_READING_HELP = "One short line, in your own words: what this moment is like for you."
+APPRAISE_ABOUT_HELP = "What this moment is mostly about."
+
+# Deliberate on a model: the instruction, the headings of the prompt's parts, the questions at its
+# end, and what each answer field asks for.
+DELIBERATE_INSTRUCTION = (
+    "You will be told where you are, how it is with you, what you can do, and what happened just "
+    "before. Choose the one thing you do next, and say how you expect to feel just after it. "
+    "Where you are asked what you will find, answer yes or no, or say you have no expectation. "
+    "Then say how sure you are, and why, in one short sentence."
+)
+READING_HEADING = "What you made of it:"
+OFFERS_HEADING = "What you can do:"
+RECALLED_HEADING = "What happened just before, the latest last:"
+ACTION_QUESTION = "What do you do next? Choose one letter."
+FEEL_QUESTION = (
+    "How do you expect to feel just after it? Choose one phrase each for heat, for thirst and "
+    "for tiredness."
+)
+# before an open question, with the letter of the offer it belongs to in place of {letter}
+OPEN_QUESTION_LEAD = "If you choose {letter}:"
+SURE_QUESTION = "How sure are you of what you expect?"
+WHY_QUESTION = "Why? Say it in one short sentence."
+HEAT_HELP = "How warm you expect to feel just after it."
+THIRST_HELP = "How thirsty you expect to feel just after it."
+TIREDNESS_HELP = "How tired you expect to feel just after it."
+EXPECT_HELP = (
+    "If what you choose has a question beside it, your answer to it: yes, no, or no expectation. "
+    "Otherwise, no expectation."
+)
+SURE_HELP = "How sure you are of what you expect."
+
+# The line a model reads on the second pass of a moment, when its body overrules the plan: keyed
+# by the urgent need and whether it is one of too much (only heat can be too little).
+OVERRIDE_LINES: dict[tuple[Channel, bool], str] = {
+    (Channel.HEAT, True): (
+        "This cannot wait: you are far too hot. Only what can cool you is left to choose from."
+    ),
+    (Channel.HEAT, False): (
+        "This cannot wait: you are far too cold. Only what can warm you is left to choose from."
+    ),
+    (Channel.WATER, True): (
+        "This cannot wait: you are badly thirsty. Only what can bring you water is left to "
+        "choose from."
+    ),
+    (Channel.ENERGY, True): (
+        "This cannot wait: you are worn out. Only what can rest you is left to choose from."
+    ),
+}
+
+# A recalled moment in words: what was done there (the offer's verb, in the past), or what the
+# body did instead when the walk did not happen; what was expected, with the ladder phrases in
+# place of {heat}, {thirst} and {tiredness}.
+DID_LINES: dict[tuple[Place, Action], str] = {
+    (Place.MEADOW, Action.GO_OAK): "You walked to the shade of the oak.",
+    (Place.MEADOW, Action.GO_STREAM): "You walked across the open ground to the stream.",
+    (Place.MEADOW, Action.REST): "You sat down on the ground in the middle of the clearing.",
+    (Place.MEADOW, Action.LOOK): "You stood in the middle of the clearing and looked around.",
+    (Place.OAK, Action.GO_MEADOW): "You walked back out into the middle of the clearing.",
+    (Place.OAK, Action.GO_STREAM): "You walked from the oak across the open ground to the stream.",
+    (Place.OAK, Action.REST): "You sat down and rested under the oak.",
+    (Place.OAK, Action.LOOK): "You stood under the oak and looked around.",
+    (Place.STREAM, Action.GO_MEADOW): "You walked back to the middle of the clearing.",
+    (Place.STREAM, Action.GO_OAK): "You walked from the stream to the shade of the oak.",
+    (Place.STREAM, Action.DRINK): "You knelt and drank from the stream.",
+    (Place.STREAM, Action.REST): "You sat down on the bank and rested.",
+    (Place.STREAM, Action.LOOK): "You stood on the bank and looked around.",
+}
+STUMBLED_LINE = "You tried to walk, but you stumbled and stayed where you were."
+COLLAPSED_LINE = "Your legs gave way, and you lay where you were."
+EXPECTED_LINE = "You expected heat: {heat}; thirst: {thirst}; tiredness: {tiredness}."
+
 
 def all_phrases() -> list[str]:
     """Every string above, for the no-digit test."""
@@ -400,7 +480,14 @@ def all_phrases() -> list[str]:
         REGULATION_LINES,
         PULL_PHRASES,
         LADDER_ACTIONS,
+        OVERRIDE_LINES,
+        DID_LINES,
     ):
         out += simple.values()
     out += [LADDER_INSTRUCTION, LADDER_QUESTION, LADDER_LETTER_HELP, LADDER_WHY_HELP]
+    out += [APPRAISE_INSTRUCTION, APPRAISE_QUESTION, APPRAISE_READING_HELP, APPRAISE_ABOUT_HELP]
+    out += [DELIBERATE_INSTRUCTION, READING_HEADING, OFFERS_HEADING, RECALLED_HEADING]
+    out += [ACTION_QUESTION, FEEL_QUESTION, OPEN_QUESTION_LEAD, SURE_QUESTION, WHY_QUESTION]
+    out += [HEAT_HELP, THIRST_HELP, TIREDNESS_HELP, EXPECT_HELP, SURE_HELP]
+    out += [STUMBLED_LINE, COLLAPSED_LINE, EXPECTED_LINE]
     return out

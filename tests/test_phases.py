@@ -328,11 +328,11 @@ def test_appraise_stub_reads_the_loudest_need(
 
 
 @pytest.mark.parametrize("phase", [appraise, deliberate], ids=["appraise", "deliberate"])
-def test_a_model_backend_is_not_built_yet(phase: Phase) -> None:
+def test_a_model_backend_needs_a_resolved_model(phase: Phase) -> None:
     backends = Backends(**{phase.__name__: "llm"})
     rt = make_rt(backends=backends)
     ws = through(base_ws(rt), rt, PHASES.index(phase))
-    with pytest.raises(ConfigError, match=f"{phase.__name__} is not built for a model yet"):
+    with pytest.raises(ConfigError, match="no resolved model"):
         run(phase, ws, rt)
 
 

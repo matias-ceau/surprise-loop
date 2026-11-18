@@ -12,12 +12,11 @@ from surprise_loop.config import Params, Runtime
 from surprise_loop.feeling import feel, needs
 from surprise_loop.phases.evaluate import judged_index
 from surprise_loop.phases.heuristics import (
-    loudest,
     require,
     serving_actions,
     too_much,
     updated_belief,
-    world_truth,
+    voiced_note,
 )
 from surprise_loop.state import (
     Comparison,
@@ -27,27 +26,10 @@ from surprise_loop.state import (
     Override,
     PassRecord,
     Pulls,
-    SurpriseNote,
     Temperament,
     Workspace,
 )
-from surprise_loop.world import QUESTION_OF, SERVES, Action, Channel, Levels, Outcome
-
-
-def voiced_note(
-    action: Action, comparison: Comparison, outcome: Outcome, params: Params
-) -> SurpriseNote | None:
-    """The loudest body error if it reaches `voice_threshold`, else a world mismatch, else None."""
-    felt_error = comparison.body_felt
-    top = loudest(felt_error)[0]
-    if abs(felt_error[top]) >= params.reconcile.voice_threshold:
-        return SurpriseNote(channel=top, worse=felt_error[top] > 0)
-    question = QUESTION_OF[action]
-    if comparison.world and question is not None:
-        return SurpriseNote(
-            question=question, actual=world_truth(question, outcome.observation.facts)
-        )
-    return None
+from surprise_loop.world import SERVES, Action, Channel, Levels, Outcome
 
 
 def judged(
@@ -130,7 +112,9 @@ async def reconcile(ws: Workspace, rt: Runtime) -> Workspace:
         outcome.observation.signal, decision.expectation.bands, t, params.belief
     )
     feeling = feel(belief, t, agent.feeling, comparison, params.feeling)
-    voiced = voiced_note(action, comparison, outcome, params)
+    voiced = voiced_note(
+        action, comparison, decision.expectation.world, params.reconcile.voice_threshold
+    )
 
     salience = min(1, params.memory.base_salience + params.memory.salience_gain * comparison.size)
     episode = Episode(

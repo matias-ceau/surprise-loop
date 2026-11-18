@@ -30,10 +30,11 @@ stderr.
 world steps, else an error) as one self-contained HTML file.
 `ladder-check` runs the ladder check (see `ladder.py`) on the configured model, prints one table
 per scene and exits 0 only if both scenes pass, 1 when the check ran to completion and a scene
-failed. Anything informational goes to stderr. A bad config, or a file that cannot be read or
+failed; `--deliberate` runs the same sweep through the Deliberate agent, into files of its own.
+Anything informational goes to stderr. A bad config, or a file that cannot be read or
 written, or a run directory that cannot be started, resumed or read, is reported as one
 `error: ...` line on stderr with exit code 2; so is a ladder check left with a cell short of
-answers (no verdict then).
+answers (no verdict then), and any other error the ladder check meets.
 """
 
 import argparse
@@ -57,15 +58,15 @@ from surprise_loop.config import (
     resolve_model,
 )
 from surprise_loop.ladder import (
-    ANSWERS_FILE,
     SCENES,
-    SUMMARY_FILE,
+    answers_file,
     current_answers,
     ladder_table,
     read_answers,
     run_ladder,
     short_cells,
     summarize,
+    summary_file,
 )
 from surprise_loop.loop import (
     ReplayMismatch,
@@ -170,6 +171,12 @@ def _parser() -> argparse.ArgumentParser:
         "missing (default: runs/ladder)",
     )
     ladder_cmd.add_argument(
+        "--deliberate",
+        action="store_true",
+        help="ask through the Deliberate agent and its prompt instead; its answers and summary "
+        "go to deliberate_answers.jsonl and deliberate_summary.json",
+    )
+    ladder_cmd.add_argument(
         "--samples", type=_positive, help="answers per scene and level (default: from params)"
     )
     ladder_cmd.add_argument(
@@ -209,6 +216,15 @@ def _scene(args: argparse.Namespace) -> int:
 
 
 def _ladder_check(args: argparse.Namespace) -> int:
+    try:
+        return _ladder_sweep(args)
+    except (ConfigError, CommandError, RunError):
+        raise
+    except Exception as e:  # the check could not give a verdict: 2, never the 1 of a failed scene
+        raise CommandError(f"{type(e).__name__}: {e}") from e
+
+
+def _ladder_sweep(args: argparse.Namespace) -> int:
     params, name = Params(), None
     if args.config is not None:
         config = load_config(args.config)
@@ -216,16 +232,19 @@ def _ladder_check(args: argparse.Namespace) -> int:
     name = name or os.environ.get(MODEL_ENV_VAR)
     if not name:
         raise ConfigError(f"ladder-check needs a model: set config `model` or {MODEL_ENV_VAR}")
-    lp = params.ladder
-    samples = args.samples or lp.samples
-    jobs = args.jobs or lp.jobs
+    deliberate = args.deliberate
+    samples = args.samples or params.ladder.samples
+    jobs = args.jobs or params.ladder.jobs
+    # the params as used: the command line's samples and jobs in place of the config's
+    lp = params.ladder.model_copy(update={"samples": samples, "jobs": jobs})
+    params = params.model_copy(update={"ladder": lp})
     try:
-        done = read_answers(args.out / ANSWERS_FILE)
+        done = read_answers(args.out / answers_file(deliberate))
     except (OSError, ValueError) as e:
         raise CommandError(str(e)) from None
     model = load_model(name)
     assert model is not None  # name is set
-    current, stale = current_answers(done, name, samples, params)
+    current, stale = current_answers(done, name, samples, params, deliberate)
     print(f"ladder: {len(current)} current answers in {args.out}; model {name}", file=sys.stderr)
     if stale:
         print(
@@ -234,12 +253,14 @@ def _ladder_check(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
     try:
-        new = asyncio.run(run_ladder(model, samples, jobs, args.out, params, done, name))
+        new = asyncio.run(
+            run_ladder(model, samples, jobs, args.out, params, done, name, deliberate=deliberate)
+        )
     except OSError as e:
         raise CommandError(f"{args.out}: cannot write: {e.strerror}") from None
     print(f"ladder: {len(new)} new answers", file=sys.stderr)
 
-    answers = current_answers(done + new, name, samples, params)[0]
+    answers = current_answers(done + new, name, samples, params, deliberate)[0]
     short = short_cells(answers, samples, lp)
     if short:
         raise CommandError(
@@ -254,10 +275,11 @@ def _ladder_check(args: argparse.Namespace) -> int:
         "params": params.model_dump(mode="json"),
         "scenes": {scene: curve.model_dump() for scene, curve in curves.items()},
     }
+    path = args.out / summary_file(deliberate)
     try:
-        (args.out / SUMMARY_FILE).write_text(json.dumps(summary, indent=1) + "\n", encoding="utf-8")
+        path.write_text(json.dumps(summary, indent=1) + "\n", encoding="utf-8")
     except OSError as e:
-        raise CommandError(f"{args.out / SUMMARY_FILE}: cannot write: {e.strerror}") from None
+        raise CommandError(f"{path}: cannot write: {e.strerror}") from None
     print("\n\n".join(ladder_table(s, answers, curves[s], lp) for s in SCENES))
     return 0 if all(curve.passed for curve in curves.values()) else 1
 

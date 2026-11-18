@@ -15,7 +15,15 @@ from surprise_loop.config import (
     StubModelParams,
 )
 from surprise_loop.feeling import discomfort, felt
-from surprise_loop.state import Band, ChangeWord, Comparison, Decision, FeltScene, Temperament
+from surprise_loop.state import (
+    Band,
+    ChangeWord,
+    Comparison,
+    Decision,
+    FeltScene,
+    SurpriseNote,
+    Temperament,
+)
 from surprise_loop.world import (
     GO_TARGET,
     QUESTION_OF,
@@ -141,6 +149,22 @@ def updated_belief(
         k = t.trust[c] / (t.trust[c] + p.expectation_weight[c])
         out[c.value] = edge.of(c) + k * (signal.of(c) - edge.of(c))
     return Levels(**out)
+
+
+def voiced_note(
+    action: Action, comparison: Comparison, expected_world: bool | None, voice_threshold: float
+) -> SurpriseNote | None:
+    """What a pass's surprise voices: the loudest body error if it reaches `voice_threshold`,
+    else a world mismatch (what turned out true is the opposite of `expected_world`), else None.
+    Reconcile voices it in the next scene; a recalled episode is told with it."""
+    felt_error = comparison.body_felt
+    top = loudest(felt_error)[0]
+    if abs(felt_error[top]) >= voice_threshold:
+        return SurpriseNote(channel=top, worse=felt_error[top] > 0)
+    question = QUESTION_OF[action]
+    if comparison.world and question is not None and expected_world is not None:
+        return SurpriseNote(question=question, actual=not expected_world)
+    return None
 
 
 def too_much(c: Channel, need: float) -> bool:

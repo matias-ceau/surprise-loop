@@ -1,6 +1,7 @@
 """Appraise: an affective reading of the scene, and which need it is about."""
 
-from surprise_loop.config import ConfigError, Runtime
+from surprise_loop.agents import ABOUT, appraise_agent, appraise_prompt, run_agent
+from surprise_loop.config import Runtime
 from surprise_loop.phases.heuristics import clipped, loudest, require, too_much
 from surprise_loop.phrases import STUB_READINGS
 from surprise_loop.state import Appraisal, Workspace
@@ -19,7 +20,16 @@ async def appraise_stub(ws: Workspace, rt: Runtime) -> Workspace:
     return ws.model_copy(update={"appraisal": Appraisal(reading=reading, about=about)})
 
 
+async def appraise_llm(ws: Workspace, rt: Runtime) -> Workspace:
+    """The model reads the felt scene and answers with its own one-line reading and what the
+    moment is about."""
+    percept = require(ws.percept, "percept", "appraise")
+    out = await run_agent(appraise_agent, appraise_prompt(percept.scene.text()), ws, rt, None)
+    appraisal = Appraisal(reading=out.reading, about=ABOUT[out.about])
+    return ws.model_copy(update={"appraisal": appraisal})
+
+
 async def appraise(ws: Workspace, rt: Runtime) -> Workspace:
     if rt.config.backends.appraise == "llm":
-        raise ConfigError("appraise is not built for a model yet: use the stub backend")
+        return await appraise_llm(ws, rt)
     return await appraise_stub(ws, rt)

@@ -14,25 +14,38 @@ from pydantic_ai import ModelResponse, ToolCallPart
 from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from surprise_loop.agents import load_model, model_settings
+from surprise_loop.agents import deliberate_prompt, load_model, model_settings
 from surprise_loop.cli import main
 from surprise_loop.config import MODEL_ENV_VAR, LadderParams, LLMParams, Params, Scene
 from surprise_loop.feeling import felt
 from surprise_loop.ladder import (
     ANSWERS_FILE,
+    DELIBERATE_ANSWERS_FILE,
+    DELIBERATE_SUMMARY_FILE,
+    LADDER_ACTION_OF,
     LETTERS,
     SCENES,
+    SUMMARY_FILE,
     LadderAnswer,
     answer_order,
     current_answers,
+    deliberate_ladder_prompt,
     ladder_body,
     ladder_prompt,
     read_answers,
     run_ladder,
     summarize,
 )
-from surprise_loop.phrases import LADDER_ACTIONS, all_phrases
-from surprise_loop.world import Channel
+from surprise_loop.lens import felt_scene
+from surprise_loop.phrases import (
+    DELIBERATE_INSTRUCTION,
+    LADDER_ACTIONS,
+    OFFER_PHRASES,
+    STUB_READINGS,
+    all_phrases,
+)
+from surprise_loop.state import Offer
+from surprise_loop.world import Action, Channel, Place, frozen_noon_facts, offers_at
 
 LP = LadderParams()
 LEVELS = range(len(LP.heat_levels))
@@ -358,7 +371,7 @@ def test_the_command_fails_on_flat_curves(
     summary = json.loads((tmp_path / "summary.json").read_text())
     assert summary["model"] == "test"
     assert summary["samples"] == SAMPLES
-    assert summary["params"]["ladder"]["samples"] == LP.samples
+    assert summary["params"]["ladder"]["samples"] == SAMPLES  # the samples used, not the config's
     assert summary["scenes"]["A"]["share"] == [1.0] * 7
     assert summary["scenes"]["A"]["passed"] is False
 
@@ -491,3 +504,181 @@ def test_the_command_reports_stale_answers_once(
     assert len(stale_lines) == 1 and f"ignored {every} stale answers" in stale_lines[0]
     summary = json.loads((tmp_path / "summary.json").read_text())
     assert summary["scenes"]["A"]["share"] != [1.0] * 7  # the other model's answers do not count
+
+
+# --- answers files written by a killed run ------------------------------------------------------
+
+
+def test_a_partly_written_last_line_is_dropped(tmp_path: Path) -> None:
+    sweep(always("shade"), tmp_path, samples=1)
+    path = tmp_path / ANSWERS_FILE
+    whole = read_answers(path)
+    lines = path.read_text().splitlines()
+    path.write_text("".join(line + "\n" for line in lines) + lines[0][: len(lines[0]) // 2])
+    assert read_answers(path) == whole
+
+
+def test_a_rerun_after_a_partly_written_line_appends_whole_lines(tmp_path: Path) -> None:
+    sweep(always("shade"), tmp_path, samples=1)
+    path = tmp_path / ANSWERS_FILE
+    lines = path.read_text().splitlines()
+    path.write_text("".join(line + "\n" for line in lines[:-2]) + lines[-2][:15])
+    calls: list[str] = []
+    new = sweep(always("shade", calls), tmp_path, samples=1)
+    assert len(new) == len(calls) == 2
+    assert len(read_answers(path)) == len(lines)
+    assert path.read_text().endswith("\n")
+
+
+def test_a_bad_line_before_the_last_is_still_an_error(tmp_path: Path) -> None:
+    sweep(always("shade"), tmp_path, samples=1)
+    path = tmp_path / ANSWERS_FILE
+    lines = path.read_text().splitlines()
+    lines.insert(1, lines[0][:10])
+    path.write_text("".join(line + "\n" for line in lines))
+    with pytest.raises(ValueError, match=r"answers\.jsonl: line 2"):
+        read_answers(path)
+
+
+def test_a_complete_last_line_that_is_not_an_answer_is_an_error(tmp_path: Path) -> None:
+    path = tmp_path / ANSWERS_FILE
+    path.write_text('{"scene": "A"}')
+    with pytest.raises(ValueError, match=r"line 1"):
+        read_answers(path)
+
+
+# --- the command's exit code and summary --------------------------------------------------------
+
+
+def test_an_unexpected_error_in_the_command_exits_two(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    async def broken(*args: object, **kwargs: object) -> list[LadderAnswer]:
+        raise RuntimeError("something\nunexpected")
+
+    monkeypatch.setenv(MODEL_ENV_VAR, "test")
+    monkeypatch.setattr("surprise_loop.cli.run_ladder", broken)
+    assert run_command(tmp_path) == 2
+    err = capsys.readouterr().err.strip().splitlines()
+    assert err[-1] == "error: RuntimeError: something; unexpected"
+
+
+def test_the_summary_records_the_samples_and_jobs_used(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sweep(always("shade"), tmp_path)
+    monkeypatch.setenv(MODEL_ENV_VAR, "test")
+    assert run_command(tmp_path, "--jobs", "2") == 1
+    summary = json.loads((tmp_path / SUMMARY_FILE).read_text())
+    assert summary["samples"] == SAMPLES
+    assert summary["params"]["ladder"]["samples"] == SAMPLES
+    assert summary["params"]["ladder"]["jobs"] == 2
+    capsys.readouterr()
+
+
+# --- the same sweep through the Deliberate agent ------------------------------------------------
+
+NEUTRAL = STUB_READINGS[(None, True)]
+
+
+def test_the_deliberate_ladder_actions_are_the_meadows_offers() -> None:
+    assert set(LADDER_ACTION_OF) == set(LADDER_ACTIONS)
+    assert sorted(LADDER_ACTION_OF.values()) == sorted(offers_at(Place.MEADOW))
+    assert LADDER_ACTION_OF["shade"] is Action.GO_OAK
+
+
+@pytest.mark.parametrize("scene", SCENES)
+@pytest.mark.parametrize("level", [0, 3, 6])
+def test_the_deliberate_ladder_prompt_is_the_deliberate_prompt(level: int, scene: Scene) -> None:
+    order = answer_order(5)
+    belief, t, arousal = ladder_body(level, scene, LP)
+    text = felt_scene(
+        Place.MEADOW, frozen_noon_facts(), belief, t, arousal, None, None, 0, Params().lens
+    ).text()
+    offers = [
+        Offer(action=a, phrase=OFFER_PHRASES[(Place.MEADOW, a)])
+        for a in (LADDER_ACTION_OF[k] for k in order)
+    ]
+    prompt = deliberate_ladder_prompt(level, scene, order, Params().lens, LP)
+    assert prompt == deliberate_prompt(text, NEUTRAL, offers, [], "", "")
+    assert NEUTRAL in prompt
+    assert not re.search(r"[0-9_]", prompt)
+
+
+def choose(action: Action, calls: list[str] | None = None) -> FunctionModel:
+    """A Deliberate model that always answers the letter of `action`; records the prompts."""
+
+    def answer(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        assert info.instructions == DELIBERATE_INSTRUCTION
+        prompt = user_prompt(messages)
+        if calls is not None:
+            calls.append(prompt)
+        letter = next(
+            line[0]
+            for line in prompt.split("\n")
+            if line[3:] == OFFER_PHRASES[(Place.MEADOW, action)] and line[1:3] == ". "
+        )
+        args = {
+            "letter": letter,
+            "heat": "a bit cooler",
+            "thirst": "about the same",
+            "tiredness": "about the same",
+            "expect": "no expectation",
+            "sure": "guessing",
+            "why": "It is the  obvious\nthing.",
+        }
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, args)])
+
+    return FunctionModel(answer)
+
+
+def deliberate_sweep(model: FunctionModel, out: Path, samples: int = SAMPLES) -> list:
+    done = read_answers(out / DELIBERATE_ANSWERS_FILE)
+    return asyncio.run(run_ladder(model, samples, 4, out, Params(), done, "test", deliberate=True))
+
+
+def test_a_deliberate_sweep_writes_its_own_file(tmp_path: Path) -> None:
+    calls: list[str] = []
+    new = deliberate_sweep(choose(Action.GO_OAK, calls), tmp_path)
+    assert len(new) == len(calls) == len(SCENES) * len(LEVELS) * SAMPLES
+    assert not (tmp_path / ANSWERS_FILE).exists()
+    stored = read_answers(tmp_path / DELIBERATE_ANSWERS_FILE)
+    assert len(stored) == len(new)
+    assert all(a.action == "shade" for a in stored)
+    assert all(a.order == answer_order(a.i) for a in stored)
+    assert all(a.why == "It is the obvious thing." for a in stored)
+    assert all(
+        a.prompt == deliberate_ladder_prompt(a.level, a.scene, a.order, Params().lens, LP)
+        for a in stored
+    )
+    assert summarize(stored, LP)["A"].share == [1.0] * 7
+    # a rerun asks nothing; the plain sweep does not count these answers
+    assert deliberate_sweep(choose(Action.GO_OAK), tmp_path) == []
+    assert current_answers(stored, "test", SAMPLES, Params()) == ([], len(stored))
+
+
+def test_a_deliberate_answer_counts_as_shade_only_for_the_oak(tmp_path: Path) -> None:
+    deliberate_sweep(choose(Action.REST), tmp_path, samples=1)
+    stored = read_answers(tmp_path / DELIBERATE_ANSWERS_FILE)
+    assert {a.action for a in stored} == {"sit"}
+    assert summarize(stored, LP)["B"].share == [0.0] * 7
+
+
+def test_the_command_with_deliberate_keeps_both_checks_apart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sweep(always("stream"), tmp_path)
+    plain = (tmp_path / ANSWERS_FILE).read_text()
+    deliberate_sweep(choose(Action.GO_OAK), tmp_path)
+    monkeypatch.setenv(MODEL_ENV_VAR, "test")
+
+    assert run_command(tmp_path, "--deliberate") == 1  # every level all shade: a flat curve
+    summary = json.loads((tmp_path / DELIBERATE_SUMMARY_FILE).read_text())
+    assert summary["scenes"]["A"]["share"] == [1.0] * 7
+    assert not (tmp_path / SUMMARY_FILE).exists()
+    assert (tmp_path / ANSWERS_FILE).read_text() == plain
+
+    assert run_command(tmp_path) == 1
+    assert json.loads((tmp_path / SUMMARY_FILE).read_text())["scenes"]["A"]["share"] == [0.0] * 7
+    assert json.loads((tmp_path / DELIBERATE_SUMMARY_FILE).read_text()) == summary
+    capsys.readouterr()
