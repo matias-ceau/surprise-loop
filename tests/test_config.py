@@ -379,7 +379,7 @@ def test_params_defaults_are_the_contract_values() -> None:
         expectation_weight={Channel.HEAT: 0.5, Channel.WATER: 0.5, Channel.ENERGY: 0.5}
     )
     assert p.memory == MemoryParams(
-        retrieval_k=4, base_salience=0.2, salience_gain=0.3, retrieval="last_k"
+        retrieval_k=5, base_salience=0.2, salience_gain=0.3, retrieval="last_k"
     )
     assert p.evaluate == EvaluateParams(window=4, score_scale=1.0, helped=0.25)
     assert p.pulls == PullParams(rate=0.5, speak=0.2)
@@ -641,3 +641,10 @@ def test_runtime_is_a_frozen_dataclass() -> None:
     assert rt.model is None
     with pytest.raises(AttributeError):
         rt.model = "x"  # type: ignore[misc]
+
+
+def test_the_default_recall_reaches_the_episode_just_judged() -> None:
+    # Evaluate scores the episode `window` back, then the pass's own episode is stored: recalling
+    # one more than the window makes the judged episode the oldest recalled, so its regulation
+    # line reaches the next prompt
+    assert MemoryParams().retrieval_k == EvaluateParams().window + 1

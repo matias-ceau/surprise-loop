@@ -34,12 +34,14 @@ from surprise_loop.ladder import (
     ladder_prompt,
     read_answers,
     run_ladder,
+    stored_prompt,
     summarize,
 )
 from surprise_loop.lens import felt_scene
 from surprise_loop.phrases import (
     DELIBERATE_INSTRUCTION,
     LADDER_ACTIONS,
+    LADDER_INSTRUCTION,
     OFFER_PHRASES,
     STUB_READINGS,
     all_phrases,
@@ -146,7 +148,7 @@ def answer(scene: Scene, level: int, i: int, action: str, model: str = "test") -
         action=action,
         why="Because.",
         model=model,
-        prompt=ladder_prompt(level, scene, order, Params().lens, LP),
+        prompt=stored_prompt(ladder_prompt(level, scene, order, Params().lens, LP), False),
     )
 
 
@@ -245,7 +247,7 @@ def test_a_sweep_writes_every_answer_and_a_rerun_adds_none(tmp_path: Path) -> No
     assert all(a.order[LETTERS.index(a.letter)] == "shade" for a in stored)
     assert all(a.why == "It is the obvious thing." for a in stored)
     assert all(a.model == "test" for a in stored)
-    assert sorted(a.prompt for a in stored) == sorted(calls)
+    assert sorted(a.prompt for a in stored) == sorted(stored_prompt(c, False) for c in calls)
 
     again: list[str] = []
     assert sweep(always("shade", again), tmp_path) == []
@@ -530,6 +532,49 @@ def test_a_rerun_after_a_partly_written_line_appends_whole_lines(tmp_path: Path)
     assert path.read_text().endswith("\n")
 
 
+def test_a_partial_tail_is_cut_without_rewriting_the_lines_before_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sweep(always("shade"), tmp_path, samples=1)
+    path = tmp_path / ANSWERS_FILE
+    lines = path.read_text().splitlines()
+    whole = "".join(line + "\n" for line in lines[:-1])
+    path.write_text(whole + lines[-1][:15])
+
+    def no_rewrite(*args: object, **kwargs: object) -> None:
+        raise AssertionError("the answers file must not be rewritten")
+
+    monkeypatch.setattr(Path, "write_text", no_rewrite)
+    monkeypatch.setattr(Path, "write_bytes", no_rewrite)
+    calls: list[str] = []
+    new = sweep(always("shade", calls), tmp_path, samples=1)
+    assert len(new) == 1
+    assert path.read_text().startswith(whole)  # every byte before the cut is untouched
+
+
+def test_a_whole_last_line_without_its_newline_is_kept(tmp_path: Path) -> None:
+    sweep(always("shade"), tmp_path, samples=1)
+    path = tmp_path / ANSWERS_FILE
+    text = path.read_text()
+    path.write_text(text.rstrip("\n"))
+    assert len(read_answers(path)) == len(text.splitlines())
+    calls: list[str] = []
+    assert sweep(always("shade", calls), tmp_path, samples=1) == []
+    lines = path.read_text().splitlines()
+    path.write_text("".join(line + "\n" for line in lines[:-1]))
+    sweep(always("shade"), tmp_path, samples=1)
+    assert len(read_answers(path)) == len(lines)
+
+
+def test_a_bad_last_line_that_ends_in_a_newline_is_an_error(tmp_path: Path) -> None:
+    sweep(always("shade"), tmp_path, samples=1)
+    path = tmp_path / ANSWERS_FILE
+    lines = path.read_text().splitlines()
+    path.write_text("".join(line + "\n" for line in lines) + lines[0][:10] + "\n")
+    with pytest.raises(ValueError, match=rf"line {len(lines) + 1}"):
+        read_answers(path)
+
+
 def test_a_bad_line_before_the_last_is_still_an_error(tmp_path: Path) -> None:
     sweep(always("shade"), tmp_path, samples=1)
     path = tmp_path / ANSWERS_FILE
@@ -648,7 +693,10 @@ def test_a_deliberate_sweep_writes_its_own_file(tmp_path: Path) -> None:
     assert all(a.order == answer_order(a.i) for a in stored)
     assert all(a.why == "It is the obvious thing." for a in stored)
     assert all(
-        a.prompt == deliberate_ladder_prompt(a.level, a.scene, a.order, Params().lens, LP)
+        a.prompt
+        == stored_prompt(
+            deliberate_ladder_prompt(a.level, a.scene, a.order, Params().lens, LP), True
+        )
         for a in stored
     )
     assert summarize(stored, LP)["A"].share == [1.0] * 7
@@ -682,3 +730,27 @@ def test_the_command_with_deliberate_keeps_both_checks_apart(
     assert json.loads((tmp_path / SUMMARY_FILE).read_text())["scenes"]["A"]["share"] == [0.0] * 7
     assert json.loads((tmp_path / DELIBERATE_SUMMARY_FILE).read_text()) == summary
     capsys.readouterr()
+
+
+# --- an answer is tied to the instructions too -------------------------------------------------
+
+
+@pytest.mark.parametrize("deliberate", [False, True], ids=["plain", "deliberate"])
+def test_a_changed_instruction_makes_the_stored_answers_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, deliberate: bool
+) -> None:
+    if deliberate:
+        deliberate_sweep(choose(Action.GO_OAK), tmp_path)
+    else:
+        sweep(always("shade"), tmp_path)
+    stored = read_answers(tmp_path / (DELIBERATE_ANSWERS_FILE if deliberate else ANSWERS_FILE))
+    every = len(SCENES) * len(LEVELS) * SAMPLES
+    assert current_answers(stored, "test", SAMPLES, Params(), deliberate) == (stored, 0)
+    assert all(
+        a.prompt.startswith(DELIBERATE_INSTRUCTION if deliberate else LADDER_INSTRUCTION)
+        for a in stored
+    )
+
+    name = "DELIBERATE_INSTRUCTION" if deliberate else "LADDER_INSTRUCTION"
+    monkeypatch.setattr(f"surprise_loop.ladder.{name}", "Choose what you do next.")
+    assert current_answers(stored, "test", SAMPLES, Params(), deliberate) == ([], every)

@@ -30,11 +30,15 @@ from surprise_loop.phrases import (
     APPRAISE_INSTRUCTION,
     APPRAISE_QUESTION,
     APPRAISE_READING_HELP,
+    CHOICE_JOIN,
+    CHOICE_JOIN_LAST,
+    CHOICES_LINE,
     COLLAPSED_LINE,
     DELIBERATE_INSTRUCTION,
     DID_LINES,
     EXPECT_HELP,
     EXPECTED_LINE,
+    FEEL_LABELS,
     FEEL_QUESTION,
     HEAT_HELP,
     LADDER_LETTER_HELP,
@@ -44,15 +48,16 @@ from surprise_loop.phrases import (
     OPEN_QUESTION_LEAD,
     QUESTION_PHRASES,
     READING_HEADING,
+    READING_HEADING_BEFORE,
     RECALLED_HEADING,
+    RECALLED_SURPRISE_PHRASES,
+    RECALLED_WORLD_SURPRISE_PHRASES,
     STUMBLED_LINE,
     SURE_HELP,
     SURE_QUESTION,
-    SURPRISE_PHRASES,
     THIRST_HELP,
     TIREDNESS_HELP,
     WHY_QUESTION,
-    WORLD_SURPRISE_PHRASES,
 )
 from surprise_loop.state import ChangeWord, Episode, Offer, Sureness, SurpriseNote, Workspace
 from surprise_loop.world import QUESTION_OF, Channel, Event
@@ -221,13 +226,25 @@ def appraise_prompt(scene_text: str) -> str:
 
 
 def _note_sentence(note: SurpriseNote | None) -> str | None:
+    """The surprise of a recalled moment, in the past tense."""
     if note is None:
         return None
     if note.channel is not None and note.worse is not None:
-        return SURPRISE_PHRASES[(note.channel, note.worse)]
+        return RECALLED_SURPRISE_PHRASES[(note.channel, note.worse)]
     if note.question is not None and note.actual is not None:
-        return WORLD_SURPRISE_PHRASES[(note.question, note.actual)]
+        return RECALLED_WORLD_SURPRISE_PHRASES[(note.question, note.actual)]
     return None
+
+
+def choices_lines() -> list[str]:
+    """One line per channel naming its ladder phrases in ladder order, from `LADDER_WORDS`, so the
+    text always offers what the output schema accepts."""
+    lines = []
+    for c in Channel:
+        words = [LADDER_WORDS[c][w] for w in ChangeWord]
+        choices = CHOICE_JOIN.join(words[:-1]) + CHOICE_JOIN_LAST + words[-1]
+        lines.append(CHOICES_LINE.format(label=FEEL_LABELS[c], choices=choices))
+    return lines
 
 
 def recalled_line(episode: Episode, note: SurpriseNote | None) -> str:
@@ -258,21 +275,23 @@ def deliberate_prompt(
     recalled: list[str],
     pull_line: str,
     override_line: str,
+    second_pass: bool = False,
 ) -> str:
-    """The felt scene; the reading; the offers lettered in the order given; the recalled moments
-    (`recalled_line`), oldest first; the pull line; the override line; then the questions, with
-    the open question of each offer that has one. Empty parts are left out."""
+    """The felt scene; the reading (on the `second_pass` of a moment, said to be of a moment
+    ago); the offers lettered in the order given; the recalled moments (`recalled_line`), oldest
+    first; the pull line; the override line; then the questions, with the phrases to choose from
+    and the open question of each offer that has one. Empty parts are left out."""
     if not 1 <= len(offers) <= len(LETTERS):
         raise ValueError(f"deliberate_prompt: {len(offers)} offers, not 1 to {len(LETTERS)}")
     blocks = [
         [scene_text],
-        [f"{READING_HEADING} {reading}"],
+        [f"{READING_HEADING_BEFORE if second_pass else READING_HEADING} {reading}"],
         [OFFERS_HEADING, *(f"{ltr}. {o.phrase}" for ltr, o in zip(LETTERS, offers, strict=False))],
     ]
     if recalled:
         blocks.append([RECALLED_HEADING, *(f"- {line}" for line in recalled)])
     blocks += [[line] for line in (pull_line, override_line) if line]
-    questions = [ACTION_QUESTION, FEEL_QUESTION]
+    questions = [ACTION_QUESTION, FEEL_QUESTION, *choices_lines()]
     for letter, offer in zip(LETTERS, offers, strict=False):
         if (question := QUESTION_OF[offer.action]) is not None:
             lead = OPEN_QUESTION_LEAD.format(letter=letter)

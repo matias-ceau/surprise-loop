@@ -10,8 +10,9 @@ next warmer one. A hand-written phrase ladder with a step that runs backwards fa
 
 Answers are appended to `answers.jsonl` as they arrive; a failed call is reported on stderr and
 left for a rerun, which asks only for what is missing. Each answer carries the model name and the
-exact prompt it answered: a stored answer counts only while both match the current run, so a
-rerun after a change of wording or of model asks those slots again instead of counting the old
+exact text it read (the agent's instructions, a blank line, the user prompt): a stored answer
+counts only while both match the current run, so a rerun after a change of wording (of the
+instructions or the prompt) or of model asks those slots again instead of counting the old
 answers. A last line cut off by a killed run is dropped.
 
 The deliberate variant (`deliberate=True`) is the same sweep through the Deliberate agent and its
@@ -22,6 +23,7 @@ as the shade) and go to `deliberate_answers.jsonl`, so neither check overwrites 
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Literal
@@ -34,6 +36,7 @@ from surprise_loop.agents import OneLine, ask, deliberate_agent, deliberate_prom
 from surprise_loop.config import LadderParams, LensParams, Params, Scene, derive_rng
 from surprise_loop.lens import felt_scene
 from surprise_loop.phrases import (
+    DELIBERATE_INSTRUCTION,
     LADDER_ACTIONS,
     LADDER_INSTRUCTION,
     LADDER_LETTER_HELP,
@@ -131,6 +134,13 @@ def _prompt(
     return build(level, scene, order, p, lp)
 
 
+def stored_prompt(user_prompt: str, deliberate: bool) -> str:
+    """Everything a model read as text for one answer: the instructions of the check's agent, a
+    blank line, and the user prompt. This is what an answer stores and is held against."""
+    instruction = DELIBERATE_INSTRUCTION if deliberate else LADDER_INSTRUCTION
+    return f"{instruction}\n\n{user_prompt}"
+
+
 def answer_order(i: int) -> list[str]:
     """The order of the four actions for answer `i`, drawn from `i` alone: every cell sees the
     same orders, so letter-position effects cancel between levels and scenes."""
@@ -148,7 +158,7 @@ class LadderAnswer(Frozen):
     action: str
     why: str
     model: str  # the model name the answer came from
-    prompt: str  # the exact user prompt it answered
+    prompt: str  # the exact text it read: instructions and user prompt (`stored_prompt`)
 
     @model_validator(mode="after")
     def _consistent(self) -> "LadderAnswer":
@@ -226,10 +236,11 @@ def _is_json(line: str) -> bool:
 
 
 def _complete_lines(text: str) -> list[str]:
-    """The lines of an answers file without a last line that is not complete JSON: the part an
-    append cut short when the run was killed."""
+    """The lines of an answers file without a last line that has no newline and is not complete
+    JSON: the part an append cut short when the run was killed. A last line that ends in a newline
+    was written whole, so it is kept (and refused like any bad line if it is not an answer)."""
     lines = text.splitlines()
-    if lines and lines[-1].strip() and not _is_json(lines[-1]):
+    if lines and not text.endswith("\n") and not _is_json(lines[-1]):
         lines.pop()
     return lines
 
@@ -282,7 +293,8 @@ def current_answers(
             continue
         if key not in prompts:
             order = answer_order(a.i)
-            prompts[key] = _prompt(a.level, a.scene, order, params.lens, lp, deliberate)
+            user = _prompt(a.level, a.scene, order, params.lens, lp, deliberate)
+            prompts[key] = stored_prompt(user, deliberate)
         if a.model == name and a.prompt == prompts[key] and a.order == answer_order(a.i):
             slots[key] = a
         else:
@@ -366,7 +378,7 @@ async def run_ladder(
             action=order[LETTERS.index(letter)],
             why=why,
             model=name,
-            prompt=prompt,
+            prompt=stored_prompt(prompt, deliberate),
         )
         with path.open("a", encoding="utf-8") as f:
             f.write(answer.model_dump_json() + "\n")
@@ -378,15 +390,22 @@ async def run_ladder(
 
 
 def _cut_partial_tail(path: Path) -> None:
-    """Remove a last line cut short by a killed run, so the next append starts a line of its own
-    (`read_answers` already ignores it)."""
+    """Make the next append start a line of its own after a run killed mid-write: a last line
+    without its newline is cut off at the byte after the last newline when it is not complete
+    JSON (`read_answers` already ignores it), or given its newline when it is. Nothing before it
+    is rewritten, so a second kill here cannot lose a stored answer."""
     try:
-        text = path.read_text(encoding="utf-8")
+        data = path.read_bytes()
     except FileNotFoundError:
         return
-    if text and not text.endswith("\n"):
-        kept = _complete_lines(text)
-        path.write_text("".join(line + "\n" for line in kept), encoding="utf-8")
+    if not data or data.endswith(b"\n"):
+        return
+    tail = data[data.rfind(b"\n") + 1 :]
+    if _is_json(tail.decode("utf-8", errors="replace")):
+        with path.open("ab") as f:
+            f.write(b"\n")
+    else:
+        os.truncate(path, len(data) - len(tail))
 
 
 def ladder_table(

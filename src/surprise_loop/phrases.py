@@ -400,6 +400,8 @@ DELIBERATE_INSTRUCTION = (
     "Then say how sure you are, and why, in one short sentence."
 )
 READING_HEADING = "What you made of it:"
+# on the second pass of a moment the reading was made of the scene before it
+READING_HEADING_BEFORE = "What you made of it a moment ago:"
 OFFERS_HEADING = "What you can do:"
 RECALLED_HEADING = "What happened just before, the latest last:"
 ACTION_QUESTION = "What do you do next? Choose one letter."
@@ -407,9 +409,19 @@ FEEL_QUESTION = (
     "How do you expect to feel just after it? Choose one phrase each for heat, for thirst and "
     "for tiredness."
 )
+# after the feel question, one line per channel listing its ladder phrases in ladder order:
+# the label, then the phrases joined by CHOICE_JOIN with CHOICE_JOIN_LAST before the last
+FEEL_LABELS: dict[Channel, str] = {
+    Channel.HEAT: "Heat",
+    Channel.WATER: "Thirst",
+    Channel.ENERGY: "Tiredness",
+}
+CHOICES_LINE = "{label}: {choices}."
+CHOICE_JOIN = ", "
+CHOICE_JOIN_LAST = ", or "
 # before an open question, with the letter of the offer it belongs to in place of {letter}
 OPEN_QUESTION_LEAD = "If you choose {letter}:"
-SURE_QUESTION = "How sure are you of what you expect?"
+SURE_QUESTION = "How sure are you of what you expect: guessing, fairly sure, or sure?"
 WHY_QUESTION = "Why? Say it in one short sentence."
 HEAT_HELP = "How warm you expect to feel just after it."
 THIRST_HELP = "How thirsty you expect to feel just after it."
@@ -444,21 +456,38 @@ OVERRIDE_LINES: dict[tuple[Channel, bool], str] = {
 DID_LINES: dict[tuple[Place, Action], str] = {
     (Place.MEADOW, Action.GO_OAK): "You walked to the shade of the oak.",
     (Place.MEADOW, Action.GO_STREAM): "You walked across the open ground to the stream.",
-    (Place.MEADOW, Action.REST): "You sat down on the ground in the middle of the clearing.",
+    (Place.MEADOW, Action.REST): (
+        "You sat on the ground for a while in the middle of the clearing."
+    ),
     (Place.MEADOW, Action.LOOK): "You stood in the middle of the clearing and looked around.",
     (Place.OAK, Action.GO_MEADOW): "You walked back out into the middle of the clearing.",
     (Place.OAK, Action.GO_STREAM): "You walked from the oak across the open ground to the stream.",
-    (Place.OAK, Action.REST): "You sat down and rested under the oak.",
+    (Place.OAK, Action.REST): "You sat and rested for a while under the oak.",
     (Place.OAK, Action.LOOK): "You stood under the oak and looked around.",
     (Place.STREAM, Action.GO_MEADOW): "You walked back to the middle of the clearing.",
     (Place.STREAM, Action.GO_OAK): "You walked from the stream to the shade of the oak.",
     (Place.STREAM, Action.DRINK): "You knelt and drank from the stream.",
-    (Place.STREAM, Action.REST): "You sat down on the bank and rested.",
+    (Place.STREAM, Action.REST): "You sat on the bank and rested for a while.",
     (Place.STREAM, Action.LOOK): "You stood on the bank and looked around.",
 }
 STUMBLED_LINE = "You tried to walk, but you stumbled and stayed where you were."
 COLLAPSED_LINE = "Your legs gave way, and you lay where you were."
 EXPECTED_LINE = "You expected heat: {heat}; thirst: {thirst}; tiredness: {tiredness}."
+# the surprise of a recalled moment, in the past: key for key the tables the lens voices
+RECALLED_SURPRISE_PHRASES: dict[tuple[Channel, bool], str] = {
+    (Channel.HEAT, True): "It was hotter than you had thought it would be.",
+    (Channel.HEAT, False): "It was cooler than you had thought it would be.",
+    (Channel.WATER, True): "You were thirstier than you had thought you would be.",
+    (Channel.WATER, False): "You were less thirsty than you had thought you would be.",
+    (Channel.ENERGY, True): "You were more tired than you had thought you would be.",
+    (Channel.ENERGY, False): "You were less tired than you had thought you would be.",
+}
+RECALLED_WORLD_SURPRISE_PHRASES: dict[tuple[OpenQuestion, bool], str] = {
+    (OpenQuestion.LOG_SHADED, True): "The log under the oak was in the shade after all.",
+    (OpenQuestion.LOG_SHADED, False): "The log under the oak was in the sun, not the shade.",
+    (OpenQuestion.STREAM_FULL, True): "The stream was running full after all.",
+    (OpenQuestion.STREAM_FULL, False): "The stream was only a trickle, not running full.",
+}
 
 
 def all_phrases() -> list[str]:
@@ -482,11 +511,15 @@ def all_phrases() -> list[str]:
         LADDER_ACTIONS,
         OVERRIDE_LINES,
         DID_LINES,
+        FEEL_LABELS,
+        RECALLED_SURPRISE_PHRASES,
+        RECALLED_WORLD_SURPRISE_PHRASES,
     ):
         out += simple.values()
     out += [LADDER_INSTRUCTION, LADDER_QUESTION, LADDER_LETTER_HELP, LADDER_WHY_HELP]
     out += [APPRAISE_INSTRUCTION, APPRAISE_QUESTION, APPRAISE_READING_HELP, APPRAISE_ABOUT_HELP]
-    out += [DELIBERATE_INSTRUCTION, READING_HEADING, OFFERS_HEADING, RECALLED_HEADING]
+    out += [DELIBERATE_INSTRUCTION, READING_HEADING, READING_HEADING_BEFORE]
+    out += [OFFERS_HEADING, RECALLED_HEADING, CHOICES_LINE, CHOICE_JOIN, CHOICE_JOIN_LAST]
     out += [ACTION_QUESTION, FEEL_QUESTION, OPEN_QUESTION_LEAD, SURE_QUESTION, WHY_QUESTION]
     out += [HEAT_HELP, THIRST_HELP, TIREDNESS_HELP, EXPECT_HELP, SURE_HELP]
     out += [STUMBLED_LINE, COLLAPSED_LINE, EXPECTED_LINE]

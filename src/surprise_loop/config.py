@@ -148,8 +148,10 @@ class StubModelParams(Frozen):
 
 
 class MemoryParams(Frozen):
-    # how many episodes Perceive recalls, and how they are chosen
-    retrieval_k: int = Field(default=4, ge=1)
+    # how many episodes Perceive recalls, and how they are chosen. One more than Evaluate's
+    # default window: the episode just judged is then the oldest one recalled, so its regulation
+    # line is read once, in the next prompt (spec section 8)
+    retrieval_k: int = Field(default=5, ge=1)
     # salience = min(1, base_salience + salience_gain * comparison size)
     base_salience: Unit = 0.2
     salience_gain: NonNegative = 0.3

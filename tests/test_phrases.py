@@ -3,9 +3,12 @@ import re
 import pytest
 
 from surprise_loop.phrases import (
+    DID_LINES,
     FACT_PHRASES,
     LADDER_WORDS,
     OFFER_PHRASES,
+    RECALLED_SURPRISE_PHRASES,
+    RECALLED_WORLD_SURPRISE_PHRASES,
     REGULATION_LINES,
     SURPRISE_PHRASES,
     WORLD_SURPRISE_PHRASES,
@@ -81,3 +84,17 @@ def test_surprise_tables_are_complete() -> None:
 def test_regulation_lines_cover_every_action_that_serves_a_channel() -> None:
     serving = [a for a, c in SERVES.items() if c is not None]
     assert set(REGULATION_LINES) == {(a, r) for a in serving for r in (1, 0, -1)}
+
+
+def test_the_recalled_surprise_tables_mirror_the_present_ones() -> None:
+    assert list(RECALLED_SURPRISE_PHRASES) == list(SURPRISE_PHRASES)
+    assert list(RECALLED_WORLD_SURPRISE_PHRASES) == list(WORLD_SURPRISE_PHRASES)
+    for table in (RECALLED_SURPRISE_PHRASES, RECALLED_WORLD_SURPRISE_PHRASES):
+        for sentence in table.values():
+            assert re.search(r"\b(was|were)\b", sentence), sentence
+
+
+def test_a_recalled_rest_is_over() -> None:
+    for (_, action), line in DID_LINES.items():
+        if action is Action.REST:
+            assert "for a while" in line and "sat down" not in line, line

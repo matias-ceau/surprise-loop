@@ -32,8 +32,10 @@ from pydantic_ai.models.test import TestModel
 
 from surprise_loop.agents import (
     LETTERS,
+    DeliberateOutput,
     appraise_agent,
     appraise_prompt,
+    choices_lines,
     deliberate_agent,
 )
 from surprise_loop.config import (
@@ -66,12 +68,14 @@ from surprise_loop.phrases import (
     PULL_PHRASES,
     QUESTION_PHRASES,
     READING_HEADING,
+    READING_HEADING_BEFORE,
     RECALLED_HEADING,
+    RECALLED_SURPRISE_PHRASES,
+    RECALLED_WORLD_SURPRISE_PHRASES,
     REGULATION_LINES,
+    STUB_READINGS,
     SURE_QUESTION,
-    SURPRISE_PHRASES,
     WHY_QUESTION,
-    WORLD_SURPRISE_PHRASES,
 )
 from surprise_loop.state import (
     Appraisal,
@@ -295,7 +299,7 @@ def test_the_deliberate_prompt_shows_every_element_in_order() -> None:
             EXPECTED_LINE.format(
                 heat="a bit warmer", thirst="about the same", tiredness="a bit less tired"
             ),
-            SURPRISE_PHRASES[(HEAT, True)],
+            RECALLED_SURPRISE_PHRASES[(HEAT, True)],
         ]
     )
     rested = " ".join([DID_LINES[(Place.MEADOW, Action.REST)], REGULATION_LINES[(Action.REST, 1)]])
@@ -305,7 +309,7 @@ def test_the_deliberate_prompt_shows_every_element_in_order() -> None:
             EXPECTED_LINE.format(
                 heat="a bit warmer", thirst="about the same", tiredness="a bit less tired"
             ),
-            WORLD_SURPRISE_PHRASES[(OpenQuestion.LOG_SHADED, False)],
+            RECALLED_WORLD_SURPRISE_PHRASES[(OpenQuestion.LOG_SHADED, False)],
         ]
     )
     questions = [
@@ -325,6 +329,11 @@ def test_the_deliberate_prompt_shows_every_element_in_order() -> None:
         PULL_PHRASES[(Action.GO_OAK, True)],
         ACTION_QUESTION,
         FEEL_QUESTION,
+        "Heat: much cooler, a bit cooler, about the same, a bit warmer, or much warmer.",
+        "Thirst: much less thirsty, a bit less thirsty, about the same, a bit thirstier, "
+        "or much thirstier.",
+        "Tiredness: much less tired, a bit less tired, about the same, a bit more tired, "
+        "or much more tired.",
         *questions,
         SURE_QUESTION,
         WHY_QUESTION,
@@ -586,6 +595,7 @@ def test_no_prompt_of_a_forty_tick_run_holds_a_digit_or_an_identifier() -> None:
     pass_one = [p for p in deliberate_prompts if any(line in p for line in OVERRIDE_LINES.values())]
     assert len(pass_one) == len(overrides)
     assert any(RECALLED_HEADING in p for p in deliberate_prompts)
+    assert any(any(line in p for line in REGULATION_LINES.values()) for p in deliberate_prompts)
 
     for _, instructions, prompt in rec.calls:
         for text in (instructions, prompt):
@@ -619,11 +629,12 @@ def test_a_twenty_tick_run_on_the_test_model_writes_valid_dumps_and_replays(
     run_dir = tmp_path / "run"
     result = asyncio.run(run(afternoon(0, model="test", ticks=20), run_dir))
     assert len(result.records) == 20
+    assert any(len(r.passes) == 2 for r in result.records)  # pass 1 is replayed too
     dumps = load_dumps(run_dir)
     assert [d.tick for d in dumps] == list(range(1, 21))
     for path in sorted(run_dir.glob("tick_*.json")):
         dump = TickDump.model_validate_json(path.read_bytes())
-        assert dump.record.appraisal.reading  # from the model, not a stub line
+        assert dump.record.appraisal.reading not in STUB_READINGS.values()  # from the model
         for record in dump.record.passes:
             assert record.decision.expectation.words is not None  # from the model
     assert json.loads((run_dir / "config.json").read_text())["model"] == "test"
@@ -661,3 +672,33 @@ def test_the_model_comes_from_the_environment(monkeypatch: pytest.MonkeyPatch) -
 
 def test_letters_cover_every_offer_a_place_can_make() -> None:
     assert len(LETTERS) >= max(len(offers_at(p)) for p in Place)
+
+
+def test_the_pass_one_reading_is_of_a_moment_ago() -> None:
+    ws, rt = workspace()
+    rec = Recorder()
+    answered(rec, ws, rt)
+    answered(rec, pass_one(ws, [Action.GO_OAK]), rt)
+    first, second = rec.prompts("deliberate")
+    assert f"{READING_HEADING} {READING}" in first.split("\n")
+    assert READING_HEADING_BEFORE not in first
+    assert f"{READING_HEADING_BEFORE} {READING}" in second.split("\n")
+    assert f"{READING_HEADING} {READING}" not in second.split("\n")
+
+
+def test_the_choice_lines_follow_the_ladder_and_the_schema() -> None:
+    lines = choices_lines()
+    schema = DeliberateOutput.model_json_schema()["properties"]
+    for line, field in zip(lines, ("heat", "thirst", "tiredness"), strict=True):
+        words = schema[field]["enum"]
+        assert line.index(words[0]) < line.index(words[-1])
+        for word in words:
+            assert word in line
+    assert lines == [line for line in lines if line.endswith(".")]
+
+
+def test_the_sure_question_names_the_three_answers() -> None:
+    literals = DeliberateOutput.model_json_schema()["properties"]["sure"]["enum"]
+    assert literals == ["guessing", "fairly sure", "sure"]
+    _, _, answers = SURE_QUESTION.partition(": ")
+    assert [w.removeprefix("or ") for w in answers.rstrip("?").split(", ")] == literals

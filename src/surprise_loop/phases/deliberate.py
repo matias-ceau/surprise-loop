@@ -145,6 +145,7 @@ def llm_prompt(ws: Workspace, order: list[Action], params: Params) -> str:
         recalled,
         percept.pull_line,
         override_line(ws),
+        second_pass=ws.pass_index == 1,
     )
 
 
