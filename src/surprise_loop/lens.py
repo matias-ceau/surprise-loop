@@ -69,7 +69,7 @@ def _body_lines(strength: dict[Channel, float], arousal: float, p: LensParams) -
         g = grade(strength[c], p.body_edges)
         signed = g if strength[c] >= 0 else -g
         phrase = BODY_PHRASES[c].get(signed)
-        if abs(signed) >= p.body_speak_grade and phrase is not None:
+        if abs(signed) >= p.body_speak_grade[c] and phrase is not None:
             lines.append(BodyLine(channel=c, grade=signed, felt=strength[c], phrase=phrase))
     return lines
 

@@ -202,3 +202,46 @@ def test_the_far_oak_never_sounds_near() -> None:
     for phrase in [*table["+"], *table["-"], table["0"]]:
         for word in ("a few steps", "close", "far", "across", "steps"):
             assert word not in phrase.lower(), (word, phrase)
+
+
+# --- body sentences -----------------------------------------------------------------------------
+
+# Tavi at grade one (felt 0.75, between the first two body edges) on one channel, the others at
+# the set point; arousal low enough for every channel to have room
+GRADE_ONE = 0.75
+
+
+def tavi_at(channel: Channel, felt: float) -> Levels:
+    """Tavi's set point with `channel` at signed felt strength `felt`."""
+    offset = felt / TAVI.tightness[channel]
+    level = TAVI.setpoint.of(channel) + (offset if channel is Channel.HEAT else -offset)
+    return TAVI.setpoint.replace(channel, level)
+
+
+def body_phrases(scene: FeltScene) -> list[str]:
+    return [line.phrase for line in scene.body]
+
+
+@pytest.mark.parametrize(("felt", "sentence"), [(-GRADE_ONE, "You are a little cool."),
+                                                (GRADE_ONE, "You are a little warm.")])  # fmt: skip
+def test_heat_at_grade_one_is_told(felt: float, sentence: str) -> None:
+    scene = tavi_scene(belief=tavi_at(Channel.HEAT, felt))
+    assert [line.grade for line in scene.body] == [1 if felt > 0 else -1]
+    assert body_phrases(scene) == [sentence]
+    assert sentence in scene.text()
+
+
+@pytest.mark.parametrize("channel", [Channel.WATER, Channel.ENERGY])
+def test_thirst_or_tiredness_at_grade_one_is_not_told(channel: Channel) -> None:
+    scene = tavi_scene(belief=tavi_at(channel, GRADE_ONE))
+    assert scene.felt[channel] == pytest.approx(GRADE_ONE)
+    assert body_phrases(scene) == []
+
+
+def test_heat_speaking_from_grade_two_gives_the_old_behaviour() -> None:
+    p = LensParams(body_speak_grade={Channel.HEAT: 2, Channel.WATER: 2, Channel.ENERGY: 2})
+    for felt in (-GRADE_ONE, GRADE_ONE):
+        assert body_phrases(tavi_scene(belief=tavi_at(Channel.HEAT, felt), p=p)) == []
+    assert body_phrases(tavi_scene(belief=tavi_at(Channel.HEAT, 1.5), p=p)) == [
+        "You are warm under your skin."
+    ]

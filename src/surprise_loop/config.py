@@ -63,8 +63,12 @@ class LensParams(Frozen):
     narrow_arousal: Unit = 0.5
     body_lines_narrow: int = Field(default=2, ge=0)
     body_lines_wide: int = Field(default=3, ge=0)
-    # the least body grade that gets a sentence
-    body_speak_grade: int = Field(default=2, ge=1)
+    # the least body grade that gets a sentence, per channel. Heat speaks from grade one: it is
+    # the one channel where the same fact (warm air, shade) changes value with the body's state,
+    # so the reader needs the body's side to read the facts.
+    body_speak_grade: dict[Channel, Annotated[int, Field(ge=1)]] = Field(
+        default_factory=lambda: {Channel.HEAT: 1, Channel.WATER: 2, Channel.ENERGY: 2}
+    )
     # grade edges for a fact's value and a channel's felt strength, positive and strictly
     # ascending; the first value edge is also where a value stops being neutral
     value_edges: tuple[Positive, ...] = (0.25, 1.0, 2.0, 3.0)
@@ -74,6 +78,11 @@ class LensParams(Frozen):
     @classmethod
     def _edges(cls, value: tuple[float, ...]) -> tuple[float, ...]:
         return _ascending_edges(value)
+
+    @field_validator("body_speak_grade")
+    @classmethod
+    def _every_channel(cls, value: dict[Channel, int]) -> dict[Channel, int]:
+        return require_keys(value, Channel)
 
 
 class FeelingParams(Frozen):
@@ -379,7 +388,7 @@ def load_config(path: Path) -> ExperimentConfig:
     except UnicodeDecodeError:
         raise ConfigError(f"{path}: cannot read: not UTF-8 text") from None
     except OSError as e:
-        raise ConfigError(f"{path}: cannot read: {e.strerror}") from None
+        raise ConfigError(f"{path}: cannot read: {e.strerror or e}") from None
     try:
         data = yaml.safe_load(text)
     except yaml.YAMLError as e:
