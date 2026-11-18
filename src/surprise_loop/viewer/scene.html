@@ -658,10 +658,12 @@ SPEEDS.forEach(v => {
   speedBox.append(b);
 });
 document.addEventListener("keydown", ev => {
-  /* a focused button or sentence takes its own keys; the range input keeps its arrows */
+  /* a focused button or sentence keeps Space and Enter for itself; the range input keeps its
+     arrows; the arrow keys step from anywhere else */
   if (ev.defaultPrevented || ev.altKey || ev.ctrlKey || ev.metaKey) return;
   const tag = ev.target && ev.target.tagName;
-  if (tag === "BUTTON" || (ev.target.classList && ev.target.classList.contains("s"))) return;
+  const own = tag === "BUTTON" || (ev.target.classList && ev.target.classList.contains("s"));
+  if (own && (ev.key === " " || ev.key === "Enter")) return;
   if (tag === "INPUT" && ev.key !== " ") return;
   if (ev.key === " ") { ev.preventDefault(); togglePlay(); }
   else if (ev.key === "ArrowLeft") { ev.preventDefault(); show(current - 1); }
