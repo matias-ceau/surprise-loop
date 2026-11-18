@@ -49,6 +49,8 @@ class RunMetrics(Frozen):
     world_expectations: int
     world_held: int
     overrides: int
+    # among the passes offering at least two actions, the share whose action is the reactive
+    # rule's choice (0.0 when there is none): with a single offer the rule cannot disagree
     rule_agreement: float
     final_valence: float
     mean_arousal: float
@@ -90,9 +92,10 @@ def summarize(result: RunResult) -> RunMetrics:
     def count(action: Action) -> int:
         return sum(1 for p in passes if p.decision.action is action)
 
+    with_choice = [p for p in passes if len(p.offers) >= 2]
     agreeing = sum(
         1
-        for p in passes
+        for p in with_choice
         if p.decision.action is reactive_choice(p.scene, p.offers, config.params.deliberate)
     )
     compared = [p.comparison.world for p in passes if p.comparison.world is not None]
@@ -118,7 +121,7 @@ def summarize(result: RunResult) -> RunMetrics:
         world_expectations=len(compared),
         world_held=sum(1 for mismatch in compared if not mismatch),
         overrides=sum(1 for p in passes if p.override is not None),
-        rule_agreement=_share(agreeing, n),
+        rule_agreement=_share(agreeing, len(with_choice)),
         final_valence=result.agent.feeling.valence,
         mean_arousal=_mean([p.feeling_after.arousal for p in passes]),
     )
@@ -281,13 +284,34 @@ def stability_csv(results: Sequence[RunResult]) -> str:
     return _csv(["metric", "icc1", "n_agents", "n_seeds"], rows)
 
 
-TABLE_FILES: tuple[str, ...] = ("results.csv", "trace.csv", "stability.csv")
+def _agents(results: Sequence[RunResult]) -> list[str]:
+    """The agents' names in order of first appearance."""
+    return list(dict.fromkeys(result.config.agent.name for result in results))
+
+
+def pairs_csv(results: Sequence[RunResult]) -> str:
+    """For results of exactly two agents: one row per seed (in the first agent's order) with
+    `opposite_value_steps` of the two runs of that seed, agents in order of first appearance."""
+    agent_a, agent_b = _agents(results)
+    run = {(result.config.agent.name, result.config.seed): result for result in results}
+    seeds = [result.config.seed for result in results if result.config.agent.name == agent_a]
+    rows = [
+        [seed, agent_a, agent_b, opposite_value_steps(run[agent_a, seed], run[agent_b, seed])]
+        for seed in seeds
+    ]
+    return _csv(["seed", "agent_a", "agent_b", "opposite_value_steps"], rows)
+
+
+TABLE_FILES: tuple[str, ...] = ("results.csv", "trace.csv", "stability.csv", "pairs.csv")
 
 
 def experiment_tables(results: Sequence[RunResult]) -> dict[str, str]:
-    """The experiment's CSV files by file name: results.csv and trace.csv, and stability.csv
-    when the results hold at least two seeds (with one, no ICC is defined)."""
+    """The experiment's CSV files by file name: results.csv and trace.csv; stability.csv when the
+    results hold at least two seeds (with one, no ICC is defined); pairs.csv when they hold
+    exactly two agents."""
     tables = {"results.csv": results_csv(results), "trace.csv": trace_csv(results)}
     if len({result.config.seed for result in results}) >= 2:
         tables["stability.csv"] = stability_csv(results)
+    if len(_agents(results)) == 2:
+        tables["pairs.csv"] = pairs_csv(results)
     return tables

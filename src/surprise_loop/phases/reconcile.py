@@ -29,7 +29,7 @@ from surprise_loop.state import (
     Temperament,
     Workspace,
 )
-from surprise_loop.world import SERVES, Action, Channel, Levels, Outcome
+from surprise_loop.world import Action, Channel, Levels, Outcome, Place
 
 
 def judged(
@@ -55,6 +55,7 @@ def judged(
 
 def override_for(
     action: Action,
+    place: Place,
     belief: Levels,
     t: Temperament,
     comparison: Comparison,
@@ -62,19 +63,26 @@ def override_for(
     params: Params,
 ) -> Override | None:
     """The first channel, in `Channel` order, whose need is urgent after the update, came out
-    worse than expected by `worse_margin`, and is not served by the action; an override only if
-    an action serving it is offered now."""
+    worse than expected by `worse_margin`, and is not served by the action taken at `place` (the
+    place before the step); an override only if an action serving it is offered now.
+
+    Worse is signed by the need's direction: for a need of too much (too hot, thirsty, tired)
+    `body_felt` above zero is worse; for too little (too cold) below zero is."""
     p = params.override
     if not p.enabled:
         return None
     need = needs(belief, t)
+
+    def worse(c: Channel) -> float:
+        return comparison.body_felt[c] * (1 if too_much(c, need[c]) else -1)
+
     channel = next(
         (
             c
             for c in Channel
             if abs(need[c]) >= p.urgent_felt
-            and comparison.body_felt[c] >= p.worse_margin
-            and SERVES[action] is not c
+            and worse(c) >= p.worse_margin
+            and action not in serving_actions(c, too_much(c, need[c]), place)
         ),
         None,
     )
@@ -90,7 +98,7 @@ def override_for(
         actions=actions,
         detail=(
             f"{channel.value} need {need[channel]:.2f} is at least {p.urgent_felt:.2f} and came "
-            f"out {comparison.body_felt[channel]:.2f} worse than expected; "
+            f"out {worse(channel):.2f} worse than expected; "
             f"{action.value} does not serve it"
         ),
     )
@@ -134,7 +142,9 @@ async def reconcile(ws: Workspace, rt: Runtime) -> Workspace:
 
     override = None
     if ws.pass_index == 0:
-        override = override_for(action, belief, t, comparison, outcome, params)
+        override = override_for(
+            action, ws.observation.place, belief, t, comparison, outcome, params
+        )
 
     record = PassRecord(
         tick=agent.tick + 1,

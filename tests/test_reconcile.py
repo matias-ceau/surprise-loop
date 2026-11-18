@@ -324,6 +324,63 @@ def test_no_override_when_the_action_served_the_channel() -> None:
     assert run(reconcile, ws, rt).override is None
 
 
+COLD_BODY = BodyState(heat=-1.0, water=0.8, energy=0.7)
+HOT_BODY = BodyState(heat=0.99, water=0.8, energy=0.7)
+# the shipped urgent_felt: the oak at 13:00 does not let the test default of 2.0 be reached
+# with a cold belief that also came out half a felt unit colder than its band
+URGENT_AT_DEFAULT = PARAMS.model_copy(
+    update={"override": PARAMS.override.model_copy(update={"urgent_felt": 1.5})}
+)
+
+
+def urgent_at_oak(
+    body: BodyState, action: Action, bands: dict[Channel, Band], *, worse: bool
+) -> tuple[Workspace, Runtime]:
+    """A body at the oak with an urgent heat need after `action`; `worse` says whether heat came
+    out worse than expected by at least `worse_margin` for that need's direction."""
+    rt = make_rt(URGENT_AT_DEFAULT, place=Place.OAK, body=body, belief=Levels(
+        heat=body.heat, water=0.8, energy=0.7))  # fmt: skip
+    ws = ready(rt, action, bands)
+    belief = updated_belief(ws.outcome.observation.signal, bands, ILO, URGENT_AT_DEFAULT.belief)
+    need = needs(belief, ILO)[HEAT]
+    assert abs(need) >= URGENT_AT_DEFAULT.override.urgent_felt
+    signed = ws.comparison.body_felt[HEAT] * (1 if need > 0 else -1)
+    assert (signed >= URGENT_AT_DEFAULT.override.worse_margin) is worse
+    assert (signed <= -URGENT_AT_DEFAULT.override.worse_margin) is not worse
+    return ws, rt
+
+
+def test_a_cold_body_that_came_out_colder_is_overridden_toward_warmth() -> None:
+    ws, rt = urgent_at_oak(COLD_BODY, Action.LOOK, heat_band(-0.6, -0.55), worse=True)
+    assert ws.comparison.body_felt[HEAT] < 0  # colder than expected
+    out = run(reconcile, ws, rt)
+    assert out.override == Override(
+        channel=HEAT, actions=[Action.GO_MEADOW], detail=out.override.detail
+    )
+    assert f"came out {-ws.comparison.body_felt[HEAT]:.2f} worse" in out.override.detail
+
+
+def test_a_cold_body_that_came_out_warmer_is_not_overridden() -> None:
+    ws, rt = urgent_at_oak(COLD_BODY, Action.LOOK, heat_band(-1.2, -1.1), worse=False)
+    assert ws.comparison.body_felt[HEAT] > 0  # warmer than expected: better for a cold body
+    assert run(reconcile, ws, rt).override is None
+
+
+def test_a_hot_body_resting_under_the_oak_is_not_overridden() -> None:
+    ws, rt = urgent_at_oak(HOT_BODY, Action.REST, heat_band(0.4, 0.45), worse=True)
+    assert ws.outcome.observation.place is Place.OAK
+    assert run(reconcile, ws, rt).override is None
+
+
+def test_a_hot_body_walking_out_from_the_oak_is_overridden_back() -> None:
+    ws, rt = urgent_at_oak(HOT_BODY, Action.GO_MEADOW, heat_band(0.6, 0.7), worse=True)
+    assert ws.outcome.observation.place is Place.MEADOW
+    out = run(reconcile, ws, rt)
+    assert out.override == Override(
+        channel=HEAT, actions=[Action.GO_OAK], detail=out.override.detail
+    )
+
+
 def test_no_override_and_no_crash_when_nothing_offered_serves_the_need() -> None:
     rt = make_rt()
     ws = urgent_heat(rt)

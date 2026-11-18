@@ -228,6 +228,19 @@ def test_cli_missing_config_is_one_line(tmp_path: Path, capsys: pytest.CaptureFi
     assert not out.exists()
 
 
+def test_cli_write_error_without_strerror_is_one_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(self: Path, *args: object, **kwargs: object) -> int:
+        raise OSError("the disk went away")  # an OSError with no errno: its strerror is None
+
+    out = tmp_path / "page.html"
+    monkeypatch.setattr(Path, "write_text", refuse)
+    assert main(["lens-page", str(AFTERNOON), "-o", str(out)]) == 2
+    err = capsys.readouterr().err
+    assert err == f"error: {out}: cannot write: the disk went away\n"
+
+
 def _script_function(page: str, name: str) -> str:
     """The source of one top-level function in the page's script, up to its closing brace."""
     match = re.search(rf"^function {name}\(.*?^\}}", page, flags=re.S | re.M)

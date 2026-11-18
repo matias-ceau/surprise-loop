@@ -1,7 +1,7 @@
 """The agent's mental state, what it makes of a moment, and the records of each tick.
 
-CoreAgent is the only owner of mental state. Every model here is frozen: phases take state in and
-return a copy, never mutating their input.
+The agent owns its mental state. Every model here is frozen: phases take state in and return a
+copy, never mutating their input.
 """
 
 from enum import StrEnum
@@ -111,7 +111,10 @@ class Expectation(Frozen):
 
 class Comparison(Frozen):
     body: dict[Channel, float]  # (a) signed error in channel units, 0 inside the band
-    body_felt: dict[Channel, float]  # the same in felt units; positive is more strain than expected
+    # the same in felt units: for heat, how much hotter than expected the body came out; for
+    # water and energy, how much more need than expected. Not "worse": for a body that is too
+    # cold, hotter is better
+    body_felt: dict[Channel, float]
     world: bool | None  # (b) True is a mismatch, False held, None nothing to compare
     better: float  # (c) positive is better for the body than expected
     size: float = Field(ge=0)

@@ -180,6 +180,24 @@ def test_every_metric_of_a_hand_built_run(hand_built: RunResult) -> None:
     )
 
 
+def test_rule_agreement_leaves_out_passes_with_a_single_offer(hand_built: RunResult) -> None:
+    # one more tick whose only offer is REST: chooser and rule both take it, so it says nothing
+    b = flatten(hand_built.records)[0]
+    one = make_pass(b, action=Action.REST, body=(0.0, 0.8, 0.7), comparison=comparison(),
+                    arousal=0.0).model_copy(update={"offers": [Action.REST]})  # fmt: skip
+    ticks = [record.passes for record in hand_built.records]
+    metrics = summarize(with_ticks(hand_built, [*ticks, [one]], valence=-0.3))
+    assert metrics.steps == 5
+    assert metrics.rule_agreement == 0.5  # still p0 and p2 of the four passes with a choice
+
+
+def test_rule_agreement_is_zero_when_no_pass_had_a_choice(hand_built: RunResult) -> None:
+    b = flatten(hand_built.records)[0]
+    one = make_pass(b, action=Action.LOOK, body=(0.0, 0.8, 0.7), comparison=comparison(),
+                    arousal=0.0).model_copy(update={"offers": [Action.LOOK]})  # fmt: skip
+    assert summarize(with_ticks(hand_built, [[one]], valence=0.0)).rule_agreement == 0.0
+
+
 def test_one_action_count_per_action() -> None:
     counts = [f for f in RunMetrics.model_fields if f.startswith("n_")]
     assert counts == [f"n_{a.value}" for a in Action]

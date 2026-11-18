@@ -233,11 +233,21 @@ def test_the_log_is_in_the_sun_exactly_from_until() -> None:
         {"place_sun": {}},
         {"air_scale_c": 0.0},
         {"air_scale_c": -5.0},
+        {"stream_full_probability": -0.1},
+        {"stream_full_probability": 1.1},
+        {"trickle_factor": -0.1},
+        {"trickle_factor": 1.5},
     ],
 )
 def test_world_config_rejects(changes: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
         WorldConfig.model_validate(changes)
+
+
+@pytest.mark.parametrize("value", [0.0, 1.0])
+def test_world_config_accepts_the_ends_of_the_unit_numbers(value: float) -> None:
+    config = WorldConfig.model_validate({"stream_full_probability": value, "trickle_factor": value})
+    assert (config.stream_full_probability, config.trickle_factor) == (value, value)
 
 
 def test_a_place_table_missing_a_place_names_it() -> None:

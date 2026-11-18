@@ -4,13 +4,16 @@ import errno
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 import pytest
+from llm_helpers import DECISION, Recorder
 
+from surprise_loop.agents import deliberate_agent
 from surprise_loop.cli import main
 from surprise_loop.config import MODEL_ENV_VAR
 from surprise_loop.loop import load_result
@@ -291,6 +294,33 @@ def test_a_model_backend_with_no_model_fails_with_one_line(
     assert main(["run", str(config), "--runs-dir", str(tmp_path / "runs")]) == 2
     assert MODEL_ENV_VAR in assert_one_line_error(capsys)
     assert not (tmp_path / "runs" / RUN_ID).exists()
+
+
+def test_a_model_that_answers_off_the_list_fails_with_one_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = 0
+
+    def decide(prompt: str) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return (
+            DECISION if calls <= 3 else {**DECISION, "letter": "E"}
+        )  # never more than four offers
+
+    config = afternoon_copy(tmp_path, **{"deliberate: stub": "deliberate: llm",
+                                         "model: null": "model: test"})  # fmt: skip
+    with deliberate_agent.override(model=Recorder(decide).model):
+        assert main(["run", str(config), "--runs-dir", str(tmp_path)]) == 1
+    line = assert_one_line_error(capsys)
+    assert line.startswith(f"error: {RUN_ID} failed: ")
+    failed_at = re.search(r"deliberate failed at tick (\d+), pass \d", line)
+    assert failed_at is not None, line
+    assert line.endswith("; rerun with --resume")
+    # the ticks before the failure stay, so the run can be resumed
+    assert sorted(p.name for p in (tmp_path / RUN_ID).glob("tick_*.json")) == [
+        f"tick_{n:06d}.json" for n in range(1, int(failed_at[1]))
+    ]
 
 
 # --- entry point ---------------------------------------------------------------------------

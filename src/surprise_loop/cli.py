@@ -2,16 +2,20 @@
 lens page and the ladder check.
 
 `run` and `metrics` print the run's metrics as JSON on stdout and nothing else, so the output can
-be piped; anything informational goes to stderr. `replay` re-runs a stored run from its files and
-exits 1 when it differs from them.
+be piped; anything informational goes to stderr. A `run` that fails on its way (a model that
+answers nonsense, a network error) is reported as one `error: <run_id> failed: ...` line with
+exit code 1; the tick files written before the failure stay, and `--resume` continues from them.
+`replay` re-runs a stored run from its files and exits 1 when it differs from them.
 
 `experiment` runs every (agent, seed) of a config into `DIR/<run_id>/` and writes results.csv,
-trace.csv and (with at least two seeds) stability.csv into `DIR/<experiment name>/`. Runs share
-one event loop, at most `--jobs` at a time; each run resolves its own model and keeps its HTTP
-client open for its own duration only. Before any run starts, every existing run directory must
-hold the same config as the experiment (with the model resolved), and every model a run still
-needs must load, otherwise nothing runs (exit 2). A complete run needs no model: when none is set,
-the one in its config.json is used. Then each run is one of:
+trace.csv, stability.csv (with at least two seeds) and pairs.csv (with exactly two agents: per
+seed, the steps at which the two bodies value some fact oppositely) into
+`DIR/<experiment name>/`. Runs share one event loop, at most `--jobs` at a time; each run resolves
+its own model and keeps its HTTP client open for its own duration only. Before any run starts,
+every existing run directory must hold the same config as the experiment (with the model
+resolved), and every model a run still needs must load, otherwise nothing runs (exit 2). A
+complete run needs no model: when none is set, the one in its config.json is used. Then each run
+is one of:
 
 - complete: its dumps reach the end of the day or the tick cap (`loop.is_complete`, the stop rule
   `run` itself uses). It is loaded, not rerun, and its files are not touched;
@@ -195,12 +199,17 @@ def _positive(text: str) -> int:
     return value
 
 
+def _cannot_write(path: Path, e: OSError) -> CommandError:
+    """The one-line error for a file that cannot be written (`strerror` is None for some errors)."""
+    return CommandError(f"{path}: cannot write: {e.strerror or e}")
+
+
 def _lens_page(args: argparse.Namespace) -> int:
     html = lens_page_html(load_config(args.config))
     try:
         args.output.write_text(html, encoding="utf-8")
     except OSError as e:
-        raise CommandError(f"{args.output}: cannot write: {e.strerror}") from None
+        raise _cannot_write(args.output, e) from None
     print(f"wrote {args.output}", file=sys.stderr)
     return 0
 
@@ -210,7 +219,7 @@ def _scene(args: argparse.Namespace) -> int:
     try:
         args.output.write_text(html, encoding="utf-8")
     except OSError as e:
-        raise CommandError(f"{args.output}: cannot write: {e.strerror}") from None
+        raise _cannot_write(args.output, e) from None
     print(f"wrote {args.output}", file=sys.stderr)
     return 0
 
@@ -257,7 +266,7 @@ def _ladder_sweep(args: argparse.Namespace) -> int:
             run_ladder(model, samples, jobs, args.out, params, done, name, deliberate=deliberate)
         )
     except OSError as e:
-        raise CommandError(f"{args.out}: cannot write: {e.strerror}") from None
+        raise _cannot_write(args.out, e) from None
     print(f"ladder: {len(new)} new answers", file=sys.stderr)
 
     answers = current_answers(done + new, name, samples, params, deliberate)[0]
@@ -279,7 +288,7 @@ def _ladder_sweep(args: argparse.Namespace) -> int:
     try:
         path.write_text(json.dumps(summary, indent=1) + "\n", encoding="utf-8")
     except OSError as e:
-        raise CommandError(f"{path}: cannot write: {e.strerror}") from None
+        raise _cannot_write(path, e) from None
     print("\n\n".join(ladder_table(s, answers, curves[s], lp) for s in SCENES))
     return 0 if all(curve.passed for curve in curves.values()) else 1
 
@@ -314,7 +323,15 @@ def _run(args: argparse.Namespace) -> int:
     config = _select(args.config, args.agent, args.seed)
     _check_runs_dir(args.runs_dir)
     run_dir = args.runs_dir / config.run_id
-    result = asyncio.run(run(config, run_dir, resume=args.resume))
+    try:
+        result = asyncio.run(run(config, run_dir, resume=args.resume))
+    except (ConfigError, CommandError, RunError):
+        raise
+    except Exception as e:  # e.g. a model that answers nonsense, or a network error
+        print(
+            f"error: {config.run_id} failed: {_one_line(e)}; rerun with --resume", file=sys.stderr
+        )
+        return 1
     print(f"run directory: {run_dir}", file=sys.stderr)
     _print_metrics(result)
     return 0
@@ -453,7 +470,7 @@ def _write_tables(out_dir: Path, tables: dict[str, str], *, create: bool = False
             else:
                 (out_dir / name).unlink(missing_ok=True)
     except OSError as e:
-        raise CommandError(f"{out_dir}: cannot write: {e.strerror or e}") from None
+        raise _cannot_write(out_dir, e) from None
 
 
 def _metrics(args: argparse.Namespace) -> int:

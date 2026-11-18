@@ -322,8 +322,8 @@ class WorldConfig(Frozen):
     # the oak's log is in the sun from .. until
     log_sun_from: int = 660
     log_sun_until: int = 930
-    stream_full_probability: float = 0.6
-    trickle_factor: float = 0.35
+    stream_full_probability: Unit = 0.6
+    trickle_factor: Unit = 0.35
     paces: dict[str, float] = {"meadow-oak": 1.0, "meadow-stream": 4.0, "oak-stream": 5.0}
     bearings: dict[FactName, dict[Channel, float]] = DEFAULT_BEARINGS
     body: BodyParams = BodyParams()

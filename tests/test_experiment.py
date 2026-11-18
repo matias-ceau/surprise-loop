@@ -27,6 +27,7 @@ from surprise_loop.metrics import (
     flatten,
     format_cell,
     icc1,
+    opposite_value_steps,
     results_csv,
     stability_csv,
     summarize,
@@ -42,7 +43,7 @@ CONFIG = (
     .replace("seeds: [1]", "seeds: [1, 2]")
 )
 RUN_IDS = ["exp-ilo-s1", "exp-ilo-s2", "exp-tavi-s1", "exp-tavi-s2"]
-CSV_FILES = ["results.csv", "stability.csv", "trace.csv"]
+CSV_FILES = ["pairs.csv", "results.csv", "stability.csv", "trace.csv"]
 STEPS = 42  # world steps of an afternoon; a tick with an override takes two
 
 
@@ -118,7 +119,7 @@ def reference(tmp_path_factory: pytest.TempPathFactory) -> Path:
 # --- files and columns ----------------------------------------------------------------------
 
 
-def test_writes_one_run_dir_per_agent_and_seed_and_the_three_csvs(reference: Path) -> None:
+def test_writes_one_run_dir_per_agent_and_seed_and_the_csvs(reference: Path) -> None:
     assert sorted(p.name for p in reference.iterdir()) == sorted([*RUN_IDS, "exp"])
     assert sorted(p.name for p in (reference / "exp").iterdir()) == CSV_FILES
     for run_id in RUN_IDS:
@@ -213,7 +214,11 @@ def test_one_seed_writes_no_stability_csv(
     runs_dir = tmp_path / "runs"
     code, err = experiment(config, runs_dir, capsys)
     assert code == 0, err
-    assert sorted(p.name for p in (runs_dir / "exp").iterdir()) == ["results.csv", "trace.csv"]
+    assert sorted(p.name for p in (runs_dir / "exp").iterdir()) == [
+        "pairs.csv",
+        "results.csv",
+        "trace.csv",
+    ]
 
 
 def test_a_rerun_with_one_seed_removes_an_earlier_stability_csv(
@@ -226,8 +231,28 @@ def test_a_rerun_with_one_seed_removes_an_earlier_stability_csv(
     one = write_config(tmp_path, **{"ticks: null": "ticks: 3", "seeds: [1, 2]": "seeds: [1]"})
     code, err = experiment(one, runs_dir, capsys)
     assert code == 0, err
-    assert sorted(p.name for p in (runs_dir / "exp").iterdir()) == ["results.csv", "trace.csv"]
+    assert sorted(p.name for p in (runs_dir / "exp").iterdir()) == [
+        "pairs.csv",
+        "results.csv",
+        "trace.csv",
+    ]
     assert len(read_csv(runs_dir / "exp" / "results.csv")) == 2
+
+
+def test_a_rerun_with_one_agent_removes_an_earlier_pairs_csv(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runs_dir = tmp_path / "runs"
+    two = write_config(tmp_path, **{"ticks: null": "ticks: 3"})
+    assert experiment(two, runs_dir, capsys)[0] == 0
+    assert (runs_dir / "exp" / "pairs.csv").is_file()
+    text = CONFIG.replace("ticks: null", "ticks: 3")
+    one = write_config(
+        tmp_path, text[: text.index("  - name: tavi")] + text[text.index("backends:") :]
+    )
+    code, err = experiment(one, runs_dir, capsys)
+    assert code == 0, err
+    assert sorted(p.name for p in (runs_dir / "exp").iterdir()) == CSV_FILES[1:]
 
 
 # --- determinism ----------------------------------------------------------------------------
@@ -524,14 +549,46 @@ def test_writers_are_pure_and_deterministic(results: list[RunResult]) -> None:
     assert "\r" not in results_csv(results)
 
 
-def test_experiment_tables_are_the_three_writers(results: list[RunResult]) -> None:
-    assert experiment_tables(results) == {
+def test_experiment_tables_are_the_writers(results: list[RunResult]) -> None:
+    tables = experiment_tables(results)
+    assert {name: tables[name] for name in ("results.csv", "trace.csv", "stability.csv")} == {
         "results.csv": results_csv(results),
         "trace.csv": trace_csv(results),
         "stability.csv": stability_csv(results),
     }
+    assert sorted(tables) == CSV_FILES
     one_seed = [r for r in results if r.config.seed == 1]
-    assert sorted(experiment_tables(one_seed)) == ["results.csv", "trace.csv"]
+    assert sorted(experiment_tables(one_seed)) == ["pairs.csv", "results.csv", "trace.csv"]
+
+
+def test_pairs_csv_holds_the_opposite_value_steps_of_each_seed(results: list[RunResult]) -> None:
+    run = {(r.config.agent.name, r.config.seed): r for r in results}
+    rows = list(csv.DictReader(io.StringIO(experiment_tables(results)["pairs.csv"])))
+    assert rows == [
+        {
+            "seed": str(seed),
+            "agent_a": "ilo",
+            "agent_b": "tavi",
+            "opposite_value_steps": str(opposite_value_steps(run["ilo", seed], run["tavi", seed])),
+        }
+        for seed in (1, 2)
+    ]
+
+
+def test_no_pairs_csv_unless_exactly_two_agents(results: list[RunResult]) -> None:
+    ilo = [r for r in results if r.config.agent.name == "ilo"]
+    assert "pairs.csv" not in experiment_tables(ilo)
+    third = [
+        r.model_copy(
+            update={
+                "config": r.config.model_copy(
+                    update={"agent": r.config.agent.model_copy(update={"name": "ada"})}
+                )
+            }
+        )
+        for r in ilo
+    ]
+    assert "pairs.csv" not in experiment_tables([*results, *third])
 
 
 def test_writers_follow_the_given_order(results: list[RunResult]) -> None:
