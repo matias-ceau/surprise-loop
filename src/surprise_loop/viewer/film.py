@@ -106,12 +106,15 @@ def _read(run_dir: Path) -> tuple[RunConfig, list[TickDump]]:
 
 def film_data(run_a: Path, run_b: Path) -> dict[str, Any]:
     """What the film plays; RunError when the two runs are the same directory, are on different
-    layouts, have different numbers of ticks, or one has no tick."""
+    layouts, have different metrics params (the page's outline and ring), have different numbers
+    of ticks, or one has no tick."""
     if Path(run_a).resolve() == Path(run_b).resolve():
         raise RunError(f"{run_a}: the same run twice")
     (config_a, dumps_a), (config_b, dumps_b) = _read(run_a), _read(run_b)
     if config_a.world.layout != config_b.world.layout:
         raise RunError(f"{run_a} and {run_b} do not belong together: their layouts differ")
+    if config_a.params.metrics != config_b.params.metrics:
+        raise RunError(f"{run_a} and {run_b} do not belong together: their metrics params differ")
     if len(dumps_a) != len(dumps_b):
         raise RunError(
             f"{run_a} and {run_b} do not belong together: {len(dumps_a)} and {len(dumps_b)} ticks"

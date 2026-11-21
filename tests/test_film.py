@@ -22,10 +22,12 @@ from surprise_loop.phrases import (
     WENT_WORSE,
 )
 from surprise_loop.reasoner import reasoner_beliefs
-from surprise_loop.viewer.film import film_data, film_html
+from surprise_loop.viewer import export_page
+from surprise_loop.viewer.film import PLACEHOLDER, TEMPLATE, film_data, film_html
 from surprise_loop.world import Belief, Channel, Kind, key, position_of, truth_at
 
 TICKS = 30
+TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "src" / "surprise_loop" / "viewer" / TEMPLATE
 AGENTS = ("wary", "hopeful")
 
 
@@ -103,31 +105,34 @@ def test_the_world_is_the_truth_of_the_layout(data: dict[str, Any]) -> None:
     assert data["world"]["tiles"]["-1,-1"]["kind"] == Kind.TOXIC.value
 
 
-def replayed(ticks: list[dict[str, Any]], part: str) -> dict[str, dict[str, float]]:
-    tiles: dict[str, dict[str, float]] = {}
-    for t in ticks:
-        for change in t[part]:
-            tiles[key(tuple(change["at"]))] = change["beliefs"]
-    return tiles
-
-
-def test_replaying_the_changes_gives_the_final_maps(
+def test_replaying_the_changes_gives_both_maps_and_the_tries_at_every_tick(
     runs: tuple[Path, Path], data: dict[str, Any]
 ) -> None:
     for run_dir, shown in zip(runs, data["runs"], strict=True):
-        final = load_dumps(run_dir)[-1].agent
-        own, reasoner = replayed(shown["ticks"], "changes"), replayed(shown["ticks"], "reasoner")
-        assert own and reasoner
-        for k in frame_keys(data):
-            at = position_of(k)
-            want_own = final.own_map.at(at)
-            want_reasoner = reasoner_beliefs(final.reasoner, at)
-            got_own = own.get(k, shown["untried"]["own"])
-            got_reasoner = reasoner.get(k, shown["untried"]["reasoner"])
-            assert got_own == pytest.approx({b.value: want_own[b] for b in Belief}, abs=1e-4)
-            assert got_reasoner == pytest.approx(
-                {b.value: want_reasoner[b] for b in Belief}, abs=1e-4
-            )
+        own: dict[str, dict[str, float]] = {}
+        reasoner: dict[str, dict[str, float]] = {}
+        tries: dict[str, int] = {}
+        dumps = load_dumps(run_dir)
+        assert any(t["changes"] for t in shown["ticks"])
+        for dump, t in zip(dumps, shown["ticks"], strict=True):
+            for change in t["changes"]:
+                own[key(tuple(change["at"]))] = change["beliefs"]
+            for change in t["reasoner"]:
+                reasoner[key(tuple(change["at"]))] = change["beliefs"]
+            target = key(tuple(t["target"]))
+            tries[target] = tries.get(target, 0) + 1
+            agent = dump.agent
+            assert tries == agent.tries
+            for k in frame_keys(data):
+                at = position_of(k)
+                want_own = agent.own_map.at(at)
+                want_reasoner = reasoner_beliefs(agent.reasoner, at)
+                got_own = own.get(k, shown["untried"]["own"])
+                got_reasoner = reasoner.get(k, shown["untried"]["reasoner"])
+                assert got_own == pytest.approx({b.value: want_own[b] for b in Belief}, abs=1e-4)
+                assert got_reasoner == pytest.approx(
+                    {b.value: want_reasoner[b] for b in Belief}, abs=1e-4
+                )
 
 
 def test_each_tick_is_its_record(runs: tuple[Path, Path], data: dict[str, Any]) -> None:
@@ -202,6 +207,14 @@ def test_the_page_embeds_the_data_once_and_reaches_nothing_outside(
     assert "@@FILM_DATA@@" not in page
 
 
+def test_the_embedded_data_cannot_close_its_script_element() -> None:
+    data = {"reading": "a </script><!-- in a line", "n": 1}
+    page = export_page(TEMPLATE, PLACEHOLDER, data)
+    assert page.count("</script>") == TEMPLATE_PATH.read_text(encoding="utf-8").count("</script>")
+    assert "<!--" not in page
+    assert embedded(page) == data
+
+
 # --- runs that do not belong together -----------------------------------------------------------
 
 
@@ -210,6 +223,17 @@ def test_runs_on_different_layouts_are_refused(runs: tuple[Path, Path], tmp_path
     other = world.model_copy(update={"layout": (*LAYOUT[:-1], "....F#..P")})
     with pytest.raises(RunError, match="layout"):
         film_data(runs[0], stored_run(tmp_path, "plain", world=other))
+
+
+def test_runs_with_different_metrics_params_are_refused(
+    runs: tuple[Path, Path], tmp_path: Path
+) -> None:
+    params = run_config("plain").params
+    other = params.model_copy(
+        update={"metrics": params.metrics.model_copy(update={"wrong_side": 0.6})}
+    )
+    with pytest.raises(RunError, match="metrics"):
+        film_data(runs[0], stored_run(tmp_path, "plain", params=other))
 
 
 def test_runs_of_different_lengths_are_refused(runs: tuple[Path, Path], tmp_path: Path) -> None:
