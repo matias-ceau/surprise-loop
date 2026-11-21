@@ -1,6 +1,6 @@
 # Two maps of one world
 
-Design for the second redirect of surprise-loop. Written 2026-11-21. Status: waiting for the owner's approval; nothing is built until then.
+Design for the second redirect of surprise-loop. Written 2026-11-21. Status: approved by the owner on 2026-11-21. Asked to confirm decision 1 of section 21 and to approve the rest, the owner answered "ok". The build plan is `docs/superpowers/plans/2026-11-21-two-maps.md`.
 
 It replaces `2026-11-17-lived-twice-design.md` (the forest clearing). That build stays in the history at commit `24aff96`.
 
