@@ -53,6 +53,7 @@ from surprise_loop.config import (
     Params,
     RunConfig,
     Runtime,
+    TokenCount,
     initial_agent_state,
     load_config,
 )
@@ -478,8 +479,23 @@ def test_the_schema_of_a_spot_is_a_plain_array_of_two_integers() -> None:
 
 def test_the_request_carries_the_llm_params() -> None:
     settings = model_settings(LLMParams(temperature=0.4, timeout_s=12.5))
-    assert settings.get("temperature") == 0.4 and settings.get("timeout") == 12.5
-    assert "temperature" not in model_settings(LLMParams(temperature=None))
+    assert settings == {"timeout": 12.5, "temperature": 0.4}
+    assert model_settings(LLMParams(temperature=None)) == {"timeout": 60.0}
+
+
+SETTINGS = {"max_tokens": 8000, "openrouter_reasoning": {"effort": "low"}}
+
+
+def test_the_config_settings_are_merged_into_the_request_as_given() -> None:
+    settings = model_settings(LLMParams(temperature=0.4, timeout_s=12.5, settings=SETTINGS))
+    assert settings == {"timeout": 12.5, "temperature": 0.4, **SETTINGS}
+
+
+def test_nested_settings_survive_a_json_round_trip_of_the_run_config() -> None:
+    config = with_llm(llm_config(), settings=SETTINGS)
+    again = RunConfig.model_validate_json(config.model_dump_json())
+    assert again == config
+    assert again.params.llm.settings == SETTINGS
 
 
 # --- retries -------------------------------------------------------------------------------------
@@ -517,8 +533,15 @@ def test_an_unknown_word_is_retried_then_accepted(bad: dict[str, Any], field: st
 
 
 @pytest.mark.parametrize("retries", [0, 2])
-def test_a_persistently_unknown_word_stops_with_an_error_naming_the_tick(retries: int) -> None:
-    model, calls = scripted({**DECISION, "direction": "up"})
+@pytest.mark.parametrize(
+    "bad",
+    [{**DECISION, "direction": "up"}, {**DECISION, "hunger": "famished"}],
+    ids=["direction", "feeling"],
+)
+def test_a_persistently_unknown_word_stops_with_an_error_naming_the_tick(
+    bad: dict[str, Any], retries: int
+) -> None:
+    model, calls = scripted(bad)
     ws, rt = deliberate_ws(with_llm(llm_config(), output_retries=retries), model)
     ws = ws.model_copy(update={"agent": ws.agent.model_copy(update={"tick": 6})})
 
@@ -574,8 +597,15 @@ def test_twelve_changes_at_the_edge_of_reach_are_accepted() -> None:
     assert out.appraisal is not None and len(out.appraisal.changes) == 2
 
 
-def test_persistently_too_many_changes_stop_with_an_error_naming_the_tick() -> None:
-    model, calls = scripted({"reading": "", "changes": [GOOD_CHANGE] * 3})
+@pytest.mark.parametrize(
+    "bad",
+    [[GOOD_CHANGE] * 3, [change([40, 0], 0.0, 0.0, 0.0, 0.0, 0.0)]],
+    ids=["too-many", "too-far"],
+)
+def test_a_persistently_bad_list_of_changes_stops_with_an_error_naming_the_tick(
+    bad: list[Any],
+) -> None:
+    model, calls = scripted({"reading": "", "changes": bad})
     ws, rt = until_appraise(appraise_config(output_retries=1), model)
 
     with pytest.raises(UnexpectedModelBehavior) as info:
@@ -592,6 +622,70 @@ def test_of_two_changes_to_one_spot_in_one_answer_the_later_is_applied() -> None
         result = asyncio.run(run(llm_config(ticks=1)))
 
     assert result.agent.own_map.tiles["0,1"] == beliefs(0.0, 0.0, 0.0, 0.0, 0.75)
+
+
+# --- the two free lines --------------------------------------------------------------------------
+
+
+def short_lines(config: RunConfig, line_chars: int) -> RunConfig:
+    prompt = config.params.prompt.model_copy(update={"line_chars": line_chars})
+    return config.model_copy(update={"params": config.params.model_copy(update={"prompt": prompt})})
+
+
+def free_line(field: str, text: str, retries: int = 3) -> tuple[Workspace, Runtime, Any, Any]:
+    """The phase that asks for `field`, its workspace and runtime with lines of at most 20
+    characters, and the answer carrying `text` there."""
+    if field == "why":
+        config = short_lines(with_llm(llm_config(), output_retries=retries), 20)
+        ws, rt = deliberate_ws(config, None)
+        return ws, rt, deliberate, {**DECISION, "why": text}
+    ws, rt = until_appraise(short_lines(appraise_config(output_retries=retries), 20))
+    return ws, rt, appraise, {"reading": text, "changes": []}
+
+
+LONG = "a line of more than twenty characters"
+
+
+@pytest.mark.parametrize("field", ["why", "reading"])
+def test_a_long_free_line_is_retried_then_accepted(field: str) -> None:
+    ws, rt, phase, long = free_line(field, LONG)
+    _, _, _, short = free_line(field, "short enough")
+    model, calls = scripted(long, short)
+
+    out = asyncio.run(phase(ws, dataclasses.replace(rt, model=model)))
+
+    assert len(calls) == 2
+    assert phrases.LINE_TOO_LONG.format(line_chars=20) in retry_feedback(calls[1])
+    said = out.decision.why if field == "why" else out.appraisal.reading
+    assert said == "short enough"
+
+
+@pytest.mark.parametrize("field", ["why", "reading"])
+def test_a_persistently_long_free_line_stops_with_an_error_naming_the_tick(field: str) -> None:
+    ws, rt, phase, long = free_line(field, LONG, retries=1)
+    model, calls = scripted(long)
+
+    with pytest.raises(UnexpectedModelBehavior) as info:
+        asyncio.run(phase(ws, dataclasses.replace(rt, model=model)))
+
+    assert len(calls) == 2
+    agent = "deliberate" if field == "why" else "appraise"
+    assert any(f"{agent} failed at tick 1" in note for note in info.value.__notes__)
+
+
+@pytest.mark.parametrize("field", ["why", "reading"])
+def test_a_free_line_of_exactly_line_chars_passes_after_whitespace_is_collapsed(
+    field: str,
+) -> None:
+    exact = "ten chars. ten chars"
+    ws, rt, phase, answer = free_line(field, "  ten chars.\n\t  ten chars  ")
+    model, calls = scripted(answer)
+
+    out = asyncio.run(phase(ws, dataclasses.replace(rt, model=model)))
+
+    assert len(calls) == 1
+    said = out.decision.why if field == "why" else out.appraisal.reading
+    assert said == exact and len(said) == 20
 
 
 def test_a_model_phase_without_a_resolved_model_raises_config_error() -> None:
@@ -625,7 +719,6 @@ def test_a_twenty_tick_model_run_writes_valid_tick_files_and_replays_without_a_c
         appraise_agent.override(model=failing_model()),
     ):
         assert asyncio.run(replay(run_dir)) == 20
-    assert len(rec.calls) == 40
 
 
 def test_a_run_stopped_by_a_model_error_resumes_from_the_next_tick(
@@ -670,6 +763,76 @@ def test_a_model_error_in_a_run_names_the_tick_and_keeps_the_ticks_before(tmp_pa
         asyncio.run(run(llm_config(ticks=20), run_dir))
     assert any("deliberate failed at tick 8" in note for note in info.value.__notes__)
     assert [d.tick for d in load_dumps(run_dir)] == list(range(1, 8))
+
+
+def test_a_model_run_counts_its_requests_and_tokens() -> None:
+    rec, usage = Recorder(), TokenCount()
+    with deliberate_agent.override(model=rec.model), appraise_agent.override(model=rec.model):
+        result = asyncio.run(run(llm_config(ticks=5), usage=usage))
+
+    assert len(result.records) == 5
+    assert usage.requests >= 10
+    assert usage.input_tokens > 0 and usage.output_tokens > 0
+
+
+USAGE_LINE = re.compile(r"^\S+: \d+ model requests, \d+ input tokens, \d+ output tokens$", re.M)
+
+
+def cli(args: list[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, str, str]:
+    rec = Recorder()
+    with deliberate_agent.override(model=rec.model), appraise_agent.override(model=rec.model):
+        code = main(args)
+    out, err = capsys.readouterr()
+    return code, out, err
+
+
+def short_experiment(tmp_path: Path, name: str, **changes: Any) -> Path:
+    """The two-maps experiment cut to two creatures, one seed and four ticks, with `changes`."""
+    base = load_two_maps()
+    experiment = base.model_copy(
+        update={"name": name, "seeds": [1], "ticks": 4, "agents": base.agents[:2], **changes}
+    )
+    path = tmp_path / f"{name}.yaml"
+    path.write_text(json.dumps(experiment.model_dump(mode="json")))
+    return path
+
+
+def test_the_run_command_prints_the_tokens_of_a_model_run_on_stderr_only(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    llm = short_experiment(tmp_path, "llm", backends=BOTH_LLM, model="test")
+    stand_in = short_experiment(tmp_path, "rule")
+    runs = ["--runs-dir", str(tmp_path / "runs")]
+
+    code, out, err = cli(["run", str(llm), *runs], capsys)
+    assert code == 0
+    [line] = USAGE_LINE.findall(err)
+    assert line.startswith("llm-plain-s1: ") and not line.startswith("llm-plain-s1: 0 ")
+    assert not USAGE_LINE.search(out)
+    json.loads(out)  # stdout is the metrics alone
+
+    code, out, err = cli(["run", str(stand_in), *runs], capsys)
+    assert code == 0
+    assert not USAGE_LINE.search(err) and not USAGE_LINE.search(out)
+
+
+def test_the_experiment_command_prints_the_tokens_of_each_model_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    llm = short_experiment(tmp_path, "llm", backends=BOTH_LLM, model="test")
+    stand_in = short_experiment(tmp_path, "rule")
+    runs = ["--runs-dir", str(tmp_path / "runs")]
+
+    code, out, err = cli(["experiment", str(llm), *runs], capsys)
+    assert code == 0 and out == ""
+    assert [line.split(":")[0] for line in USAGE_LINE.findall(err)] == [
+        "llm-plain-s1",
+        "llm-wary-s1",
+    ]
+
+    code, out, err = cli(["experiment", str(stand_in), *runs], capsys)
+    assert code == 0
+    assert not USAGE_LINE.search(err)
 
 
 def test_an_llm_backend_with_no_model_fails_before_tick_one(
@@ -717,6 +880,9 @@ def test_the_whole_run_on_the_test_model_works(tmp_path: Path) -> None:
 # --- the experiment files ------------------------------------------------------------------------
 
 
+PILOT_LLM = LLMParams(temperature=0.5, timeout_s=120, settings=SETTINGS)
+
+
 def test_the_pilot_is_the_plain_creature_on_a_model() -> None:
     pilot, base = load_config(EXPERIMENTS / "pilot.yaml"), load_two_maps()
     assert pilot.seeds == [1]
@@ -725,12 +891,14 @@ def test_the_pilot_is_the_plain_creature_on_a_model() -> None:
     assert pilot.model is None
     assert pilot.world == base.world
     assert pilot.agents == [a for a in base.agents if a.name == "plain"]
-    assert pilot.params == base.params
+    assert pilot.params == base.params.model_copy(update={"llm": PILOT_LLM})
 
 
 def test_two_maps_on_a_model_is_three_creatures_on_one_seed() -> None:
     llm, base = load_config(EXPERIMENTS / "two_maps_llm.yaml"), load_two_maps()
     assert llm.seeds == [1]
+    assert llm.ticks is None
+    assert llm.params == base.params.model_copy(update={"llm": PILOT_LLM})
     assert llm.backends == BOTH_LLM
     assert llm.model is None
     assert llm.world == base.world

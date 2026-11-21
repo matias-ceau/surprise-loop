@@ -1,6 +1,7 @@
 """Deliberate: choose a direction and say what the body will feel after it."""
 
 from surprise_loop.agents import (
+    DeliberateDeps,
     creature_view,
     deliberate_agent,
     deliberate_prompt,
@@ -27,6 +28,7 @@ async def deliberate(ws: Workspace, rt: Runtime) -> Workspace:
     else:
         recent = require(ws.percept, "percept", "deliberate").recent
         view = creature_view(agent, recent, rt.config.params)
-        output = await run_agent(deliberate_agent, deliberate_prompt(view), ws, rt, None)
+        deps = DeliberateDeps(line_chars=rt.config.params.prompt.line_chars)
+        output = await run_agent(deliberate_agent, deliberate_prompt(view), ws, rt, deps)
         decision = to_decision(output)
     return ws.model_copy(update={"decision": decision})

@@ -43,7 +43,7 @@ from pathlib import Path
 import pydantic_ai
 
 from surprise_loop.agents import load_model
-from surprise_loop.config import ConfigError, RunConfig, load_config, resolve_model
+from surprise_loop.config import ConfigError, RunConfig, TokenCount, load_config, resolve_model
 from surprise_loop.loop import (
     ReplayMismatch,
     RunError,
@@ -146,6 +146,17 @@ def _print_metrics(result: RunResult) -> None:
     print(summarize_run(result).model_dump_json(indent=2))
 
 
+def _print_usage(config: RunConfig, usage: TokenCount) -> None:
+    """One line on stderr with what a run's model calls used; none for a run without a model."""
+    if config.model is None:
+        return
+    print(
+        f"{config.run_id}: {usage.requests} model requests, {usage.input_tokens} input tokens, "
+        f"{usage.output_tokens} output tokens",
+        file=sys.stderr,
+    )
+
+
 def _check_runs_dir(runs_dir: Path) -> None:
     if runs_dir.exists() and not runs_dir.is_dir():
         raise RunError(f"{runs_dir}: --runs-dir is not a directory")
@@ -155,8 +166,9 @@ def _run(args: argparse.Namespace) -> int:
     config = _select(args.config, args.agent, args.seed)
     _check_runs_dir(args.runs_dir)
     run_dir = args.runs_dir / config.run_id
+    usage = TokenCount()
     try:
-        result = asyncio.run(run(config, run_dir, resume=args.resume))
+        result = asyncio.run(run(config, run_dir, resume=args.resume, usage=usage))
     except (ConfigError, CommandError, RunError):
         raise
     except Exception as e:  # e.g. a model that answers nonsense, or a network error
@@ -166,6 +178,7 @@ def _run(args: argparse.Namespace) -> int:
         return 1
     print(f"run directory: {run_dir}", file=sys.stderr)
     _print_metrics(result)
+    _print_usage(result.config, usage)
     return 0
 
 
@@ -229,16 +242,17 @@ async def _plan(configs: list[RunConfig], runs_dir: Path) -> list[_Planned]:
     return planned
 
 
-async def _one(planned: _Planned, runs_dir: Path) -> tuple[RunResult, str]:
-    """Run, resume or load one run; return its result and what was done."""
+async def _one(planned: _Planned, runs_dir: Path, usage: TokenCount) -> tuple[RunResult, str]:
+    """Run, resume or load one run; return its result and what was done. Its model calls are
+    added to `usage`."""
     config, stored = planned.config, planned.stored
     run_dir = runs_dir / config.run_id
     if stored is not None:
         if planned.complete:
             return stored, "complete, not rerun"
-        result = await run(config, run_dir, resume=True)
+        result = await run(config, run_dir, resume=True, usage=usage)
         return result, f"resumed at tick {len(stored.records)}"
-    return await run(config, run_dir), "done"
+    return await run(config, run_dir, usage=usage), "done"
 
 
 async def _run_experiment(
@@ -252,9 +266,10 @@ async def _run_experiment(
 
     async def one(planned: _Planned) -> RunResult | BaseException:
         nonlocal finished
+        usage = TokenCount()
         async with gate:
             try:
-                result, what = await _one(planned, runs_dir)
+                result, what = await _one(planned, runs_dir, usage)
             except Exception as e:
                 outcome: RunResult | BaseException = e
                 what = "failed"
@@ -263,6 +278,8 @@ async def _run_experiment(
                 what += f", {len(result.records)} ticks"
         finished += 1
         print(f"[{finished}/{len(plan)}] {planned.config.run_id}: {what}", file=sys.stderr)
+        if isinstance(outcome, RunResult):
+            _print_usage(outcome.config, usage)
         return outcome
 
     return plan, list(await asyncio.gather(*(one(p) for p in plan)))

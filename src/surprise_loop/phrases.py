@@ -62,3 +62,4 @@ AT_HELP = "the spot, as [east, north]"
 # sent back to the model with a list of changes it must redo
 TOO_MANY_CHANGES = "List at most {max_changes} spots."
 TOO_FAR = "The spot {at} is too far away: each of its two numbers must be from -{reach} to {reach}."
+LINE_TOO_LONG = "Say it in one short line, of at most {line_chars} characters."

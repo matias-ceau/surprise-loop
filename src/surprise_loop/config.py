@@ -5,13 +5,13 @@ be overridden from YAML.
 """
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import pairwise
 from pathlib import Path
 from typing import Annotated, Literal
 
 import yaml
-from pydantic import Field, ValidationError, field_validator
+from pydantic import Field, JsonValue, ValidationError, field_validator
 
 from surprise_loop.state import (
     AgentState,
@@ -146,6 +146,8 @@ class AppraiseParams(Frozen):
 class PromptParams(Frozen):
     # decimals of every belief a model reads
     decimals: int = Field(default=2, ge=0)
+    # the most characters of a free line (a why, a reading) after whitespace is collapsed
+    line_chars: int = Field(default=240, ge=1)
 
 
 def _comfort_at() -> dict[Channel, float]:
@@ -176,6 +178,8 @@ class LLMParams(Frozen):
     temperature: NonNegative | None = 1.0
     # per-request timeout in seconds
     timeout_s: Positive = 60.0
+    # further request settings, passed to the model as given (e.g. max_tokens)
+    settings: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class Params(Frozen):
@@ -332,8 +336,23 @@ def initial_agent_state(config: RunConfig, signal: Signal) -> AgentState:
     )
 
 
+@dataclass
+class TokenCount:
+    """What a run's model calls have used so far; the one mutable thing a run carries."""
+
+    requests: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+    def add(self, requests: int, input_tokens: int, output_tokens: int) -> None:
+        self.requests += requests
+        self.input_tokens += input_tokens
+        self.output_tokens += output_tokens
+
+
 @dataclass(frozen=True)
 class Runtime:
     config: RunConfig
     world: World
     model: object | None = None  # resolved pydantic-ai Model when a backend is "llm"
+    usage: TokenCount = field(default_factory=TokenCount)

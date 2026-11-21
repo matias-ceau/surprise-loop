@@ -37,5 +37,9 @@ async def _by_model(ws: Workspace, rt: Runtime) -> Appraisal:
         require(ws.comparison, "comparison", "appraise"),
         params,
     )
-    deps = AppraiseDeps(max_changes=params.appraise.max_changes, reach=params.rule.reach)
+    deps = AppraiseDeps(
+        line_chars=params.prompt.line_chars,
+        max_changes=params.appraise.max_changes,
+        reach=params.rule.reach,
+    )
     return to_appraisal(await run_agent(appraise_agent, prompt, ws, rt, deps))

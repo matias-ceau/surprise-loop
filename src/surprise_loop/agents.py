@@ -13,13 +13,20 @@ No import from `surprise_loop.phases`: the phases import this module.
 
 import json
 from collections.abc import Sequence
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, cast
 
 from pydantic import AfterValidator, Field
 from pydantic_ai import Agent, ModelRetry, ModelSettings, RunContext, UserError, models
 from pydantic_ai.models import Model
 
-from surprise_loop.config import ConfigError, LLMParams, MonitorParams, Params, Runtime
+from surprise_loop.config import (
+    ConfigError,
+    LLMParams,
+    MonitorParams,
+    Params,
+    Runtime,
+    TokenCount,
+)
 from surprise_loop.lens import ladder_step
 from surprise_loop.phrases import (
     APPRAISE_TEXT,
@@ -27,6 +34,7 @@ from surprise_loop.phrases import (
     CREATURE_TEXT,
     DELIBERATE_TEXT,
     FEEL_WORDS,
+    LINE_TOO_LONG,
     NEAR_WORDS,
     STIR_WORDS,
     SURPRISE_WORDS,
@@ -73,14 +81,23 @@ def load_model(name: str | None) -> models.Model | None:
 
 def model_settings(params: LLMParams) -> ModelSettings:
     """The request settings every model call sends, from `Params.llm`."""
-    settings = ModelSettings(timeout=params.timeout_s)
+    settings: dict[str, Any] = {"timeout": params.timeout_s}
     if params.temperature is not None:
         settings["temperature"] = params.temperature
-    return settings
+    # the config's own settings last, passed through as given
+    return cast(ModelSettings, settings | params.settings)
 
 
-async def ask[D, T](agent: Agent[D, T], prompt: str, model: Model, params: LLMParams, deps: D) -> T:
-    """One call of `agent` on `model`: its validated output.
+async def ask[D, T](
+    agent: Agent[D, T],
+    prompt: str,
+    model: Model,
+    params: LLMParams,
+    deps: D,
+    usage: TokenCount | None = None,
+) -> T:
+    """One call of `agent` on `model`: its validated output. The call's requests and tokens are
+    added to `usage`.
 
     Output that fails validation is sent back to the model up to `params.output_retries` times;
     after that pydantic-ai raises `UnexpectedModelBehavior`."""
@@ -91,6 +108,9 @@ async def ask[D, T](agent: Agent[D, T], prompt: str, model: Model, params: LLMPa
         model_settings=model_settings(params),
         retries={"output": params.output_retries},
     )
+    if usage is not None:
+        used = result.usage
+        usage.add(used.requests, used.input_tokens, used.output_tokens)
     return result.output
 
 
@@ -102,7 +122,7 @@ async def run_agent[D, T](
     if not isinstance(rt.model, Model):
         raise ConfigError(f"{agent.name}: backend is llm but the runtime has no resolved model")
     try:
-        return await ask(agent, prompt, rt.model, rt.config.params.llm, deps)
+        return await ask(agent, prompt, rt.model, rt.config.params.llm, deps, rt.usage)
     except Exception as e:
         e.add_note(f"{agent.name} failed at tick {ws.agent.tick + 1}")
         raise
@@ -119,6 +139,7 @@ def _one_line(text: str) -> str:
 OneLine = Annotated[str, AfterValidator(_one_line)]
 FeelWord = Literal[*FEEL_WORDS]
 NearWord = Literal[*NEAR_WORDS]
+SureWord = Literal[*(s.value for s in Sureness)]
 
 # Field names (and the one description) are what the model reads of the output tool; no
 # docstrings on the output classes, as pydantic-ai would send them as the tool's description.
@@ -136,7 +157,7 @@ class DeliberateOutput(Frozen):
     pleasure: FeelWord
     smell: NearWord
     damp: NearWord
-    sure: Literal["guessing", "fairly sure", "sure"]
+    sure: SureWord
 
 
 class ChangeOutput(Frozen):
@@ -175,15 +196,38 @@ def to_appraisal(output: AppraiseOutput) -> Appraisal:
 # --- agents -------------------------------------------------------------------------------------
 
 
+class DeliberateDeps(Frozen):
+    # the most characters of the why
+    line_chars: int
+
+
 class AppraiseDeps(Frozen):
-    # the most changes one answer may make, and how far from the start a changed spot may be
+    # the most characters of the reading, the most changes one answer may make, and how far from
+    # the start a changed spot may be
+    line_chars: int
     max_changes: int
     reach: int
 
 
-deliberate_agent: Agent[None, DeliberateOutput] = Agent(
-    output_type=DeliberateOutput, instructions=DELIBERATE_INSTRUCTIONS, name="deliberate"
+def _short(line: str, line_chars: int) -> None:
+    """A free line longer than `line_chars` is sent back to the model."""
+    if len(line) > line_chars:
+        raise ModelRetry(LINE_TOO_LONG.format(line_chars=line_chars))
+
+
+deliberate_agent: Agent[DeliberateDeps, DeliberateOutput] = Agent(
+    output_type=DeliberateOutput,
+    deps_type=DeliberateDeps,
+    instructions=DELIBERATE_INSTRUCTIONS,
+    name="deliberate",
 )
+
+
+@deliberate_agent.output_validator
+def _short_why(ctx: RunContext[DeliberateDeps], output: DeliberateOutput) -> DeliberateOutput:
+    _short(output.why, ctx.deps.line_chars)
+    return output
+
 
 appraise_agent: Agent[AppraiseDeps, AppraiseOutput] = Agent(
     output_type=AppraiseOutput,
@@ -195,7 +239,9 @@ appraise_agent: Agent[AppraiseDeps, AppraiseOutput] = Agent(
 
 @appraise_agent.output_validator
 def _within_bounds(ctx: RunContext[AppraiseDeps], output: AppraiseOutput) -> AppraiseOutput:
-    """Too many changes, or a change beyond reach of the start, is sent back to the model."""
+    """A long reading, too many changes, or a change beyond reach of the start, is sent back to
+    the model."""
+    _short(output.reading, ctx.deps.line_chars)
     if len(output.changes) > ctx.deps.max_changes:
         raise ModelRetry(TOO_MANY_CHANGES.format(max_changes=ctx.deps.max_changes))
     for change in output.changes:

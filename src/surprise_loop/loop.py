@@ -18,7 +18,13 @@ from pydantic import ValidationError
 
 from surprise_loop import phases as real
 from surprise_loop.agents import load_model
-from surprise_loop.config import RunConfig, Runtime, initial_agent_state, resolve_model
+from surprise_loop.config import (
+    RunConfig,
+    Runtime,
+    TokenCount,
+    initial_agent_state,
+    resolve_model,
+)
 from surprise_loop.phases.heuristics import require
 from surprise_loop.state import AgentState, TickDump, TickRecord, Workspace
 from surprise_loop.world import Frozen, GridWorld, WorldState
@@ -221,10 +227,17 @@ async def run(
     *,
     resume: bool = False,
     stop_after_tick: int | None = None,
+    usage: TokenCount | None = None,
 ) -> RunResult:
-    """Run ticks until the world is done, `config.ticks` are complete or `stop_after_tick`."""
+    """Run ticks until the world is done, `config.ticks` are complete or `stop_after_tick`. The
+    model calls' requests and tokens are added to `usage` when one is given."""
     return await _run(
-        config, run_dir, resume=resume, stop_after_tick=stop_after_tick, phases=_REAL_PHASES
+        config,
+        run_dir,
+        resume=resume,
+        stop_after_tick=stop_after_tick,
+        phases=_REAL_PHASES,
+        usage=usage,
     )
 
 
@@ -235,6 +248,7 @@ async def _run(
     resume: bool = False,
     stop_after_tick: int | None = None,
     phases: _Phases,
+    usage: TokenCount | None = None,
 ) -> RunResult:
     config = config.model_copy(update={"model": resolve_model(config)})
     model = load_model(config.model)
@@ -270,7 +284,7 @@ async def _run(
                 raise RunError(f"{run_dir}: cannot create: {_reason(e)}") from None
             _write_run_file(run_dir / CONFIG_FILE, config.model_dump_json())
 
-    rt = Runtime(config=config, world=world, model=model)
+    rt = Runtime(config=config, world=world, model=model, usage=usage or TokenCount())
     async with AsyncExitStack() as stack:
         if model is not None:
             # keep the model's HTTP client open for the whole run instead of one per call
