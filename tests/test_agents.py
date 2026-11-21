@@ -349,8 +349,9 @@ def test_the_appraise_prompt_describes_the_step_and_the_body_after_it() -> None:
         "your_map",
         "your_last_steps",
         "you_went",
+        "you_felt_before",
         "you_expected",
-        "you_felt",
+        "what_changed",
         "surprise",
         "it_went",
     ]
@@ -363,7 +364,9 @@ def test_the_appraise_prompt_describes_the_step_and_the_body_after_it() -> None:
         "tone": "bad",
         "stir": "shaken",
     }
-    assert shown["you_feel"] == shown["you_felt"] == felt_words
+    assert shown["you_feel"] == felt_words
+    assert shown["you_felt_before"] == view["you_feel"]
+    assert "you_felt" not in shown
     assert shown["you_are_at"] == list(at) != view["you_are_at"]
     assert shown["your_map"] == view["your_map"]
     assert shown["your_last_steps"] == view["your_last_steps"]
@@ -379,6 +382,78 @@ def test_the_appraise_prompt_describes_the_step_and_the_body_after_it() -> None:
     assert (shown["surprise"], shown["it_went"]) == ("large", phrases.WENT_WORSE)
 
 
+def felt(hunger: int = 0, damp: int = 0, tone: int = 2, stir: int = 0) -> FeltRecord:
+    return FeltRecord(
+        moved=True,
+        levels=dict.fromkeys(Channel, 0) | {Channel.HUNGER: hunger},
+        smell=0,
+        damp=damp,
+        tone=tone,
+        stir=stir,
+        at=(0, 0),
+    )
+
+
+def shown_after(before: FeltRecord, after: FeltRecord) -> dict[str, Any]:
+    """The Appraise prompt, parsed, for a step from `before` to `after`."""
+    agent = initial().model_copy(update={"felt": before})
+    last = ran(2).memory.episodes[-1]
+    decision = Decision(direction=Direction.EAST, expectation=last.expectation, why="")
+    view = creature_view(agent, [], Params())
+    return json.loads(appraise_prompt(view, decision, after, last.comparison, Params()))
+
+
+def test_the_appraise_prompt_shows_the_record_before_the_step_in_words() -> None:
+    before = felt(hunger=2, damp=0)
+    shown = shown_after(before, felt(hunger=0, damp=1))
+    assert shown["you_felt_before"] == {
+        "moved": True,
+        **{c.value: "none" for c in Channel},
+        "hunger": "clear",
+        "smell": "none",
+        "damp": "none",
+        "tone": "even",
+        "stir": "calm",
+    }
+    assert (
+        shown["you_felt_before"]
+        == creature_view(initial().model_copy(update={"felt": before}), [], Params())["you_feel"]
+    )
+    assert "you_felt" not in shown
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "changed"),
+    [
+        (
+            felt(hunger=2, damp=0),
+            felt(hunger=0, damp=1),
+            ["hunger: clear to none", "damp: none to faint"],
+        ),
+        (felt(hunger=1, damp=2), felt(hunger=1, damp=2), []),
+        (felt(tone=2, stir=0), felt(tone=0, stir=2), []),
+    ],
+    ids=["hunger-and-damp", "same-words", "tone-and-stir-only"],
+)
+def test_what_changed_lists_each_feeling_smell_or_damp_whose_word_changed(
+    before: FeltRecord, after: FeltRecord, changed: list[str]
+) -> None:
+    assert shown_after(before, after)["what_changed"] == changed
+
+
+def test_the_appraise_text_says_what_a_change_in_the_body_is_about() -> None:
+    assert phrases.APPRAISE_TEXT == (
+        "You have just taken a step. You are shown what you felt before it, what you expected, "
+        "what you feel now, and what changed. What changes in your body right after a step is "
+        "about the spot you stepped toward: the spot you arrived on if you moved, or the thing "
+        "that stopped you if you did not. Sickness is different: it comes from something you ate "
+        "or drank a few steps ago. Say in one short line what you make of it. Then list the "
+        "spots whose beliefs you now change, each with all five beliefs. Change only what this "
+        "step, or something you now understand about an earlier step, gives you reason to "
+        "change. List nothing if nothing changed."
+    )
+
+
 def test_the_appraise_phase_shows_the_map_before_this_tick_and_the_place_after_the_step() -> None:
     config = llm_config(backends=Backends(deliberate="rule", appraise="llm"))
     rec = Recorder()
@@ -390,7 +465,9 @@ def test_the_appraise_phase_shows_the_map_before_this_tick_and_the_place_after_t
     assert ws.felt_after is not None and ws.decision is not None
     assert shown["you_are_at"] == list(ws.felt_after.at)
     assert shown["you_went"] == ws.decision.direction.value
-    assert shown["your_map"] == creature_view(ws.agent, [], config.params)["your_map"]
+    before = creature_view(ws.agent, [], config.params)
+    assert shown["your_map"] == before["your_map"]
+    assert shown["you_felt_before"] == before["you_feel"]
     assert out.appraisal == Appraisal(reading=APPRAISAL["reading"], changes=())
 
 

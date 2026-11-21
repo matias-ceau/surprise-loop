@@ -50,11 +50,18 @@ DELIBERATE_TEXT = (
 
 # after CREATURE_TEXT, for the agent that reads what a step did
 APPRAISE_TEXT = (
-    "You have just taken a step. You are shown what you expected and what you felt. Say in one "
-    "short line what you make of it. Then list the spots whose beliefs you now change, each with "
-    "all five beliefs. Change only what this step, or something you now understand about an "
-    "earlier step, gives you reason to change. List nothing if nothing changed."
+    "You have just taken a step. You are shown what you felt before it, what you expected, what "
+    "you feel now, and what changed. What changes in your body right after a step is about the "
+    "spot you stepped toward: the spot you arrived on if you moved, or the thing that stopped "
+    "you if you did not. Sickness is different: it comes from something you ate or drank a few "
+    "steps ago. Say in one short line what you make of it. Then list the spots whose beliefs you "
+    "now change, each with all five beliefs. Change only what this step, or something you now "
+    "understand about an earlier step, gives you reason to change. List nothing if nothing "
+    "changed."
 )
+
+# one line of what changed in the body over a step, e.g. "hunger: clear to none"
+CHANGED = "{name}: {before} to {after}"
 
 # the one field of an answer whose meaning its name does not carry
 AT_HELP = "the spot, as [east, north]"

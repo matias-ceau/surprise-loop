@@ -31,6 +31,7 @@ from surprise_loop.lens import ladder_step
 from surprise_loop.phrases import (
     APPRAISE_TEXT,
     AT_HELP,
+    CHANGED,
     CREATURE_TEXT,
     DELIBERATE_TEXT,
     FEEL_WORDS,
@@ -334,6 +335,20 @@ def deliberate_prompt(view: dict[str, Any]) -> str:
     return json.dumps(view, ensure_ascii=False)
 
 
+# the parts of a felt record whose change between before and after a step the model is told of
+CHANGE_PARTS = (*(c.value for c in Channel), "smell", "damp")
+
+
+def what_changed(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+    """One line per feeling, smell or damp whose word differs between two felt records in words,
+    in the order of the record."""
+    return [
+        CHANGED.format(name=name, before=before[name], after=after[name])
+        for name in CHANGE_PARTS
+        if before[name] != after[name]
+    ]
+
+
 def appraise_prompt(
     view: dict[str, Any],
     decision: Decision,
@@ -342,15 +357,17 @@ def appraise_prompt(
     p: Params,
 ) -> str:
     """The view of the creature before the step, with how it feels and where it is after it, and
-    the step just taken: where it went, what it expected, what it felt, and how that compared."""
-    felt = _felt_words(felt_after)
+    the step just taken: where it went, how it felt before it, what it expected, what changed,
+    and how that compared. The view's `you_feel` is the record before the step."""
+    before, after = view["you_feel"], _felt_words(felt_after)
     shown = {
         **view,
-        "you_feel": felt,
+        "you_feel": after,
         "you_are_at": list(felt_after.at),
         "you_went": decision.direction.value,
+        "you_felt_before": before,
         "you_expected": _expected_words(decision.expectation),
-        "you_felt": felt,
+        "what_changed": what_changed(before, after),
         **_how_it_went(comparison, p.monitor),
     }
     return json.dumps(shown, ensure_ascii=False)
