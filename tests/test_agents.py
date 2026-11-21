@@ -1,704 +1,1024 @@
-"""Appraise and Deliberate on a model: prompts, output mapping, validation and retry, whole runs.
-
-Only TestModel and FunctionModel are used; conftest.py forbids requests to any real model.
-"Prompt" here is what a model reads: the agent's instructions and the user prompt, not the
-output tool's schema.
-"""
+"""Deliberate and Appraise on a model: the view, the prompts, the outputs, retries, and whole runs
+on a FunctionModel. No real model is called."""
 
 import asyncio
+import dataclasses
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 import pytest
+from creatures import TWO_MAPS, load_two_maps, run_config
 from llm_helpers import (
-    AFTERNOON_LLM,
     APPRAISAL,
+    BOTH_LLM,
     DECISION,
     FORBIDDEN,
-    MACHINE_LIKE,
     Recorder,
-    afternoon,
+    beliefs,
     failing_model,
-    offered_letters,
-    prefer,
+    llm_config,
     retry_feedback,
     runtime,
+    scripted,
 )
-from pydantic_ai import ModelResponse, ToolCallPart, UnexpectedModelBehavior, models
-from pydantic_ai.messages import ModelMessage
-from pydantic_ai.models.function import AgentInfo, FunctionModel
-from pydantic_ai.models.test import TestModel
+from pydantic import ValidationError
+from pydantic_ai import UnexpectedModelBehavior
 
+from surprise_loop import phrases
 from surprise_loop.agents import (
-    LETTERS,
+    APPRAISE_INSTRUCTIONS,
+    DELIBERATE_INSTRUCTIONS,
+    AppraiseOutput,
+    ChangeOutput,
     DeliberateOutput,
     appraise_agent,
     appraise_prompt,
-    choices_lines,
+    creature_view,
     deliberate_agent,
+    deliberate_prompt,
+    model_settings,
+    to_appraisal,
+    to_decision,
 )
+from surprise_loop.cli import main
 from surprise_loop.config import (
     MODEL_ENV_VAR,
+    AppraiseParams,
     Backends,
     ConfigError,
     LLMParams,
+    MemoryParams,
+    Params,
+    RunConfig,
+    Runtime,
+    TokenCount,
     initial_agent_state,
     load_config,
 )
 from surprise_loop.loop import load_dumps, replay, run
-from surprise_loop.phases import appraise, deliberate
-from surprise_loop.phases.appraise import appraise_llm
-from surprise_loop.phases.deliberate import deliberate_llm, offer_order
-from surprise_loop.phases.heuristics import bands_from_words
-from surprise_loop.phases.perceive import build_percept
-from surprise_loop.phrases import (
-    ACTION_QUESTION,
-    APPRAISE_INSTRUCTION,
-    APPRAISE_QUESTION,
-    COLLAPSED_LINE,
-    DELIBERATE_INSTRUCTION,
-    DID_LINES,
-    EXPECTED_LINE,
-    FEEL_QUESTION,
-    OFFER_PHRASES,
-    OFFERS_HEADING,
-    OPEN_QUESTION_LEAD,
-    OVERRIDE_LINES,
-    PULL_PHRASES,
-    QUESTION_PHRASES,
-    READING_HEADING,
-    READING_HEADING_BEFORE,
-    RECALLED_HEADING,
-    RECALLED_SURPRISE_PHRASES,
-    RECALLED_WORLD_SURPRISE_PHRASES,
-    REGULATION_LINES,
-    STUB_READINGS,
-    SURE_QUESTION,
-    WHY_QUESTION,
-)
+from surprise_loop.phases import act, appraise, deliberate, evaluate, monitor, perceive
 from surprise_loop.state import (
+    AgentState,
     Appraisal,
-    Band,
-    ChangeWord,
+    Change,
     Comparison,
     Decision,
-    Episode,
     Expectation,
-    Memory,
-    Override,
+    FeltRecord,
     Sureness,
     TickDump,
     Workspace,
 )
-from surprise_loop.world import (
-    QUESTION_OF,
-    Action,
-    Channel,
-    Event,
-    OpenQuestion,
-    Place,
-    offers_at,
-)
+from surprise_loop.world import Belief, Channel, Direction, GridWorld, Kind, moved_to
 
-HEAT, WATER, ENERGY = Channel.HEAT, Channel.WATER, Channel.ENERGY
-READING = "Everything in me wants the shade."
+EXPERIMENTS = TWO_MAPS.parent
+YOU_FEEL = ["moved", *Channel, "smell", "damp", "tone", "stir"]
+EXPECTED = ["moved", *Channel, "smell", "damp", "sure"]
+STEP_KEYS = ["went", "toward", "expected", "felt", "surprise", "it_went", "reading"]
 
 
-def test_the_suite_forbids_real_model_requests() -> None:
-    assert models.ALLOW_MODEL_REQUESTS is False
+def ran(ticks: int, **changes: Any) -> AgentState:
+    """The plain creature after `ticks` ticks on the stand-ins."""
+    return asyncio.run(run(run_config(ticks=ticks, **changes))).agent
 
 
-# --- hand-built workspaces ----------------------------------------------------------------------
+def strings(value: Any) -> list[str]:
+    """Every key and string value inside a parsed JSON value."""
+    if isinstance(value, dict):
+        return [*value, *(s for v in value.values() for s in strings(v))]
+    if isinstance(value, list):
+        return [s for v in value for s in strings(v)]
+    return [value] if isinstance(value, str) else []
 
 
-def comparison(heat: float = 0.0, world: bool | None = None, size: float = 0.0) -> Comparison:
-    return Comparison(
-        body=dict.fromkeys(Channel, 0.0),
-        body_felt={HEAT: heat, WATER: 0.0, ENERGY: 0.0},
-        world=world,
-        better=0.0,
-        size=size,
+def initial() -> AgentState:
+    config = run_config()
+    return initial_agent_state(config, GridWorld(config.world, config.seed).observe())
+
+
+def until_appraise(config: RunConfig, model: object = None) -> tuple[Workspace, Runtime]:
+    """A workspace of tick 1 through Evaluate, its Deliberate on the rule, and the runtime of
+    `config` on the same world."""
+    rule = config.model_copy(update={"backends": Backends(appraise=config.backends.appraise)})
+    rt = runtime(rule, model)
+    ws = Workspace(agent=initial_agent_state(rule, rt.world.observe()))
+    for phase in (perceive, deliberate, act, monitor, evaluate):
+        ws = asyncio.run(phase(ws, rt))
+    return ws, dataclasses.replace(rt, config=config)
+
+
+# --- the view ------------------------------------------------------------------------------------
+
+
+def test_the_view_has_exactly_the_keys_of_the_contract_and_feelings_are_words() -> None:
+    agent = ran(10)
+    view = creature_view(agent, agent.memory.episodes, Params())
+
+    assert list(view) == ["you_feel", "you_are_at", "your_map", "your_last_steps"]
+    assert list(view["you_feel"]) == YOU_FEEL
+    assert view["you_feel"]["moved"] is agent.felt.moved
+    for c in Channel:
+        assert view["you_feel"][c] == phrases.FEEL_WORDS[agent.felt.levels[c]]
+    assert view["you_feel"]["smell"] == phrases.NEAR_WORDS[agent.felt.smell]
+    assert view["you_feel"]["damp"] == phrases.NEAR_WORDS[agent.felt.damp]
+    assert view["you_feel"]["tone"] == phrases.TONE_WORDS[agent.felt.tone]
+    assert view["you_feel"]["stir"] == phrases.STIR_WORDS[agent.felt.stir]
+    assert view["you_are_at"] == list(agent.felt.at)
+    assert list(view["your_map"]) == ["untried", "spots"]
+    assert list(view["your_map"]["untried"]) == list(Belief)
+    for step in view["your_last_steps"]:
+        assert list(step) == STEP_KEYS
+        assert list(step["expected"]) == EXPECTED
+        assert list(step["felt"]) == YOU_FEEL
+        assert step["surprise"] in phrases.SURPRISE_WORDS
+        assert step["it_went"] in (phrases.WENT_WORSE, phrases.WENT_BETTER, phrases.WENT_SAME)
+    json.dumps(view)  # plain JSON
+
+
+def test_spots_hold_tried_and_changed_tiles_north_first_then_east_with_rounded_beliefs() -> None:
+    agent = initial()
+    changed = agent.own_map.changed(
+        [
+            Change(at=(-1, 0), beliefs=beliefs(0.123456, 0.0, 0.5, 0.0, 0.987654)),
+            Change(at=(2, 3), beliefs=beliefs(1.0, 0.0, 0.0, 0.0, 0.0)),
+        ]
     )
-
-
-def expectation(words: dict[Channel, ChangeWord] | None, world: bool | None = None) -> Expectation:
-    return Expectation(
-        words=words,
-        bands=dict.fromkeys(Channel, Band(lo=None, hi=None)),
-        world=world,
-        sureness=Sureness.GUESSING,
-    )
-
-
-WORDS = {HEAT: ChangeWord.BIT_MORE, WATER: ChangeWord.SAME, ENERGY: ChangeWord.BIT_LESS}
-
-
-def episode(
-    tick: int,
-    place: Place,
-    action: Action,
-    event: Event,
-    exp: Expectation,
-    comp: Comparison,
-    regulation: str = "",
-) -> Episode:
-    return Episode(
-        tick=tick,
-        step=tick,
-        place=place,
-        action=action,
-        event=event,
-        expectation=exp,
-        comparison=comp,
-        need_before=dict.fromkeys(Channel, 0.0),
-        salience=0.5,
-        scene="an old scene",
-        reading="an old reading",
-        regulation=regulation,
-        score=None if not regulation else 0.5,
-    )
-
-
-# a body surprise with words; a stub's episode with a regulation line; a world surprise
-LOOKED = episode(
-    1, Place.MEADOW, Action.LOOK, Event.LOOKED, expectation(WORDS), comparison(heat=0.9, size=0.9)
-)
-RESTED = episode(
-    2,
-    Place.MEADOW,
-    Action.REST,
-    Event.RESTED,
-    expectation(None),
-    comparison(),
-    REGULATION_LINES[(Action.REST, 1)],
-)
-TO_OAK = episode(
-    3,
-    Place.MEADOW,
-    Action.GO_OAK,
-    Event.ARRIVED,
-    expectation(WORDS, world=True),
-    comparison(heat=0.1, world=True, size=1.1),
-)
-RECALLED = [LOOKED, RESTED, TO_OAK]
-
-
-def workspace(
-    config_agent: int = 0, *, recalled: list[Episode] | None = None, pull: float = 0.6
-) -> tuple[Workspace, Any]:
-    """Ilo (or tavi) at the afternoon's first tick, with `recalled` in memory and a pull toward
-    the oak; perceived and appraised, ready for Deliberate."""
-    config = afternoon(config_agent)
-    rt = runtime(config, TestModel())
-    agent = initial_agent_state(config)
-    values = {p: dict(v) for p, v in agent.pulls.values.items()}
-    values[Place.MEADOW][Action.GO_OAK] = pull
     agent = agent.model_copy(
-        update={
-            "memory": Memory(episodes=list(RECALLED if recalled is None else recalled)),
-            "pulls": agent.pulls.model_copy(update={"values": values}),
-        }
+        update={"own_map": changed, "tries": {"1,0": 2, "0,1": 1, "5,5": 0, "-1,0": 1}}
     )
-    observation = rt.world.observe()
-    ws = Workspace(
-        agent=agent,
-        observation=observation,
-        percept=build_percept(observation, agent, config.params),
-        appraisal=Appraisal(reading=READING, about=HEAT),
+
+    spots = creature_view(agent, [], Params())["your_map"]["spots"]
+
+    assert [s["at"] for s in spots] == [[2, 3], [0, 1], [-1, 0], [1, 0]]
+    assert [s["tries"] for s in spots] == [0, 1, 1, 2]
+    assert spots[2] == {
+        "at": [-1, 0],
+        "tries": 1,
+        "blocks": 0.12,
+        "hurts": 0.0,
+        "feeds": 0.5,
+        "quenches": 0.0,
+        "pleases": 0.99,
+    }
+    untried = agent.own_map.untried
+    # a tried spot with no entry of its own holds what every untried spot is believed to be
+    assert spots[1] == {"at": [0, 1], "tries": 1, **{b.value: round(untried[b], 2) for b in Belief}}
+    view = creature_view(
+        agent, [], Params(prompt=Params().prompt.model_copy(update={"decimals": 1}))
     )
-    return ws, rt
+    assert view["your_map"]["spots"][2]["blocks"] == 0.1
+    assert view["your_map"]["untried"] == {b.value: round(untried[b], 1) for b in Belief}
 
 
-def pass_one(ws: Workspace, actions: list[Action]) -> Workspace:
-    """`ws` as the second pass of its tick, overruled by ilo's heat and offered `actions`."""
-    override = Override(channel=HEAT, actions=actions, detail="heat need 2.10 is at least 1.50")
-    percept = build_percept(ws.observation, ws.agent, afternoon().params, offers=actions)
-    return ws.model_copy(update={"pass_index": 1, "override": override, "percept": percept})
+def test_last_steps_are_the_most_recent_k_with_words() -> None:
+    agent = ran(10)
+    episodes = agent.memory.episodes
+    assert len(episodes) == 6
 
+    for k in (0, 3, 6, 9):
+        p = Params(memory=MemoryParams(recent_k=k))
+        steps = creature_view(agent, episodes, p)["your_last_steps"]
+        assert len(steps) == min(k, len(episodes))
+        assert [s["went"] for s in steps] == [
+            e.direction.value for e in episodes[len(episodes) - len(steps) :]
+        ]
 
-def answered(rec: Recorder, ws: Workspace, rt: Any) -> Workspace:
-    with deliberate_agent.override(model=rec.model):
-        return asyncio.run(deliberate_llm(ws, rt))
-
-
-# --- Appraise -----------------------------------------------------------------------------------
-
-
-def test_the_appraise_prompt_is_the_scene_then_one_question() -> None:
-    ws, rt = workspace()
-    assert ws.percept is not None
-    text = ws.percept.scene.text()
-    assert appraise_prompt(text) == f"{text}\n\n{APPRAISE_QUESTION}"
+    last = episodes[-1]
+    step = creature_view(agent, episodes, Params())["your_last_steps"][-1]
+    assert step["expected"] == {
+        "moved": last.expectation.moved,
+        **{c.value: phrases.FEEL_WORDS[last.expectation.levels[c]] for c in Channel},
+        "smell": phrases.NEAR_WORDS[last.expectation.smell],
+        "damp": phrases.NEAR_WORDS[last.expectation.damp],
+        "sure": last.expectation.sure.value,
+    }
+    assert step["felt"]["moved"] is last.felt.moved
+    assert step["felt"]["hunger"] == phrases.FEEL_WORDS[last.felt.levels[Channel.HUNGER]]
+    assert step["reading"] == last.reading
 
 
 @pytest.mark.parametrize(
-    ("about", "channel"),
-    [("heat", HEAT), ("thirst", WATER), ("tiredness", ENERGY), ("nothing", None)],
+    ("surprise", "worse", "word", "went"),
+    [
+        (0.0, 0.0, "none", phrases.WENT_SAME),
+        (0.049, 0.099, "none", phrases.WENT_SAME),
+        (0.05, 0.1, "small", phrases.WENT_WORSE),
+        (0.39, -0.1, "small", phrases.WENT_BETTER),
+        (0.4, -0.099, "large", phrases.WENT_SAME),
+        (1.0, 1.5, "large", phrases.WENT_WORSE),
+    ],
 )
-def test_an_appraise_answer_maps_to_the_appraisal(about: str, channel: Channel | None) -> None:
-    ws, rt = workspace()
-    rec = Recorder(appraisal={"reading": "  Too   hot,\nfar too hot. ", "about": about})
-    with appraise_agent.override(model=rec.model):
-        out = asyncio.run(appraise_llm(ws.model_copy(update={"appraisal": None}), rt))
-    assert out.appraisal == Appraisal(reading="Too hot, far too hot.", about=channel)
-    [(name, instructions, prompt)] = rec.calls
-    assert name == "appraise" and instructions == APPRAISE_INSTRUCTION
-    assert ws.percept is not None
-    assert prompt == appraise_prompt(ws.percept.scene.text())
+def test_surprise_and_how_it_went_are_words_by_the_edges(
+    surprise: float, worse: float, word: str, went: str
+) -> None:
+    agent = ran(2)
+    last = agent.memory.episodes[-1]
+    comparison = last.comparison.model_copy(update={"surprise": surprise, "worse": worse})
+    episode = last.model_copy(update={"comparison": comparison})
+
+    step = creature_view(agent, [episode], Params())["your_last_steps"][0]
+
+    assert (step["surprise"], step["it_went"]) == (word, went)
 
 
-def test_the_appraise_dispatcher_selects_the_model() -> None:
-    ws, rt = workspace()
+# --- what never reaches a model ------------------------------------------------------------------
+
+
+def distinctive() -> RunConfig:
+    """A run whose temperament and body carry numbers that cannot arise by chance in a prompt."""
+    base = llm_config(ticks=12)
+    temperament = base.agent.temperament.model_copy(
+        update={"gain": dict.fromkeys(Channel, 1.37), "noise": dict.fromkeys(Channel, 0.0246)}
+    )
+    world = base.world.model_copy(
+        update={"start_body": base.world.start_body | {Channel.HUNGER: 0.4321}}
+    )
+    agent = base.agent.model_copy(update={"temperament": temperament})
+    return base.model_copy(update={"agent": agent, "world": world})
+
+
+DISTINCT = ("1.37", "137", "0246", "4321", "1234")
+
+
+def assert_clean(text: str) -> None:
+    assert not FORBIDDEN.search(text), text
+    for digits in DISTINCT:
+        assert digits not in text, (digits, text)
+
+
+def test_no_text_a_model_reads_holds_a_kind_a_temperament_or_body_number_or_a_framing_word() -> (
+    None
+):
     rec = Recorder()
-    with appraise_agent.override(model=rec.model):
-        out = asyncio.run(appraise(ws, rt))
-    assert out.appraisal is not None and out.appraisal.reading == APPRAISAL["reading"]
+    with deliberate_agent.override(model=rec.model), appraise_agent.override(model=rec.model):
+        result = asyncio.run(run(distinctive()))
+    assert len(result.records) == 12
+    assert len(rec.prompts("deliberate")) == len(rec.prompts("appraise")) == 12
+
+    kinds = {k.value for k in Kind}
+    for _, instructions, prompt in rec.calls:
+        assert_clean(instructions)
+        assert_clean(prompt)
+        assert not kinds & set(strings(json.loads(prompt)))
+    for tool in rec.tools:
+        assert_clean(json.dumps([tool.name, tool.description, tool.parameters_json_schema]))
+
+
+def test_no_fixed_text_names_a_game_a_simulation_or_an_experiment() -> None:
+    public = [v for name, v in vars(phrases).items() if not name.startswith("_")]
+    texts = [v for v in public if isinstance(v, str)]
+    texts += [s for v in public if isinstance(v, tuple) for s in v]
+    texts += [
+        phrases.TOO_MANY_CHANGES.format(max_changes=12),
+        phrases.TOO_FAR.format(at=[40, 0], reach=12),
+    ]
+    texts += [DELIBERATE_INSTRUCTIONS, APPRAISE_INSTRUCTIONS]
+    for text in texts:
+        assert not FORBIDDEN.search(text), text
+    assert f"{phrases.CREATURE_TEXT}\n\n{phrases.DELIBERATE_TEXT}" == DELIBERATE_INSTRUCTIONS
+    assert f"{phrases.CREATURE_TEXT}\n\n{phrases.APPRAISE_TEXT}" == APPRAISE_INSTRUCTIONS
+
+
+def test_nothing_of_the_reasoner_reaches_a_prompt() -> None:
+    agent = ran(6)
+    shares = {k: 0.1234 if k is Kind.FOOD else 0.0 for k in Kind} | {Kind.GROUND: 1 - 0.1234}
+    reasoner = agent.reasoner.model_copy(
+        update={"presumes": shares, "tiles": {"1,0": shares, "0,1": shares}}
+    )
+    agent = agent.model_copy(update={"reasoner": reasoner})
+    view = creature_view(agent, agent.memory.episodes, Params())
+    last = agent.memory.episodes[-1]
+    decision = Decision(direction=last.direction, expectation=last.expectation, why="")
+
+    for prompt in (
+        deliberate_prompt(view),
+        appraise_prompt(view, decision, last.felt, last.comparison, Params()),
+    ):
+        assert "1234" not in prompt
+        assert "8766" not in prompt
+
+
+# --- the prompts ---------------------------------------------------------------------------------
+
+
+def test_the_deliberate_prompt_is_the_view_as_json() -> None:
+    agent = ran(4)
+    view = creature_view(agent, agent.memory.episodes, Params())
+    prompt = deliberate_prompt(view)
+    assert prompt == json.dumps(view, ensure_ascii=False)
+    assert json.loads(prompt) == view
+
+
+def test_the_appraise_prompt_describes_the_step_and_the_body_after_it() -> None:
+    agent = ran(4)
+    view = creature_view(agent, agent.memory.episodes, Params())
+    expectation = Expectation(
+        moved=True,
+        levels=dict.fromkeys(Channel, 0) | {Channel.HUNGER: 2},
+        smell=1,
+        damp=0,
+        sure=Sureness.FAIRLY_SURE,
+    )
+    decision = Decision(direction=Direction.NORTH, expectation=expectation, why="")
+    at = (agent.felt.at[0], agent.felt.at[1] + 1)
+    felt_after = FeltRecord(
+        moved=True,
+        levels=dict.fromkeys(Channel, 0) | {Channel.THIRST: 3},
+        smell=2,
+        damp=1,
+        tone=1,
+        stir=2,
+        at=at,
+    )
+    comparison = Comparison(
+        moved_miss=False,
+        misses=dict.fromkeys(Channel, 0),
+        smell_miss=1,
+        damp_miss=1,
+        surprise=0.5,
+        worse=0.25,
+    )
+
+    shown = json.loads(appraise_prompt(view, decision, felt_after, comparison, Params()))
+
+    assert list(shown) == [
+        "you_feel",
+        "you_are_at",
+        "your_map",
+        "your_last_steps",
+        "you_went",
+        "you_stepped_toward",
+        "you_felt_before",
+        "you_expected",
+        "what_changed",
+        "surprise",
+        "it_went",
+    ]
+    felt_words = {
+        "moved": True,
+        **{c.value: "none" for c in Channel},
+        "thirst": "strong",
+        "smell": "strong",
+        "damp": "faint",
+        "tone": "bad",
+        "stir": "shaken",
+    }
+    assert shown["you_feel"] == felt_words
+    assert shown["you_felt_before"] == view["you_feel"]
+    assert "you_felt" not in shown
+    assert shown["you_are_at"] == list(at) != view["you_are_at"]
+    assert shown["your_map"] == view["your_map"]
+    assert shown["your_last_steps"] == view["your_last_steps"]
+    assert shown["you_went"] == "north"
+    assert shown["you_expected"] == {
+        "moved": True,
+        **{c.value: "none" for c in Channel},
+        "hunger": "clear",
+        "smell": "faint",
+        "damp": "none",
+        "sure": "fairly sure",
+    }
+    assert (shown["surprise"], shown["it_went"]) == ("large", phrases.WENT_WORSE)
+
+
+def felt(hunger: int = 0, damp: int = 0, tone: int = 2, stir: int = 0) -> FeltRecord:
+    return FeltRecord(
+        moved=True,
+        levels=dict.fromkeys(Channel, 0) | {Channel.HUNGER: hunger},
+        smell=0,
+        damp=damp,
+        tone=tone,
+        stir=stir,
+        at=(0, 0),
+    )
+
+
+def shown_after(before: FeltRecord, after: FeltRecord) -> dict[str, Any]:
+    """The Appraise prompt, parsed, for a step from `before` to `after`."""
+    agent = initial().model_copy(update={"felt": before})
+    last = ran(2).memory.episodes[-1]
+    decision = Decision(direction=Direction.EAST, expectation=last.expectation, why="")
+    view = creature_view(agent, [], Params())
+    return json.loads(appraise_prompt(view, decision, after, last.comparison, Params()))
+
+
+def test_the_appraise_prompt_shows_the_record_before_the_step_in_words() -> None:
+    before = felt(hunger=2, damp=0)
+    shown = shown_after(before, felt(hunger=0, damp=1))
+    assert shown["you_felt_before"] == {
+        "moved": True,
+        **{c.value: "none" for c in Channel},
+        "hunger": "clear",
+        "smell": "none",
+        "damp": "none",
+        "tone": "even",
+        "stir": "calm",
+    }
+    assert (
+        shown["you_felt_before"]
+        == creature_view(initial().model_copy(update={"felt": before}), [], Params())["you_feel"]
+    )
+    assert "you_felt" not in shown
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "changed"),
+    [
+        (
+            felt(hunger=2, damp=0),
+            felt(hunger=0, damp=1),
+            ["hunger: clear to none", "damp: none to faint"],
+        ),
+        (felt(hunger=1, damp=2), felt(hunger=1, damp=2), []),
+        (felt(tone=2, stir=0), felt(tone=0, stir=2), []),
+    ],
+    ids=["hunger-and-damp", "same-words", "tone-and-stir-only"],
+)
+def test_what_changed_lists_each_feeling_smell_or_damp_whose_word_changed(
+    before: FeltRecord, after: FeltRecord, changed: list[str]
+) -> None:
+    assert shown_after(before, after)["what_changed"] == changed
+
+
+def step_east_from_1_3(moved: bool) -> dict[str, Any]:
+    """The Appraise prompt, parsed, for a step east from [1, 3] that moved or was blocked."""
+    agent = initial()
+    agent = agent.model_copy(update={"felt": agent.felt.model_copy(update={"at": (1, 3)})})
+    after = agent.felt.model_copy(update={"moved": moved, "at": (2, 3) if moved else (1, 3)})
+    last = ran(2).memory.episodes[-1]
+    decision = Decision(direction=Direction.EAST, expectation=last.expectation, why="")
+    view = creature_view(agent, [], Params())
+    return json.loads(appraise_prompt(view, decision, after, last.comparison, Params()))
+
+
+def test_a_blocked_step_was_toward_the_next_spot_and_left_the_creature_where_it_was() -> None:
+    shown = step_east_from_1_3(moved=False)
+    assert shown["you_stepped_toward"] == [2, 3]
+    assert shown["you_are_at"] == [1, 3]
+
+
+def test_a_step_that_moved_was_toward_the_spot_it_arrived_on() -> None:
+    shown = step_east_from_1_3(moved=True)
+    assert shown["you_stepped_toward"] == shown["you_are_at"] == [2, 3]
+
+
+@pytest.mark.parametrize(
+    ("moved", "at"), [(True, (2, 3)), (False, (1, 3))], ids=["moved", "blocked"]
+)
+def test_a_last_step_says_which_spot_it_was_toward(moved: bool, at: tuple[int, int]) -> None:
+    agent = ran(2)
+    last = agent.memory.episodes[-1]
+    felt_after = last.felt.model_copy(update={"moved": moved, "at": at})
+    episode = last.model_copy(update={"direction": Direction.EAST, "felt": felt_after})
+
+    step = creature_view(agent, [episode], Params())["your_last_steps"][0]
+
+    assert step["went"] == "east"
+    assert step["toward"] == [2, 3]
+    assert list(step)[:2] == ["went", "toward"]
+
+
+def test_the_appraise_text_says_what_a_change_in_the_body_is_about() -> None:
+    assert phrases.APPRAISE_TEXT == (
+        "You have just taken a step. You are shown what you felt before it, what you expected, "
+        "what you feel now, and what changed. What changes in your body right after a step is "
+        "about the spot you stepped toward: the spot you arrived on if you moved, or the thing "
+        "that stopped you if you did not. Sickness is different: it comes from something you ate "
+        "or drank a few steps ago. Say in one short line what you make of it. Then list the "
+        "spots whose beliefs you now change, each with all five beliefs. Change only what this "
+        "step, or something you now understand about an earlier step, gives you reason to "
+        "change. List nothing if nothing changed."
+    )
+
+
+def test_the_appraise_phase_shows_the_map_before_this_tick_and_the_place_after_the_step() -> None:
+    config = llm_config(backends=Backends(deliberate="rule", appraise="llm"))
+    rec = Recorder()
+    ws, rt = until_appraise(config, rec.model)
+    out = asyncio.run(appraise(ws, rt))
+
+    [prompt] = rec.prompts("appraise")
+    shown = json.loads(prompt)
+    assert ws.felt_after is not None and ws.decision is not None
+    assert shown["you_are_at"] == list(ws.felt_after.at)
+    assert shown["you_went"] == ws.decision.direction.value
+    assert shown["you_stepped_toward"] == list(moved_to(ws.agent.felt.at, ws.decision.direction))
+    before = creature_view(ws.agent, [], config.params)
+    assert shown["your_map"] == before["your_map"]
+    assert shown["you_felt_before"] == before["you_feel"]
+    assert out.appraisal == Appraisal(reading=APPRAISAL["reading"], changes=())
+
+
+# --- the outputs ---------------------------------------------------------------------------------
+
+
+def test_a_deliberate_output_maps_to_the_decision() -> None:
+    output = DeliberateOutput.model_validate(
+        {
+            **DECISION,
+            "why": "  The east\n looks   open. ",
+            "direction": "west",
+            "moved": False,
+            "hunger": "overwhelming",
+            "ache": "slight",
+            "pleasure": "strong",
+            "smell": "strong",
+            "sure": "sure",
+        }
+    )
+
+    assert to_decision(output) == Decision(
+        direction=Direction.WEST,
+        expectation=Expectation(
+            moved=False,
+            levels={
+                Channel.HUNGER: 4,
+                Channel.THIRST: 1,
+                Channel.ACHE: 1,
+                Channel.SICKNESS: 0,
+                Channel.UNEASE: 0,
+                Channel.PLEASURE: 3,
+            },
+            smell=2,
+            damp=1,
+            sure=Sureness.SURE,
+        ),
+        why="The east looks open.",
+    )
+
+
+def test_an_appraise_output_maps_to_the_appraisal() -> None:
+    output = AppraiseOutput.model_validate(
+        {
+            "reading": "That\nwas food.  ",
+            "changes": [
+                {"at": [1, 0], **beliefs(1.0, 0.0, 0.9, 0.0, 0.0)},
+                {"at": [-2, 3], **beliefs(0.0, 0.5, 0.0, 0.0, 0.25)},
+            ],
+        }
+    )
+
+    assert to_appraisal(output) == Appraisal(
+        reading="That was food.",
+        changes=(
+            Change(at=(1, 0), beliefs=beliefs(1.0, 0.0, 0.9, 0.0, 0.0)),
+            Change(at=(-2, 3), beliefs=beliefs(0.0, 0.5, 0.0, 0.0, 0.25)),
+        ),
+    )
+
+
+def test_a_belief_beyond_one_is_rejected_by_validation() -> None:
+    with pytest.raises(ValidationError):
+        ChangeOutput.model_validate({"at": [1, 0], **beliefs(1.2, 0.0, 0.0, 0.0, 0.0)})
+    with pytest.raises(ValidationError):
+        ChangeOutput.model_validate({"at": [1, 0], **beliefs(0.0, -0.1, 0.0, 0.0, 0.0)})
+
+
+@pytest.mark.parametrize("at", [[1], [1, 0, 2], []], ids=["one", "three", "none"])
+def test_a_spot_of_other_than_two_numbers_is_rejected_by_validation(at: list[int]) -> None:
+    with pytest.raises(ValidationError):
+        ChangeOutput.model_validate({"at": at, **beliefs(0.0, 0.0, 0.0, 0.0, 0.0)})
+
+
+def test_the_schema_of_a_spot_is_a_plain_array_of_two_integers() -> None:
+    schema = AppraiseOutput.model_json_schema()
+    assert "prefixItems" not in json.dumps(schema)
+    at = schema["$defs"]["ChangeOutput"]["properties"]["at"]
+    assert (at["type"], at["items"], at["minItems"], at["maxItems"]) == (
+        "array",
+        {"type": "integer"},
+        2,
+        2,
+    )
+
+
+def test_the_request_carries_the_llm_params() -> None:
+    settings = model_settings(LLMParams(temperature=0.4, timeout_s=12.5))
+    assert settings == {"timeout": 12.5, "temperature": 0.4}
+    assert model_settings(LLMParams(temperature=None)) == {"timeout": 60.0}
+
+
+SETTINGS = {"max_tokens": 8000, "openrouter_reasoning": {"effort": "low"}}
+
+
+def test_the_config_settings_are_merged_into_the_request_as_given() -> None:
+    settings = model_settings(LLMParams(temperature=0.4, timeout_s=12.5, settings=SETTINGS))
+    assert settings == {"timeout": 12.5, "temperature": 0.4, **SETTINGS}
+
+
+def test_nested_settings_survive_a_json_round_trip_of_the_run_config() -> None:
+    config = with_llm(llm_config(), settings=SETTINGS)
+    again = RunConfig.model_validate_json(config.model_dump_json())
+    assert again == config
+    assert again.params.llm.settings == SETTINGS
+
+
+# --- retries -------------------------------------------------------------------------------------
+
+
+def deliberate_ws(config: RunConfig, model: object) -> tuple[Workspace, Any]:
+    rt = runtime(config, model)
+    ws = Workspace(agent=initial_agent_state(config, rt.world.observe()))
+    return asyncio.run(perceive(ws, rt)), rt
+
+
+def with_llm(config: RunConfig, **llm: Any) -> RunConfig:
+    params = config.params.model_copy(update={"llm": LLMParams(**llm)})
+    return config.model_copy(update={"params": params})
+
+
+@pytest.mark.parametrize(
+    ("bad", "field"),
+    [
+        pytest.param({**DECISION, "direction": "up"}, "direction", id="direction"),
+        pytest.param({**DECISION, "hunger": "famished"}, "hunger", id="feeling"),
+        pytest.param({**DECISION, "damp": "soaked"}, "damp", id="damp"),
+        pytest.param({**DECISION, "sure": "certain"}, "sure", id="sure"),
+    ],
+)
+def test_an_unknown_word_is_retried_then_accepted(bad: dict[str, Any], field: str) -> None:
+    model, calls = scripted(bad, DECISION)
+    ws, rt = deliberate_ws(llm_config(), model)
+
+    out = asyncio.run(deliberate(ws, rt))
+
+    assert len(calls) == 2
+    assert field in retry_feedback(calls[1])
+    assert out.decision == to_decision(DeliberateOutput.model_validate(DECISION))
+
+
+@pytest.mark.parametrize("retries", [0, 2])
+@pytest.mark.parametrize(
+    "bad",
+    [{**DECISION, "direction": "up"}, {**DECISION, "hunger": "famished"}],
+    ids=["direction", "feeling"],
+)
+def test_a_persistently_unknown_word_stops_with_an_error_naming_the_tick(
+    bad: dict[str, Any], retries: int
+) -> None:
+    model, calls = scripted(bad)
+    ws, rt = deliberate_ws(with_llm(llm_config(), output_retries=retries), model)
+    ws = ws.model_copy(update={"agent": ws.agent.model_copy(update={"tick": 6})})
+
+    with pytest.raises(UnexpectedModelBehavior) as info:
+        asyncio.run(deliberate(ws, rt))
+
+    assert len(calls) == retries + 1
+    assert any("deliberate failed at tick 7" in note for note in info.value.__notes__)
+
+
+def change(at: list[int], *values: float) -> dict[str, Any]:
+    return {"at": at, **beliefs(*values)}
+
+
+def appraise_config(max_changes: int = 2, **llm: Any) -> RunConfig:
+    config = with_llm(llm_config(backends=Backends(deliberate="rule", appraise="llm")), **llm)
+    params = config.params.model_copy(update={"appraise": AppraiseParams(max_changes=max_changes)})
+    return config.model_copy(update={"params": params})
+
+
+GOOD_CHANGE = change([1, 0], 1.0, 0.0, 0.0, 0.0, 0.0)
+
+
+@pytest.mark.parametrize(
+    ("bad", "said"),
+    [
+        pytest.param([GOOD_CHANGE] * 3, "at most 2", id="too-many"),
+        pytest.param([change([40, 0], 0.0, 0.0, 0.0, 0.0, 0.0)], "[40, 0]", id="too-far-east"),
+        pytest.param([change([0, -13], 0.0, 0.0, 0.0, 0.0, 0.0)], "[0, -13]", id="too-far-south"),
+        pytest.param([change([1, 0], 1.2, 0.0, 0.0, 0.0, 0.0)], "blocks", id="belief-above-one"),
+    ],
+)
+def test_a_bad_list_of_changes_is_retried_then_accepted(bad: list[Any], said: str) -> None:
+    model, calls = scripted(
+        {"reading": "", "changes": bad}, {"reading": "", "changes": [GOOD_CHANGE]}
+    )
+    ws, rt = until_appraise(appraise_config(), model)
+
+    out = asyncio.run(appraise(ws, rt))
+
+    assert len(calls) == 2
+    assert said in retry_feedback(calls[1])
+    assert out.appraisal is not None
+    assert out.appraisal.changes == (Change(at=(1, 0), beliefs=beliefs(1.0, 0.0, 0.0, 0.0, 0.0)),)
+
+
+def test_twelve_changes_at_the_edge_of_reach_are_accepted() -> None:
+    edge = [change([12, -12], 0.0, 0.0, 0.0, 0.0, 0.0)] * 2
+    model, calls = scripted({"reading": "", "changes": edge})
+    ws, rt = until_appraise(appraise_config(), model)
+    out = asyncio.run(appraise(ws, rt))
+    assert len(calls) == 1
+    assert out.appraisal is not None and len(out.appraisal.changes) == 2
 
 
 @pytest.mark.parametrize(
     "bad",
-    [{"reading": "Hot.", "about": "the sun"}, {"reading": "   ", "about": "heat"}],
-    ids=["about-off-the-list", "empty-reading"],
+    [[GOOD_CHANGE] * 3, [change([40, 0], 0.0, 0.0, 0.0, 0.0, 0.0)]],
+    ids=["too-many", "too-far"],
 )
-def test_a_bad_appraisal_is_retried(bad: dict[str, Any]) -> None:
-    ws, rt = workspace()
-    answers = [bad, APPRAISAL]
-    calls: list[list[ModelMessage]] = []
-
-    def function(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        calls.append(messages)
-        args = answers[min(len(calls), len(answers)) - 1]
-        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, args)])
-
-    with appraise_agent.override(model=FunctionModel(function)):
-        out = asyncio.run(appraise_llm(ws, rt))
-    assert len(calls) == 2
-    assert out.appraisal is not None and out.appraisal.about is HEAT
-
-
-# --- the Deliberate prompt ----------------------------------------------------------------------
-
-
-def test_the_deliberate_prompt_shows_every_element_in_order() -> None:
-    ws, rt = workspace()
-    rec = Recorder()
-    answered(rec, ws, rt)
-    [(name, instructions, prompt)] = rec.calls
-    assert name == "deliberate" and instructions == DELIBERATE_INSTRUCTION
-    assert ws.percept is not None
-
-    order = offer_order(rt.config.seed, 1, 0, offers_at(Place.MEADOW))
-    offer_lines = [
-        f"{letter}. {OFFER_PHRASES[(Place.MEADOW, a)]}"
-        for letter, a in zip(LETTERS, order, strict=False)
-    ]
-    looked = " ".join(
-        [
-            DID_LINES[(Place.MEADOW, Action.LOOK)],
-            EXPECTED_LINE.format(
-                heat="a bit warmer", thirst="about the same", tiredness="a bit less tired"
-            ),
-            RECALLED_SURPRISE_PHRASES[(HEAT, True)],
-        ]
-    )
-    rested = " ".join([DID_LINES[(Place.MEADOW, Action.REST)], REGULATION_LINES[(Action.REST, 1)]])
-    to_oak = " ".join(
-        [
-            DID_LINES[(Place.MEADOW, Action.GO_OAK)],
-            EXPECTED_LINE.format(
-                heat="a bit warmer", thirst="about the same", tiredness="a bit less tired"
-            ),
-            RECALLED_WORLD_SURPRISE_PHRASES[(OpenQuestion.LOG_SHADED, False)],
-        ]
-    )
-    questions = [
-        f"{OPEN_QUESTION_LEAD.format(letter=letter)} {QUESTION_PHRASES[q]}"
-        for letter, a in zip(LETTERS, order, strict=False)
-        if (q := QUESTION_OF[a]) is not None
-    ]
-    expected = [
-        ws.percept.scene.text(),
-        f"{READING_HEADING} {READING}",
-        OFFERS_HEADING,
-        *offer_lines,
-        RECALLED_HEADING,
-        f"- {looked}",
-        f"- {rested}",
-        f"- {to_oak}",
-        PULL_PHRASES[(Action.GO_OAK, True)],
-        ACTION_QUESTION,
-        FEEL_QUESTION,
-        "Heat: much cooler, a bit cooler, about the same, a bit warmer, or much warmer.",
-        "Thirst: much less thirsty, a bit less thirsty, about the same, a bit thirstier, "
-        "or much thirstier.",
-        "Tiredness: much less tired, a bit less tired, about the same, a bit more tired, "
-        "or much more tired.",
-        *questions,
-        SURE_QUESTION,
-        WHY_QUESTION,
-    ]
-    positions = [prompt.index(part) for part in expected]
-    assert positions == sorted(positions)
-    assert len(questions) == 2  # the oak's log and the stream
-    assert all(line in prompt.split("\n") for line in offer_lines)
-    assert not any(line in prompt for line in OVERRIDE_LINES.values())
-
-
-def test_an_episode_without_words_is_told_without_the_expectation() -> None:
-    ws, rt = workspace(recalled=[RESTED])
-    rec = Recorder()
-    answered(rec, ws, rt)
-    prompt = rec.prompts("deliberate")[0]
-    assert "You expected" not in prompt
-    assert DID_LINES[(Place.MEADOW, Action.REST)] in prompt
-
-
-def test_a_collapse_is_told_as_a_collapse() -> None:
-    collapsed = RESTED.model_copy(update={"action": Action.GO_OAK, "event": Event.COLLAPSED})
-    ws, rt = workspace(recalled=[collapsed])
-    rec = Recorder()
-    answered(rec, ws, rt)
-    prompt = rec.prompts("deliberate")[0]
-    assert COLLAPSED_LINE in prompt
-    assert DID_LINES[(Place.MEADOW, Action.GO_OAK)] not in prompt
-
-
-def test_no_memory_and_no_pull_leave_their_parts_out() -> None:
-    ws, rt = workspace(recalled=[], pull=0.0)
-    rec = Recorder()
-    answered(rec, ws, rt)
-    prompt = rec.prompts("deliberate")[0]
-    assert RECALLED_HEADING not in prompt
-    assert not any(line in prompt for line in PULL_PHRASES.values())
-
-
-def test_pass_one_shows_the_override_line_and_only_the_serving_offers() -> None:
-    ws, rt = workspace()
-    rec = Recorder()
-    out = answered(rec, pass_one(ws, [Action.GO_OAK]), rt)
-    prompt = rec.prompts("deliberate")[0]
-    assert OVERRIDE_LINES[(HEAT, True)] in prompt  # ilo's heat need is one of too much
-    assert "heat need" not in prompt  # the override's detail is for the logs
-    assert prompt.index(OVERRIDE_LINES[(HEAT, True)]) < prompt.index(ACTION_QUESTION)
-    assert offered_letters(prompt) == {"A": Action.GO_OAK}
-    assert out.decision is not None and out.decision.action is Action.GO_OAK
-
-
-# --- mapping ------------------------------------------------------------------------------------
-
-
-def letter_for(order: list[Action], action: Action) -> str:
-    return LETTERS[order.index(action)]
-
-
-@pytest.mark.parametrize(
-    ("action", "expect", "world"),
-    [
-        (Action.GO_OAK, "yes", True),
-        (Action.GO_OAK, "no", False),
-        (Action.GO_OAK, "no expectation", None),
-        (Action.GO_STREAM, "no", False),
-        (Action.REST, "yes", None),  # sitting down settles no open question
-        (Action.LOOK, "no", None),
-    ],
-)
-def test_a_valid_answer_maps_to_the_decision(
-    action: Action, expect: str, world: bool | None
+def test_a_persistently_bad_list_of_changes_stops_with_an_error_naming_the_tick(
+    bad: list[Any],
 ) -> None:
-    ws, rt = workspace()
-    order = offer_order(rt.config.seed, 1, 0, offers_at(Place.MEADOW))
-    answer = {**DECISION, "letter": letter_for(order, action), "expect": expect}
-    out = answered(Recorder(lambda prompt: answer), ws, rt)
+    model, calls = scripted({"reading": "", "changes": bad})
+    ws, rt = until_appraise(appraise_config(output_retries=1), model)
 
-    words = {HEAT: ChangeWord.MUCH_LESS, WATER: ChangeWord.SAME, ENERGY: ChangeWord.BIT_MORE}
-    p = rt.config.params.expectation
-    t = ws.agent.temperament
-    assert out.decision == Decision(
-        action=action,
-        expectation=Expectation(
-            words=words,
-            bands=bands_from_words(words, ws.agent.belief, t, p),
-            world=world,
-            sureness=Sureness.FAIRLY_SURE,
-        ),
-        why=DECISION["why"],
-    )
-    assert out == ws.model_copy(update={"decision": out.decision})
+    with pytest.raises(UnexpectedModelBehavior) as info:
+        asyncio.run(appraise(ws, rt))
+
+    assert len(calls) == 2
+    assert any("appraise failed at tick 1" in note for note in info.value.__notes__)
 
 
-@pytest.mark.parametrize(
-    ("sure", "sureness"),
-    [
-        ("guessing", Sureness.GUESSING),
-        ("fairly sure", Sureness.FAIRLY_SURE),
-        ("sure", Sureness.SURE),
-    ],
-)
-def test_sureness_maps(sure: str, sureness: Sureness) -> None:
-    ws, rt = workspace()
-    out = answered(Recorder(lambda prompt: {**DECISION, "sure": sure}), ws, rt)
-    assert out.decision is not None and out.decision.expectation.sureness is sureness
+def test_of_two_changes_to_one_spot_in_one_answer_the_later_is_applied() -> None:
+    first, later = change([0, 1], 1.0, 0.0, 0.0, 0.0, 0.0), change([0, 1], 0.0, 0.0, 0.0, 0.0, 0.75)
+    rec = Recorder(appraise=lambda prompt: {"reading": "", "changes": [first, later]})
+    with deliberate_agent.override(model=rec.model), appraise_agent.override(model=rec.model):
+        result = asyncio.run(run(llm_config(ticks=1)))
+
+    assert result.agent.own_map.tiles["0,1"] == beliefs(0.0, 0.0, 0.0, 0.0, 0.75)
 
 
-def test_the_request_carries_the_llm_params() -> None:
-    ws, rt = workspace()
-    config = rt.config.model_copy(
-        update={
-            "params": rt.config.params.model_copy(
-                update={"llm": LLMParams(temperature=0.4, timeout_s=12.5)}
-            )
-        }
-    )
-    seen: list[AgentInfo] = []
-
-    def function(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        seen.append(info)
-        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, DECISION)])
-
-    asyncio.run(deliberate_llm(ws, runtime(config, FunctionModel(function))))
-    [info] = seen
-    assert info.model_settings is not None
-    assert info.model_settings.get("temperature") == 0.4
-    assert info.model_settings.get("timeout") == 12.5
+# --- the two free lines --------------------------------------------------------------------------
 
 
-def test_the_deliberate_dispatcher_selects_the_model() -> None:
-    ws, rt = workspace()
-    rec = Recorder()
-    with deliberate_agent.override(model=rec.model):
-        out = asyncio.run(deliberate(ws, rt))
-    assert len(rec.calls) == 1
-    assert out.decision is not None and out.decision.why == DECISION["why"]
+def short_lines(config: RunConfig, line_chars: int) -> RunConfig:
+    prompt = config.params.prompt.model_copy(update={"line_chars": line_chars})
+    return config.model_copy(update={"params": config.params.model_copy(update={"prompt": prompt})})
 
 
-@pytest.mark.parametrize("phase", [appraise_llm, deliberate_llm], ids=["appraise", "deliberate"])
-def test_a_model_phase_without_a_resolved_model_raises_config_error(phase: Any) -> None:
-    ws, rt = workspace()
+def free_line(field: str, text: str, retries: int = 3) -> tuple[Workspace, Runtime, Any, Any]:
+    """The phase that asks for `field`, its workspace and runtime with lines of at most 20
+    characters, and the answer carrying `text` there."""
+    if field == "why":
+        config = short_lines(with_llm(llm_config(), output_retries=retries), 20)
+        ws, rt = deliberate_ws(config, None)
+        return ws, rt, deliberate, {**DECISION, "why": text}
+    ws, rt = until_appraise(short_lines(appraise_config(output_retries=retries), 20))
+    return ws, rt, appraise, {"reading": text, "changes": []}
+
+
+LONG = "a line of more than twenty characters"
+
+
+@pytest.mark.parametrize("field", ["why", "reading"])
+def test_a_long_free_line_is_retried_then_accepted(field: str) -> None:
+    ws, rt, phase, long = free_line(field, LONG)
+    _, _, _, short = free_line(field, "short enough")
+    model, calls = scripted(long, short)
+
+    out = asyncio.run(phase(ws, dataclasses.replace(rt, model=model)))
+
+    assert len(calls) == 2
+    assert phrases.LINE_TOO_LONG.format(line_chars=20) in retry_feedback(calls[1])
+    said = out.decision.why if field == "why" else out.appraisal.reading
+    assert said == "short enough"
+
+
+@pytest.mark.parametrize("field", ["why", "reading"])
+def test_a_persistently_long_free_line_stops_with_an_error_naming_the_tick(field: str) -> None:
+    ws, rt, phase, long = free_line(field, LONG, retries=1)
+    model, calls = scripted(long)
+
+    with pytest.raises(UnexpectedModelBehavior) as info:
+        asyncio.run(phase(ws, dataclasses.replace(rt, model=model)))
+
+    assert len(calls) == 2
+    agent = "deliberate" if field == "why" else "appraise"
+    assert any(f"{agent} failed at tick 1" in note for note in info.value.__notes__)
+
+
+@pytest.mark.parametrize("field", ["why", "reading"])
+def test_a_free_line_of_exactly_line_chars_passes_after_whitespace_is_collapsed(
+    field: str,
+) -> None:
+    exact = "ten chars. ten chars"
+    ws, rt, phase, answer = free_line(field, "  ten chars.\n\t  ten chars  ")
+    model, calls = scripted(answer)
+
+    out = asyncio.run(phase(ws, dataclasses.replace(rt, model=model)))
+
+    assert len(calls) == 1
+    said = out.decision.why if field == "why" else out.appraisal.reading
+    assert said == exact and len(said) == 20
+
+
+def test_a_model_phase_without_a_resolved_model_raises_config_error() -> None:
+    ws, rt = deliberate_ws(llm_config(), None)
     with pytest.raises(ConfigError, match="no resolved model"):
-        asyncio.run(phase(ws, runtime(rt.config, None)))
+        asyncio.run(deliberate(ws, rt))
 
 
-# --- validation and retry -----------------------------------------------------------------------
-
-INVALID = [
-    pytest.param({**DECISION, "letter": "E"}, "E", id="letter-not-on-offer"),
-    pytest.param({**DECISION, "letter": "F"}, "letter", id="letter-off-the-alphabet"),
-    pytest.param({**DECISION, "heat": "boiling"}, "heat", id="heat-off-the-ladder"),
-    pytest.param({**DECISION, "thirst": "a bit cooler"}, "thirst", id="another-channels-phrase"),
-    pytest.param({**DECISION, "tiredness": "tired"}, "tiredness", id="tiredness-off-the-ladder"),
-    pytest.param({**DECISION, "expect": "maybe"}, "expect", id="expect-off-the-list"),
-    pytest.param({**DECISION, "sure": "certain"}, "sure", id="sure-off-the-list"),
-    pytest.param({**DECISION, "why": " "}, "why", id="empty-why"),
-    pytest.param({**DECISION, "mood": "fine"}, "mood", id="extra-field"),
-]
+# --- whole runs ----------------------------------------------------------------------------------
 
 
-def scripted(*answers: dict[str, Any]) -> tuple[FunctionModel, list[list[ModelMessage]]]:
-    calls: list[list[ModelMessage]] = []
-
-    def function(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        calls.append(list(messages))
-        args = answers[min(len(calls), len(answers)) - 1]
-        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, args)])
-
-    return FunctionModel(function), calls
-
-
-@pytest.mark.parametrize(("bad", "field"), INVALID)
-def test_an_invalid_answer_is_retried_then_accepted(bad: dict[str, Any], field: str) -> None:
-    ws, rt = workspace()  # four offers: A to D
-    model, calls = scripted(bad, DECISION)
-    with deliberate_agent.override(model=model):
-        out = asyncio.run(deliberate_llm(ws, rt))
-    assert len(calls) == 2
-    assert field in retry_feedback(calls[1])
-    assert out.decision is not None and out.decision.why == DECISION["why"]
-
-
-def test_a_letter_beyond_a_single_offer_is_retried() -> None:
-    ws, rt = workspace()
-    model, calls = scripted({**DECISION, "letter": "B"}, DECISION)
-    with deliberate_agent.override(model=model):
-        out = asyncio.run(deliberate_llm(pass_one(ws, [Action.GO_OAK]), rt))
-    assert len(calls) == 2
-    assert out.decision is not None and out.decision.action is Action.GO_OAK
-
-
-@pytest.mark.parametrize("retries", [0, 1, 3])
-@pytest.mark.parametrize(("bad", "field"), INVALID[:3])
-def test_a_persistently_invalid_answer_raises_after_the_retry_budget(
-    bad: dict[str, Any], field: str, retries: int
-) -> None:
-    ws, rt = workspace()
-    config = rt.config.model_copy(
-        update={
-            "params": rt.config.params.model_copy(update={"llm": LLMParams(output_retries=retries)})
-        }
-    )
-    model, calls = scripted(bad)
-    with pytest.raises(UnexpectedModelBehavior, match="output retries") as info:
-        asyncio.run(deliberate_llm(ws, runtime(config, model)))
-    assert len(calls) == retries + 1
-    assert any("deliberate failed at tick 1, pass 0" in note for note in info.value.__notes__)
-
-
-def test_an_invalid_answer_stops_the_run_without_a_stub_fallback(tmp_path: Path) -> None:
-    good = Recorder(prefer(Action.LOOK))
-    count = 0
-
-    def decide(prompt: str) -> dict[str, Any]:
-        nonlocal count
-        count += 1
-        return good.decide(prompt) if count <= 3 else {**DECISION, "heat": "scorching"}
-
-    rec = Recorder(decide)
-    config = afternoon(1, llm=LLMParams(output_retries=1))  # tavi: no override, one pass a tick
-    run_dir = tmp_path / "run"
-    with (
-        appraise_agent.override(model=rec.model),
-        deliberate_agent.override(model=rec.model),
-        pytest.raises(UnexpectedModelBehavior) as info,
-    ):
-        asyncio.run(run(config, run_dir))
-    assert any("tick 4, pass 0" in note for note in info.value.__notes__)
-    # the ticks before the failure are on disk, the failing one is not: a resume starts there
-    assert [d.tick for d in load_dumps(run_dir)] == [1, 2, 3]
-
-
-# --- whole runs ---------------------------------------------------------------------------------
-
-
-def test_the_model_experiment_is_the_afternoon_on_a_model() -> None:
-    llm = load_config(AFTERNOON_LLM)
-    stub = load_config(AFTERNOON_LLM.with_name("clearing_afternoon.yaml"))
-    assert llm.backends == Backends(appraise="llm", deliberate="llm")
-    assert llm.model is None
-    assert llm.model_copy(update={"name": stub.name, "backends": stub.backends}) == stub
-
-
-def collected_run(decide: Any, ticks: int = 40, agent: int = 0) -> tuple[Recorder, list[Any]]:
-    rec = Recorder(decide)
-    with appraise_agent.override(model=rec.model), deliberate_agent.override(model=rec.model):
-        result = asyncio.run(run(afternoon(agent, ticks=ticks)))
-    return rec, result.records
-
-
-def test_no_prompt_of_a_forty_tick_run_holds_a_digit_or_an_identifier() -> None:
-    # ilo sits down in the hot meadow and expects to cool: the heat overrules her on pass 1
-    rec, records = collected_run(prefer(Action.REST))
-    assert len(records) == 40
-    overrides = [p.override for r in records for p in r.passes if p.override is not None]
-    assert overrides, "the run should hold at least one override"
-    deliberate_prompts = rec.prompts("deliberate")
-    assert len(deliberate_prompts) == sum(len(r.passes) for r in records)
-    pass_one = [p for p in deliberate_prompts if any(line in p for line in OVERRIDE_LINES.values())]
-    assert len(pass_one) == len(overrides)
-    assert any(RECALLED_HEADING in p for p in deliberate_prompts)
-    assert any(any(line in p for line in REGULATION_LINES.values()) for p in deliberate_prompts)
-
-    for _, instructions, prompt in rec.calls:
-        for text in (instructions, prompt):
-            assert not MACHINE_LIKE.search(text), text
-            assert not FORBIDDEN.search(text), text
-    for override in overrides:
-        assert all(override.detail not in p for p in deliberate_prompts)
-
-
-def test_the_offer_order_differs_between_ticks_and_repeats_on_a_second_run() -> None:
-    rec, records = collected_run(prefer(Action.LOOK), ticks=12, agent=1)
-    orders = [tuple(offered_letters(p).values()) for p in rec.prompts("deliberate")]
-    assert all(set(o) == set(offers_at(Place.MEADOW)) for o in orders)  # tavi stays in the meadow
-    assert len(set(orders)) > 1
-    for tick, order in enumerate(orders, start=1):
-        assert list(order) == offer_order(1, tick, 0, offers_at(Place.MEADOW))
-    again, _ = collected_run(prefer(Action.LOOK), ticks=12, agent=1)
-    assert again.calls == rec.calls
-
-
-def test_offer_order_is_a_seeded_shuffle() -> None:
-    offers = offers_at(Place.MEADOW)
-    assert sorted(offer_order(3, 5, 1, offers)) == sorted(offers)
-    assert offer_order(3, 5, 1, offers) == offer_order(3, 5, 1, list(offers))
-    assert len({tuple(offer_order(3, t, p, offers)) for t in range(1, 9) for p in (0, 1)}) > 1
-
-
-def test_a_twenty_tick_run_on_the_test_model_writes_valid_dumps_and_replays(
+def test_a_twenty_tick_model_run_writes_valid_tick_files_and_replays_without_a_call(
     tmp_path: Path,
 ) -> None:
+    rec = Recorder()
     run_dir = tmp_path / "run"
-    result = asyncio.run(run(afternoon(0, model="test", ticks=20), run_dir))
+    with deliberate_agent.override(model=rec.model), appraise_agent.override(model=rec.model):
+        result = asyncio.run(run(llm_config(ticks=20), run_dir))
     assert len(result.records) == 20
-    assert any(len(r.passes) == 2 for r in result.records)  # pass 1 is replayed too
-    dumps = load_dumps(run_dir)
-    assert [d.tick for d in dumps] == list(range(1, 21))
+    assert len(rec.calls) == 40
+
+    assert [d.tick for d in load_dumps(run_dir)] == list(range(1, 21))
     for path in sorted(run_dir.glob("tick_*.json")):
         dump = TickDump.model_validate_json(path.read_bytes())
-        assert dump.record.appraisal.reading not in STUB_READINGS.values()  # from the model
-        for record in dump.record.passes:
-            assert record.decision.expectation.words is not None  # from the model
+        assert dump.record.decision.why == DECISION["why"]
+        assert dump.record.appraisal.reading == APPRAISAL["reading"]
     assert json.loads((run_dir / "config.json").read_text())["model"] == "test"
 
-    # replay uses the recorded outputs: a model that fails on any call proves none is made
     with (
-        appraise_agent.override(model=failing_model()),
         deliberate_agent.override(model=failing_model()),
+        appraise_agent.override(model=failing_model()),
     ):
         assert asyncio.run(replay(run_dir)) == 20
 
 
-def test_a_model_run_with_no_model_fails_before_tick_one(
+def test_a_run_stopped_by_a_model_error_resumes_from_the_next_tick(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # the pilot, cut to twelve ticks, on the test model (JSON is YAML)
+    experiment = load_config(EXPERIMENTS / "pilot.yaml").model_copy(
+        update={"ticks": 12, "model": "test"}
+    )
+    path = tmp_path / "pilot.yaml"
+    path.write_text(json.dumps(experiment.model_dump(mode="json")))
+    args = ["run", str(path), "--runs-dir", str(tmp_path / "runs")]
+    run_dir = tmp_path / "runs" / experiment.runs()[0].run_id
+
+    broken = Recorder(fail_on=8)
+    with deliberate_agent.override(model=broken.model), appraise_agent.override(model=broken.model):
+        assert main(args) == 1
+    assert "rerun with --resume" in capsys.readouterr().err
+    assert [d.tick for d in load_dumps(run_dir)] == list(range(1, 8))
+
+    working = Recorder()
+    with (
+        deliberate_agent.override(model=working.model),
+        appraise_agent.override(model=working.model),
+    ):
+        assert main([*args, "--resume"]) == 0
+    assert [d.tick for d in load_dumps(run_dir)] == list(range(1, 13))
+    assert len(working.prompts("deliberate")) == 5
+    first = json.loads(working.prompts("deliberate")[0])
+    stored = load_dumps(run_dir)[6].agent
+    assert first == creature_view(stored, stored.memory.episodes, experiment.params)
+
+
+def test_a_model_error_in_a_run_names_the_tick_and_keeps_the_ticks_before(tmp_path: Path) -> None:
+    rec = Recorder(fail_on=8)
+    run_dir = tmp_path / "run"
+    with (
+        deliberate_agent.override(model=rec.model),
+        appraise_agent.override(model=rec.model),
+        pytest.raises(RuntimeError, match="the model is gone") as info,
+    ):
+        asyncio.run(run(llm_config(ticks=20), run_dir))
+    assert any("deliberate failed at tick 8" in note for note in info.value.__notes__)
+    assert [d.tick for d in load_dumps(run_dir)] == list(range(1, 8))
+
+
+def test_a_model_run_counts_its_requests_and_tokens() -> None:
+    rec, usage = Recorder(), TokenCount()
+    with deliberate_agent.override(model=rec.model), appraise_agent.override(model=rec.model):
+        result = asyncio.run(run(llm_config(ticks=5), usage=usage))
+
+    assert len(result.records) == 5
+    assert usage.requests >= 10
+    assert usage.input_tokens > 0 and usage.output_tokens > 0
+
+
+USAGE_LINE = re.compile(r"^\S+: \d+ model requests, \d+ input tokens, \d+ output tokens$", re.M)
+
+
+def cli(args: list[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, str, str]:
+    rec = Recorder()
+    with deliberate_agent.override(model=rec.model), appraise_agent.override(model=rec.model):
+        code = main(args)
+    out, err = capsys.readouterr()
+    return code, out, err
+
+
+def short_experiment(tmp_path: Path, name: str, **changes: Any) -> Path:
+    """The two-maps experiment cut to two creatures, one seed and four ticks, with `changes`."""
+    base = load_two_maps()
+    experiment = base.model_copy(
+        update={"name": name, "seeds": [1], "ticks": 4, "agents": base.agents[:2], **changes}
+    )
+    path = tmp_path / f"{name}.yaml"
+    path.write_text(json.dumps(experiment.model_dump(mode="json")))
+    return path
+
+
+def test_the_run_command_prints_the_tokens_of_a_model_run_on_stderr_only(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    llm = short_experiment(tmp_path, "llm", backends=BOTH_LLM, model="test")
+    stand_in = short_experiment(tmp_path, "rule")
+    runs = ["--runs-dir", str(tmp_path / "runs")]
+
+    code, out, err = cli(["run", str(llm), *runs], capsys)
+    assert code == 0
+    [line] = USAGE_LINE.findall(err)
+    assert line.startswith("llm-plain-s1: ") and not line.startswith("llm-plain-s1: 0 ")
+    assert not USAGE_LINE.search(out)
+    json.loads(out)  # stdout is the metrics alone
+
+    code, out, err = cli(["run", str(stand_in), *runs], capsys)
+    assert code == 0
+    assert not USAGE_LINE.search(err) and not USAGE_LINE.search(out)
+
+
+def test_the_experiment_command_prints_the_tokens_of_each_model_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    llm = short_experiment(tmp_path, "llm", backends=BOTH_LLM, model="test")
+    stand_in = short_experiment(tmp_path, "rule")
+    runs = ["--runs-dir", str(tmp_path / "runs")]
+
+    code, out, err = cli(["experiment", str(llm), *runs], capsys)
+    assert code == 0 and out == ""
+    assert [line.split(":")[0] for line in USAGE_LINE.findall(err)] == [
+        "llm-plain-s1",
+        "llm-wary-s1",
+    ]
+
+    code, out, err = cli(["experiment", str(stand_in), *runs], capsys)
+    assert code == 0
+    assert not USAGE_LINE.search(err)
+
+
+def test_an_llm_backend_with_no_model_fails_before_tick_one(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.delenv(MODEL_ENV_VAR, raising=False)
     rec = Recorder()
     run_dir = tmp_path / "run"
     with (
-        appraise_agent.override(model=rec.model),
         deliberate_agent.override(model=rec.model),
+        appraise_agent.override(model=rec.model),
         pytest.raises(ConfigError, match=MODEL_ENV_VAR),
     ):
-        asyncio.run(run(afternoon(model=None), run_dir))
+        asyncio.run(run(llm_config(model=None), run_dir))
     assert rec.calls == []
     assert not run_dir.exists()
 
 
-def test_the_model_comes_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(MODEL_ENV_VAR, "test")
-    result = asyncio.run(run(afternoon(model=None, ticks=2)))
-    assert result.config.model == "test"
-    assert len(result.records) == 2
-
-
-def test_letters_cover_every_offer_a_place_can_make() -> None:
-    assert len(LETTERS) >= max(len(offers_at(p)) for p in Place)
-
-
-def test_the_pass_one_reading_is_of_a_moment_ago() -> None:
-    ws, rt = workspace()
+@pytest.mark.parametrize(
+    ("backends", "asked"),
+    [
+        (Backends(deliberate="llm", appraise="reasoner"), "deliberate"),
+        (Backends(deliberate="rule", appraise="llm"), "appraise"),
+    ],
+    ids=["model-deliberate", "model-appraise"],
+)
+def test_mixed_backends_run(backends: Backends, asked: str) -> None:
     rec = Recorder()
-    answered(rec, ws, rt)
-    answered(rec, pass_one(ws, [Action.GO_OAK]), rt)
-    first, second = rec.prompts("deliberate")
-    assert f"{READING_HEADING} {READING}" in first.split("\n")
-    assert READING_HEADING_BEFORE not in first
-    assert f"{READING_HEADING_BEFORE} {READING}" in second.split("\n")
-    assert f"{READING_HEADING} {READING}" not in second.split("\n")
+    with deliberate_agent.override(model=rec.model), appraise_agent.override(model=rec.model):
+        result = asyncio.run(run(llm_config(backends=backends, ticks=8)))
+
+    assert len(result.records) == 8
+    assert {name for name, _, _ in rec.calls} == {asked}
+    assert len(rec.calls) == 8
+    for r in result.records:
+        assert (r.decision.why == DECISION["why"]) is (asked == "deliberate")
+        assert (r.appraisal.reading == APPRAISAL["reading"]) is (asked == "appraise")
 
 
-def test_the_choice_lines_follow_the_ladder_and_the_schema() -> None:
-    lines = choices_lines()
-    schema = DeliberateOutput.model_json_schema()["properties"]
-    for line, field in zip(lines, ("heat", "thirst", "tiredness"), strict=True):
-        words = schema[field]["enum"]
-        assert line.index(words[0]) < line.index(words[-1])
-        for word in words:
-            assert word in line
-    assert lines == [line for line in lines if line.endswith(".")]
+def test_the_whole_run_on_the_test_model_works(tmp_path: Path) -> None:
+    result = asyncio.run(run(llm_config(ticks=5), tmp_path / "run"))
+    assert len(result.records) == 5
 
 
-def test_the_sure_question_names_the_three_answers() -> None:
-    literals = DeliberateOutput.model_json_schema()["properties"]["sure"]["enum"]
-    assert literals == ["guessing", "fairly sure", "sure"]
-    _, _, answers = SURE_QUESTION.partition(": ")
-    assert [w.removeprefix("or ") for w in answers.rstrip("?").split(", ")] == literals
+# --- the experiment files ------------------------------------------------------------------------
+
+
+PILOT_LLM = LLMParams(temperature=0.5, timeout_s=120, settings=SETTINGS)
+
+
+def test_the_pilot_is_the_plain_creature_on_a_model() -> None:
+    pilot, base = load_config(EXPERIMENTS / "pilot.yaml"), load_two_maps()
+    assert pilot.seeds == [1]
+    assert pilot.ticks == 60
+    assert pilot.backends == BOTH_LLM
+    assert pilot.model is None
+    assert pilot.world == base.world
+    assert pilot.agents == [a for a in base.agents if a.name == "plain"]
+    assert pilot.params == base.params.model_copy(update={"llm": PILOT_LLM})
+
+
+def test_two_maps_on_a_model_is_three_creatures_on_one_seed() -> None:
+    llm, base = load_config(EXPERIMENTS / "two_maps_llm.yaml"), load_two_maps()
+    assert llm.seeds == [1]
+    assert llm.ticks is None
+    assert llm.params == base.params.model_copy(update={"llm": PILOT_LLM})
+    assert llm.backends == BOTH_LLM
+    assert llm.model is None
+    assert llm.world == base.world
+    named = {a.name: a for a in base.agents}
+    assert llm.agents == [named["plain"], named["wary"], named["hopeful"]]
+    assert re.fullmatch(r"[a-z_]+", llm.name)

@@ -1,5 +1,13 @@
 # surprise-loop
 
+> **Being rebuilt.** The project is moving to a new design, *two maps of one world*: a creature
+> that learns a hidden grid only through what its body feels, with its map drawn next to the
+> real one. The design is
+> [`docs/superpowers/specs/2026-11-21-two-maps-design.md`](docs/superpowers/specs/2026-11-21-two-maps-design.md)
+> and the brief is [`CLAUDE.md`](CLAUDE.md). Everything below this note describes the previous
+> build, the forest clearing, whose code is at commit `24aff96`. Its commands no longer exist on
+> this branch.
+
 An embodied LLM agent driven by prediction error. It has a simulated body it must keep in
 balance. Each tick it reads its world as that body lives it, says how it expects its body to feel
 after its next action, acts, and is corrected by what happens. The size of the miss is the

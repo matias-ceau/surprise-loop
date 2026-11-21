@@ -1,52 +1,62 @@
 # surprise-loop
 
-An embodied LLM agent driven by prediction error. It has a simulated body it must keep in balance. Each tick it reads its world as that body lives it, says how it expects its body to feel after its next action, acts, and is corrected by what happens. The size of the miss is the surprise.
+A creature that learns a hidden world through what its body feels. Each tick it says what it expects to feel after its next step, takes the step, and is corrected by what happens. The size of the miss is the surprise, and the surprise is what redraws its map of the world.
 
-This file is the brief. The full design is `docs/superpowers/specs/2026-11-17-lived-twice-design.md`; the build plan for the first milestone is `docs/superpowers/plans/2026-11-17-lived-twice.md`. Where they say more than this file, they hold.
+This file is the brief. The full design is `docs/superpowers/specs/2026-11-21-two-maps-design.md`; the build plan is `docs/superpowers/plans/2026-11-21-two-maps.md`. Where they say more than this file, they hold.
 
-The first version of this project (a lever-pressing world, "v0") is at commit `2ec53fd`. Its result with a real model was "not yet": trait numbers in the prompt barely reached behaviour. This brief replaces it.
+## What came before
+
+- **The lever world** (commit `2ec53fd`). An agent pressing levers for reward. Its result with a real model was "not yet": trait numbers in the prompt barely reached behaviour.
+- **The clearing** (commit `24aff96`). Two bodies in a forest clearing, told their state in sentences. It showed that a body told to a model in words moves its choice where numbers do not. The owner judged it too small: three inputs, and a surprise that built nothing lasting about the world.
 
 ## Research question
 
-Do bodies that differ in state and temperament come to perceive, predict and act differently in the same objective world, and does it matter how the model is told its body?
+When creatures with different temperaments explore the same hidden world, and learn about it only through what their bodies feel, do they end up with different pictures of it? And how much of that difference is the model's own doing, as opposed to what careful arithmetic on the same feelings would give?
 
-Testbed: one small forest clearing with three places (meadow, oak, stream), a daytime clock, and a body with three numbers (heat, water, energy). Two bodies live the same seeded day, each in its own copy of the world, and are watched side by side. Measure per body: time outside its comfortable range, the surprise trace, how often its expectations held, and how much of its behaviour a ten-line rule predicts.
+Testbed: a small grid of tiles the creature cannot see. Some tiles are ground, some pleasant or unpleasant to arrive on, some stop it: obstacles, food, water, and food and water that bring sickness a few steps later. The creature tries to step north, east, south or west. The world answers only with whether the step succeeded and what the body now feels. It never names a tile.
 
-A test on one frozen scene has already shown that a body told to the model as numbers barely moves its choice, while a body told in words does. So body state reaches the model in words only.
+Each creature keeps a map with five beliefs per tile: it blocks me, it hurts, it feeds, it quenches, it pleases. Code keeps a second map for each creature: what a careful reasoner concludes from the very same feelings. The result is a film of three maps side by side, the world in the middle and a creature's belief on each side, drawn with one colour rule.
 
-Everything in the architecture exists to serve this. Do not add a component it does not need. This is faked embodiment, a working analogue; nothing here licenses the claim that an agent feels.
+Everything in the architecture exists to serve this. Do not add a component it does not need. This is faked embodiment, a working analogue; nothing here licenses the claim that a creature feels.
 
 ## Cognitive cycle
 
-One tick = one pass through seven phases. Each phase is a plain async function over a shared typed state.
+One tick is one pass through seven phases. Each phase is a plain async function over a shared typed state.
 
-1. Perceive (code): start from the belief about the body left by the last tick. Run the lens: plain code that turns the world's facts plus this body's belief into a felt scene (which facts this body notices, what each is worth to it, and the words for that).
-2. Appraise (LLM): one line of the agent's own reading of the scene, and what the moment is about (heat, thirst, tiredness, nothing). The reading is kept and steers the next tick's attention.
-3. Deliberate (LLM): choose one of the offered actions AND commit an expectation: how each body channel will feel afterwards (a phrase from a fixed ladder), and, where the action will settle an open fact about the world, a yes or no.
-4. Act: send the action to the World; the clock and the true body move.
-5. Monitor (code): three comparisons. Body signal against the expected band, per channel. The world expectation against the fact. Better or worse for the body than expected.
-6. Evaluate (code for now): a regulation check. Did an action taken a few ticks ago ease the need it serves, now that its effect has arrived? Returns feedback only, never mutates state.
-7. Reconcile (code): apply everything through four channels, each with its own timescale:
-   - feeling (fast): the belief about the body, the tone of feeling, arousal
-   - memory (per tick): store the episode, weighted by the size of the surprise
-   - pulls (slow): a gut pull per place and action, from Evaluate's judgements
-   - temperament (slowest): set points, how much a deviation is minded, attention habits. Switched off in the first milestone.
+1. Perceive (code): gather what the creature has to go on: its latest felt record, its own map, and its last few steps with what it expected, what it felt and what it made of it.
+2. Deliberate (model): choose one of the four directions and commit to an expectation: whether it will move, and a word for each feeling, for smell and for damp.
+3. Act (world): the body's true numbers move.
+4. Monitor (code): pass the true numbers through the creature's temperament to get what it feels, in words. Compare with the expectation, field by field: that is the surprise. Set the summary feeling, tone and stir.
+5. Evaluate (code): the careful reasoner updates its own map from the felt record. It changes nothing of the creature's.
+6. Appraise (model): shown what it expected and what it felt, the creature says in one line what it makes of it and lists the tiles whose beliefs it now changes.
+7. Reconcile (code): apply the changes to the creature's own map, count the try, store the step, and take the tick's measures.
 
-   If the body's loudest need is urgent, came out clearly worse than expected, and the action did not serve it, Reconcile may send control back to Deliberate, at most once per tick, with the choices cut to actions that serve that need.
+What changes at each pace: tone and stir fast; the creature's map and its short memory every tick; temperament not at all in this milestone.
+
+## Temperament
+
+How one creature's senses and presumptions differ from another's. Three parts, all numbers in the experiment file:
+
+- presumption: what an untried tile is presumed to be. The creature's map starts from it.
+- loudness: a gain on each body feeling.
+- clarity: noise on each feeling, and how far neighbouring feelings blur into each other.
+
+Temperament is applied by code to what the creature feels. It is never written to the model as a personality.
 
 ## Boundaries
 
-- The World is the only owner of environment state, and that includes each body's true numbers. It is deterministic Python with a seeded RNG, not an LLM.
-- The agent owns its belief about its body, its temperament, feeling, mood, memory and pulls. It receives only a noisy body signal, the facts of the place it is in, and the actions on offer.
-- The model is never shown a body number, a temperament number, a clock time or a variable name. Nothing it reads says game, simulation or experiment.
-- Evaluate gives feedback and nothing else.
+- The World is the only owner of the layout and of each body's true numbers. It is deterministic Python with a seeded RNG, not an LLM.
+- The creature receives only the felt record: whether it moved, a word for each body feeling, smell, damp, tone, stir, and where it is in steps from its start.
+- The model is never shown a true body number, a temperament's loudness or clarity, or what kind a tile is. Nothing it reads says game, simulation or experiment. Feelings are words; beliefs about tiles are numbers.
+- Nothing of the careful reasoner is ever shown to the model.
+- Evaluate changes only the reasoner's own map.
 
 ## Stack
 
 - Python 3.12+, managed with uv
 - pydantic v2 for all state models
-- pydantic-ai (current 2.x) for the LLM-backed phases, with structured outputs
-- pytest; pydantic-ai's test model for LLM-free tests
+- pydantic-ai (current 2.x) for the model-backed phases, with structured outputs
+- pytest; pydantic-ai's test and function models for model-free tests
 - ruff for lint and format
 - The viewer is exported, self-contained HTML written by the standard library. No web framework, no JavaScript library.
 
@@ -60,43 +70,43 @@ State persistence: dump the full state model to JSON after every tick into `runs
 
 ```
 src/surprise_loop/
-  world.py        # World protocol + ClearingWorld (places, clock, facts, true body, signal)
-  state.py        # Temperament, Feeling, Expectation, Comparison, FeltScene, Memory, AgentState
-  feeling.py      # the definitions of felt strength, discomfort, tone and arousal, in one place
-  lens.py         # facts + belief -> FeltScene
-  phrases.py      # every string a model can read
-  config.py       # every number that shapes behaviour, the experiment files' schema, the seeded RNG
-  phases/         # perceive, appraise, deliberate, act, monitor, evaluate, reconcile;
-                  # heuristics.py holds the rules the code phases and the stubs share
+  world.py        # the grid, the eight kinds of tile, the body's true numbers, the seeded RNG
+  state.py        # Temperament, FeltRecord, Expectation, Comparison, the two maps, AgentState, tick records
+  lens.py         # true numbers -> what this creature feels, through its temperament
+  feeling.py      # tone and stir
+  phrases.py      # the word ladders and every fixed text a model reads
+  config.py       # every number that shapes behaviour, the experiment files' schema
+  reasoner.py     # the careful reasoner: what follows from the felt record alone
+  phases/         # perceive, deliberate, act, monitor, evaluate, appraise, reconcile;
+                  # heuristics.py holds the rule chooser, the blind chooser and the measures
   loop.py         # tick() and run(), tick files, resume, replay
-  agents.py       # pydantic-ai agent definitions and output models
-  ladder.py       # the frozen-noon sweep that checks the phrase table against a model
-  metrics.py      # comfort time, surprise trace, expectation hit rates, rule agreement
-  viewer/         # exported HTML: the lens page and the film of two runs
-  cli.py          # run, experiment, metrics, replay, lens-page, ladder-check, scene
-experiments/      # YAML configs: bodies, world, seeds, backends, model
+  agents.py       # pydantic-ai agent definitions, prompts and output models
+  metrics.py      # comfort, surprise, map error, the gap between the two maps, distances between runs
+  viewer/         # exported HTML: the film of three maps
+  cli.py          # run, experiment, metrics, replay, gate2, film
+experiments/      # YAML configs: layout, temperaments, seeds, backends, model
 runs/             # gitignored outputs
 tests/
 ```
 
-## Build order (first milestone)
+## Build order
 
-1. The lens and its phrase table, with the forest example as fixed text. The lens page.
-2. The ladder check on the lens as built, against a real model. If it fails, fix the wording before building on it.
-3. The world and the body, with tests. World fully deterministic under a seed.
-4. State, stubs, the loop on stubs, tick files, resume and replay, metrics. Defaults tuned until a stub day is alive: expectations can fail, and looking ahead pays.
-5. The film: two stored runs as one exported page.
-6. Appraise and Deliberate on a model. One model-driven afternoon for two bodies.
-7. The README: what was shown, and what was not.
+1. This brief; the clearing's code retired.
+2. The world, the body and the felt record. Tests. The world fully deterministic under a seed.
+3. The maps, the careful reasoner, the stand-ins, the loop, tick files, resume and replay, measures. Gate 1: on stand-ins, expectations can fail, the reasoner learns, looking pays, and temperament matters to the arithmetic.
+4. Deliberate and Appraise on a model. Gate 2: can the model keep a map at all? The film is not built before this.
+5. The film and its key, built on stored runs.
+6. The results and the README: what was shown, and what was not.
 
 Commit after each step with tests passing.
 
 ## Rules
 
-- Memory is a list of episodes with salience, plus last-K retrieval. No decay curves, no semantic graph, no capacity limits. Over-building memory killed an earlier attempt.
-- Every LLM phase has a deterministic stub with the same signature, selectable by config, so the whole experiment can run with zero API calls.
-- Every number that shapes behaviour (rates, thresholds, set points) lives in the config or in a body's temperament, never inline.
+- Memory is the last few episodes. No decay curves, no semantic graph. Over-building memory killed an earlier attempt.
+- Every model phase has a deterministic stand-in with the same signature, selectable by config, so the whole experiment can run with zero API calls: a rule chooser and a blind chooser for Deliberate, the reasoner's appraiser for Appraise.
+- Every number that shapes behaviour lives in the config or in a temperament, never inline.
 - Model name comes from config or an env var, never hard-coded.
-- Keep phases pure where possible: take state in, return a new state or a delta.
-- A claim about the model is reported as model run minus stub run on the same seeds, and next to the share of its choices a ten-line rule predicts. Differences that survive a chooser that reads nothing come from the update code and are not findings.
+- Keep phases pure where possible: take state in, return a new state.
+- A claim about the model is reported as the model run set against the stand-in run on the same seeds, and next to the share of its choices the rule chooser would also have made. A difference between temperaments that the blind chooser shows too comes from the code and is not a finding.
+- A failed model call stops the run. There is no silent fallback to a stand-in.
 - Ask before adding a dependency or a component not listed here.

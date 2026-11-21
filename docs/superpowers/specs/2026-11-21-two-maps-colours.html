@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Belief as colour</title>
+<style>
+  :root { --bg:#0b0f14; --panel:#10161d; --ink:#e6edf3; --dim:#8f9bab; --line:#1e2733; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width:1180px; margin:0 auto; padding:24px 16px 56px; }
+  h1 { font-size:22px; margin:0 0 4px; font-weight:600; }
+  h2 { font-size:15px; margin:34px 0 4px; font-weight:600; }
+  p { color:var(--dim); margin:0 0 14px; max-width:72ch; }
+  .maps { display:grid; grid-template-columns:repeat(auto-fit,minmax(270px,1fr)); gap:16px; }
+  figure { margin:0; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px; }
+  figcaption { font-size:13px; color:var(--dim); margin-bottom:10px; }
+  figcaption b { color:var(--ink); font-weight:600; font-size:14px; display:block; }
+  svg { display:block; }
+  figure svg { width:100%; height:auto; }
+  figure g[data-i] { cursor:pointer; }
+  .readout { min-height:3.1em; font-size:13px; color:var(--dim); margin-top:10px; font-variant-numeric:tabular-nums; }
+  .readout b { color:var(--ink); font-weight:600; }
+  .sure { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:6px 24px; }
+  .row { display:flex; align-items:center; gap:12px; padding:4px 0; }
+  .row svg { flex:none; }
+  .row span { font-size:14px; }
+  .row small { color:var(--dim); display:block; font-size:12px; font-variant-numeric:tabular-nums; }
+  .ramps { display:grid; grid-template-columns:repeat(auto-fit,minmax(330px,1fr)); gap:14px 28px; }
+  .ramp .label { font-size:14px; margin-bottom:5px; }
+  .ramp .ends { display:flex; justify-content:space-between; color:var(--dim); font-size:12px; width:236px; margin-top:3px; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <radialGradient id="glow">
+      <stop offset="0" stop-color="#fffdf0"/>
+      <stop offset=".45" stop-color="#ffe9a8" stop-opacity=".85"/>
+      <stop offset="1" stop-color="#ffd76a" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="mist" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <rect width="7" height="7" fill="#8c98ab"/>
+      <rect width="2.5" height="7" fill="#c3cddb"/>
+    </pattern>
+  </defs>
+</svg>
+<main>
+  <h1>Belief as colour</h1>
+  <p>Reference for the drawing rule of the two-maps design. Every number is invented. One drawing rule for all three maps: the middle one is the world as it is, the outer two are what each creature believes. Point at a tile to read its numbers.</p>
+  <div class="maps" id="maps"></div>
+
+  <h2>What a creature holds for each tile</h2>
+  <p>Five beliefs from 0 to 1, and one count: it blocks me · it hurts · it feeds · it quenches · it pleases · times tried.</p>
+
+  <h2>When it is sure</h2>
+  <p>Three lights fill the tile: red for hurts, green for feeds, blue for quenches. A warm glow is pleases. A stone slab is something that blocks and does nothing else.</p>
+  <div class="sure" id="sure"></div>
+
+  <h2>When it is not sure</h2>
+  <p>Each light is as bright as the belief. Hatched mist lies over a tile that has not been tried, and thins with every try.</p>
+  <div class="ramps" id="ramps"></div>
+</main>
+<script>
+const T = 44, G = 4, R = 6;
+const BASE = [20, 26, 34];
+const LIGHT = { hurts: [240, 30, 20], feeds: [20, 210, 40], quenches: [30, 100, 255] };
+const KEYS = ['blocks', 'hurts', 'feeds', 'quenches', 'pleases'];
+const lift = p => Math.pow(Math.max(0, Math.min(1, p || 0)), 0.7);
+
+function lights(b) {
+  const c = [0, 0, 0];
+  for (const k in LIGHT) { const a = lift(b[k]); for (let i = 0; i < 3; i++) c[i] += a * LIGHT[k][i]; }
+  return 'rgb(' + c.map(v => Math.round(Math.min(255, v))).join(',') + ')';
+}
+
+function tile(b, x, y, attrs) {
+  const tries = b.tries === undefined ? 99 : b.tries;
+  const fog = 0.62 / Math.pow(1 + tries, 2);
+  let s = `<g transform="translate(${x},${y})" ${attrs || ''}>`;
+  s += `<rect width="${T}" height="${T}" rx="${R}" fill="rgb(${BASE.join(',')})"/>`;
+  const slab = (b.blocks || 0) * (1 - Math.max(b.hurts || 0, b.feeds || 0, b.quenches || 0, b.pleases || 0));
+  if (slab > 0.02) {
+    s += `<g opacity="${lift(slab).toFixed(2)}">`
+      + `<rect width="${T}" height="${T}" rx="${R}" fill="#6c7888"/>`
+      + `<path d="M0 ${T / 2}H${T}M${T / 2} 0V${T / 2}M${T / 4} ${T / 2}V${T}M${T * 0.75} ${T / 2}V${T}" stroke="#3d4856" stroke-width="2"/>`
+      + `<rect x="1" y="1" width="${T - 2}" height="${T - 2}" rx="${R - 1}" fill="none" stroke="#aab5c3" stroke-opacity=".5"/>`
+      + `</g>`;
+  }
+  s += `<rect width="${T}" height="${T}" rx="${R}" fill="${lights(b)}" style="mix-blend-mode:screen"/>`;
+  if (b.pleases > 0.02) s += `<circle cx="${T / 2}" cy="${T / 2}" r="${T * 0.44}" fill="url(#glow)" opacity="${lift(b.pleases).toFixed(2)}"/>`;
+  if (fog > 0.03) s += `<rect width="${T}" height="${T}" rx="${R}" fill="url(#mist)" opacity="${fog.toFixed(2)}"/>`;
+  return s + '</g>';
+}
+
+const ROWS = [
+  '...#..~..',
+  '.F.#...T.',
+  '.....P...',
+  '##.....U.',
+  '...T..F..',
+  '.~...#..B',
+  '....F#...',
+];
+const W = ROWS[0].length, H = ROWS.length;
+const TRUE = {
+  '.': {}, '#': { blocks: 1 }, F: { blocks: 1, feeds: 1 }, T: { blocks: 1, feeds: 1, hurts: 1 },
+  '~': { blocks: 1, quenches: 1 }, B: { blocks: 1, quenches: 1, hurts: 1 }, P: { pleases: 1 }, U: { hurts: 1 },
+};
+const NAME = { '.': 'ground', '#': 'obstacle', F: 'food', T: 'toxic food', '~': 'water', B: 'foul water', P: 'pleasant ground', U: 'unpleasant ground' };
+const truth = (x, y) => TRUE[ROWS[y][x]];
+
+function believer(prior, tried, over) {
+  return (x, y) => {
+    const k = x + ',' + y;
+    if (over[k]) return over[k];
+    if (tried[k]) {
+      const t = truth(x, y), b = { tries: tried[k] };
+      for (const key of KEYS) b[key] = (t[key] || 0) * 0.96;
+      return b;
+    }
+    return prior;
+  };
+}
+
+const wary = {
+  title: 'A wary creature',
+  note: 'Expects harm from what it has not tried. Its mist is red.',
+  at: [5, 3], ring: [6, 4],
+  cell: believer(
+    { blocks: .42, hurts: .37, feeds: .15, quenches: .12, pleases: .02, tries: 0 },
+    { '4,3': 6, '3,3': 3, '5,3': 4, '4,2': 4, '4,4': 3, '5,4': 2, '5,1': 2, '6,1': 2, '4,1': 2, '3,2': 2,
+      '2,3': 1, '6,3': 2, '6,2': 2, '5,0': 1, '2,2': 1 },
+    {
+      '3,4': { blocks: 1, hurts: .9, feeds: .8, tries: 1 },
+      '6,4': { blocks: 1, hurts: .75, feeds: .55, tries: 1 },
+      '7,3': { hurts: .92, tries: 1 },
+      '5,2': { pleases: .6, tries: 3 },
+      '3,1': { blocks: 1, quenches: .3, tries: 1 },
+      '1,3': { blocks: 1, tries: 2 },
+      '6,0': { blocks: 1, quenches: .9, tries: 3 },
+    }),
+};
+
+const boldTried = {};
+for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) boldTried[x + ',' + y] = (Math.abs(x - 4) + Math.abs(y - 3) < 3) ? 4 : 2;
+for (const k of ['0,0', '1,0', '8,0', '0,2', '7,6', '8,6', '0,6', '6,6', '7,0']) delete boldTried[k];
+const bold = {
+  title: 'A hopeful creature',
+  note: 'Expects good from what it has not tried. Its mist is pale.',
+  at: [4, 5], ring: [4, 6],
+  cell: believer(
+    { blocks: .36, hurts: .03, feeds: .15, quenches: .13, pleases: .18, tries: 0 },
+    boldTried,
+    {
+      '7,1': { blocks: 1, feeds: .9, hurts: .1, tries: 2 },
+      '4,6': { blocks: 1, feeds: .5, hurts: .72, tries: 1 },
+      '3,4': { blocks: 1, feeds: .85, hurts: .45, tries: 2 },
+      '8,5': { blocks: 1, quenches: .9, hurts: .12, tries: 2 },
+      '7,3': { hurts: .5, tries: 1 },
+      '5,2': { pleases: .96, tries: 5 },
+    }),
+};
+
+const world = {
+  title: 'The world',
+  note: 'What is really there. Every belief is 0 or 1, so every colour is pure.',
+  cell: (x, y) => truth(x, y),
+};
+
+function mapSVG(m) {
+  const w = W * (T + G) - G, h = H * (T + G) - G;
+  let s = `<svg viewBox="-3 -3 ${w + 6} ${h + 6}" role="img" aria-label="${m.title}">`;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) s += tile(m.cell(x, y), x * (T + G), y * (T + G), `data-i="${x},${y}"`);
+  if (m.ring) {
+    const [x, y] = m.ring;
+    s += `<rect x="${x * (T + G) - 2}" y="${y * (T + G) - 2}" width="${T + 4}" height="${T + 4}" rx="${R + 2}" fill="none" stroke="#fff" stroke-width="2" stroke-dasharray="5 4" pointer-events="none"/>`;
+  }
+  if (m.at) {
+    const cx = m.at[0] * (T + G) + T / 2, cy = m.at[1] * (T + G) + T / 2;
+    s += `<g pointer-events="none"><circle cx="${cx}" cy="${cy}" r="9" fill="#0b0f14" stroke="#fff" stroke-width="2.5"/><circle cx="${cx}" cy="${cy}" r="3" fill="#fff"/></g>`;
+  }
+  return s + '</svg>';
+}
+
+const pct = v => Math.round((v || 0) * 100) + '%';
+function describe(m, x, y) {
+  const b = m.cell(x, y), real = NAME[ROWS[y][x]];
+  if (m === world) return `<b>Column ${x + 1}, row ${y + 1}</b> · ${real}`;
+  const parts = KEYS.filter(k => (b[k] || 0) >= 0.02).map(k => k + ' ' + pct(b[k]));
+  const tries = b.tries === 0 ? 'never tried' : b.tries === 1 ? 'tried once' : 'tried ' + b.tries + ' times';
+  return `<b>Column ${x + 1}, row ${y + 1}</b> · ${tries}<br>believes: ${parts.join(', ') || 'nothing happens here'}<br>really: ${real}`;
+}
+
+const mapsEl = document.getElementById('maps');
+for (const m of [wary, world, bold]) {
+  const f = document.createElement('figure');
+  const hint = m === world ? 'Point at a tile.' : 'Point at a tile. The white dot is the creature; the dashed ring is where a surprise just rewrote its belief.';
+  f.innerHTML = `<figcaption><b>${m.title}</b>${m.note}</figcaption>${mapSVG(m)}<div class="readout">${hint}</div>`;
+  const out = f.querySelector('.readout');
+  const show = e => { const g = e.target.closest('g[data-i]'); if (!g) return; const [x, y] = g.dataset.i.split(',').map(Number); out.innerHTML = describe(m, x, y); };
+  f.addEventListener('mouseover', show);
+  f.addEventListener('click', show);
+  mapsEl.appendChild(f);
+}
+
+const one = b => `<svg width="${T}" height="${T}" viewBox="0 0 ${T} ${T}">${tile(b, 0, 0)}</svg>`;
+const nums = b => KEYS.map(k => b[k] || 0).join(' · ');
+const SURE = [
+  ['Ground', {}], ['Pleasant ground', { pleases: 1 }], ['Unpleasant ground', { hurts: 1 }], ['Obstacle', { blocks: 1 }],
+  ['Food', { blocks: 1, feeds: 1 }], ['Toxic food', { blocks: 1, feeds: 1, hurts: 1 }],
+  ['Water', { blocks: 1, quenches: 1 }], ['Foul water', { blocks: 1, quenches: 1, hurts: 1 }],
+];
+document.getElementById('sure').innerHTML = SURE.map(([n, b]) =>
+  `<div class="row">${one(b)}<span>${n}<small>${nums(b)}</small></span></div>`).join('');
+
+const steps = [0, .25, .5, .75, 1];
+const strip = bs => `<svg width="${5 * (T + G) - G}" height="${T}" viewBox="0 0 ${5 * (T + G) - G} ${T}">${bs.map((b, i) => tile(b, i * (T + G), 0)).join('')}</svg>`;
+const RAMPS = [
+  ['It stopped me: an obstacle, or food?', steps.map(p => ({ blocks: 1, feeds: p })), 'obstacle', 'food'],
+  ['It stopped me: an obstacle, or water?', steps.map(p => ({ blocks: 1, quenches: p })), 'obstacle', 'water'],
+  ['It feeds, but might also hurt', steps.map(p => ({ blocks: 1, feeds: 1, hurts: p })), 'food', 'toxic food'],
+  ['It quenches, but might also hurt', steps.map(p => ({ blocks: 1, quenches: 1, hurts: p })), 'water', 'foul water'],
+  ['Might be pleasant ground', steps.map(p => ({ pleases: p })), 'surely not', 'surely'],
+  ['Might stop me', steps.map(p => ({ blocks: p })), 'surely not', 'surely'],
+  ['Ground, tried 0, 1, 2, 4 and 8 times', [0, 1, 2, 4, 8].map(t => ({ tries: t })), 'never tried', 'tried often'],
+  ['Food, tried 0, 1, 2, 4 and 8 times', [0, 1, 2, 4, 8].map(t => ({ blocks: 1, feeds: .9, tries: t })), 'never tried', 'tried often'],
+];
+document.getElementById('ramps').innerHTML = RAMPS.map(([n, bs, a, z]) =>
+  `<div class="ramp"><div class="label">${n}</div>${strip(bs)}<div class="ends"><span>${a}</span><span>${z}</span></div></div>`).join('');
+</script>
+</body>
+</html>

@@ -1,695 +1,299 @@
+"""The grid world and the body: vocabulary, layout, one step, and snapshots."""
+
 import pytest
-from pydantic import ValidationError
 
 from surprise_loop.world import (
-    Action,
+    EFFECTS,
+    WALKABLE,
+    Belief,
     BodyParams,
-    BodyState,
     Channel,
-    ClearingWorld,
-    Event,
-    FactName,
-    Outcome,
-    Place,
-    World,
+    Direction,
+    GridWorld,
+    Kind,
     WorldConfig,
     WorldDone,
-    WorldState,
-    air_at,
-    facts_at,
-    frozen_noon_facts,
-    log_shaded_at,
-    offers_at,
-    sun_at,
+    derive_rng,
+    frame,
+    key,
+    kind_at,
+    layout_positions,
+    neighbours,
+    position_of,
+    truth_at,
 )
 
-# The fact-table tests pin today's curves explicitly, so retuning the defaults does not move them.
-TABLE_CONFIG = WorldConfig(
-    air_curve=[(360, 18.0), (780, 30.0), (960, 30.0), (1200, 22.0)],
-    place_air_offset={Place.MEADOW: 0.0, Place.OAK: -3.0, Place.STREAM: -1.5},
-    air_neutral_c=25.0,
-    air_scale_c=5.0,
-    sun_curve=[(360, 0.2), (660, 1.0), (900, 1.0), (1200, 0.1)],
-    place_sun={Place.MEADOW: 1.0, Place.OAK: 0.0, Place.STREAM: 0.6},
-    sun_fact_min=0.3,
-    log_sun_from=660,
-    log_sun_until=930,
-)
-NINE = 9 * 60
-ONE = 13 * 60
-BODY = BodyState(heat=0.0, water=0.7, energy=0.7)
-
-# A body whose every drift is switched off, so one rule at a time can be switched back on.
-QUIET = dict(
-    heat_rate=0.0,
-    walk_heat=0.0,
-    sweat_threshold=1.0,
-    water_drain=0.0,
-    base_energy=0.0,
-    walk_energy=0.0,
-    absorb_rate=1.0,  # the gut is empty unless a test drinks; absorption must be positive
-    heat_hot_limit=2.0,
-    heat_cold_limit=-2.0,
-    water_floor=0.0,
-    energy_floor=0.0,
-    signal_noise={c: 0.0 for c in Channel},
+DEFAULT_LAYOUT = (
+    "...#..~..",
+    ".F.#...T.",
+    ".....P...",
+    "##..@..U.",
+    "...T..F..",
+    ".~...#..B",
+    "....F#...",
 )
 
-
-def quiet(**changes: object) -> WorldConfig:
-    return TABLE_CONFIG.model_copy(update={"body": BodyParams.model_validate(QUIET | changes)})
+STILL = BodyParams(hunger_rate=0, thirst_rate=0, ache_fade=0, sick_fade=0)
 
 
-def world_at(
-    config: WorldConfig,
-    *,
-    place: Place = Place.MEADOW,
-    minute: int = NINE,
-    body: BodyState = BODY,
-    stream_full: bool = True,
-    seed: int = 0,
-) -> ClearingWorld:
-    """A world restored from a hand-built state."""
-    state = ClearingWorld(config, seed, body, place).snapshot()
-    state = state.model_copy(update={"minute": minute, "stream_full": stream_full})
-    return ClearingWorld.restore(config, state)
+def body(**levels: float) -> dict[Channel, float]:
+    return {channel: levels.get(channel.value, 0.0) for channel in Channel}
 
 
-def names(**kwargs: object) -> list[FactName]:
-    return [f.name for f in facts_at(TABLE_CONFIG, **kwargs)]  # type: ignore[arg-type]
+def world(layout: tuple[str, ...], seed: int = 0, **config: object) -> GridWorld:
+    return GridWorld(WorldConfig(layout=layout, **config), seed)
 
 
-# --- facts --------------------------------------------------------------------------------------
+# vocabulary
 
 
-@pytest.mark.parametrize("stream_full", [True, False])
-def test_facts_at_the_meadow_at_one_are_the_frozen_noon_facts(stream_full: bool) -> None:
-    facts = facts_at(WorldConfig(), Place.MEADOW, ONE, stream_full=stream_full, looked=False)
-    assert facts == frozen_noon_facts()
+def test_effects_and_walkable() -> None:
+    assert EFFECTS[Kind.TOXIC] == {Belief.BLOCKS, Belief.HURTS, Belief.FEEDS}
+    assert frozenset({Kind.GROUND, Kind.PLEASANT, Kind.UNPLEASANT}) == WALKABLE
 
 
-F = FactName
-# (place, minute, stream_full, looked) -> the expected names, without the stream and look facts
-BASE = {
-    (Place.MEADOW, NINE): [
-        F.COOL_AIR,
-        F.SUN,
-        F.NO_SEAT,
-        F.OAK_SHADE,
-        F.STREAM,
-        F.BREEZE,
-        F.BIRDSONG,
-    ],
-    (Place.MEADOW, ONE): [F.AIR, F.SUN, F.NO_SEAT, F.OAK_SHADE, F.STREAM, F.BREEZE, F.BIRDSONG],
-    (Place.OAK, NINE): [F.COOL_AIR, F.SHADE, F.LOG, F.STREAM, F.MEADOW_SUN, F.BREEZE, F.BIRDSONG],
-    (Place.OAK, ONE): [F.AIR, F.SHADE, F.LOG_SUN, F.STREAM, F.MEADOW_SUN, F.BREEZE, F.BIRDSONG],
-    (Place.STREAM, NINE): [
-        F.COOL_AIR,
-        F.SUN,
-        F.NO_SEAT,
-        F.OAK_SHADE_FAR,
-        F.WATER,
-        F.MEADOW_SUN,
-        F.BREEZE,
-        F.BIRDSONG,
-    ],
-    (Place.STREAM, ONE): [
-        F.AIR,
-        F.SUN,
-        F.NO_SEAT,
-        F.OAK_SHADE_FAR,
-        F.WATER,
-        F.MEADOW_SUN,
-        F.BREEZE,
-        F.BIRDSONG,
-    ],
-}
+def test_key_and_position_of() -> None:
+    assert key((2, -1)) == "2,-1"
+    assert position_of("2,-1") == (2, -1)
 
 
-def expected_names(place: Place, minute: int, stream_full: bool, looked: bool) -> list[FactName]:
-    out = list(BASE[(place, minute)])
-    if place is Place.STREAM and not stream_full:
-        out[out.index(F.WATER)] = F.TRICKLE
-    if place is Place.MEADOW and looked:
-        seen = F.OAK_LOG_SHADED if minute == NINE else F.OAK_LOG_SUNLIT
-        out[out.index(F.OAK_SHADE)] = seen
-    return out
+def test_neighbours_in_compass_order() -> None:
+    assert neighbours((0, 0)) == ((0, 1), (1, 0), (0, -1), (-1, 0))
 
 
-@pytest.mark.parametrize("looked", [False, True])
-@pytest.mark.parametrize("stream_full", [True, False])
-@pytest.mark.parametrize("minute", [NINE, ONE])
-@pytest.mark.parametrize("place", list(Place))
-def test_fact_presence(place: Place, minute: int, stream_full: bool, looked: bool) -> None:
-    got = names(place=place, minute=minute, stream_full=stream_full, looked=looked)
-    assert got == expected_names(place, minute, stream_full, looked)
+# layout
 
 
-@pytest.mark.parametrize("minute", range(360, 1201, 30))
-@pytest.mark.parametrize("place", list(Place))
-def test_a_fact_list_is_in_canonical_order(place: Place, minute: int) -> None:
-    order = list(FactName)
-    for stream_full in (True, False):
-        for looked in (True, False):
-            got = names(place=place, minute=minute, stream_full=stream_full, looked=looked)
-            assert got == sorted(got, key=order.index)
-            assert len(set(got)) == len(got)
+SMALL = WorldConfig(layout=("#F.", ".@~", "P.U"))
 
 
-def test_computed_bearings_and_kinds() -> None:
-    by_name = {f.name: f for f in facts_at(TABLE_CONFIG, Place.STREAM, NINE, True, False)}
-    air = air_at(TABLE_CONFIG, Place.STREAM, NINE)
-    assert by_name[F.COOL_AIR].bearing == {Channel.HEAT: pytest.approx((air - 25.0) / 5.0)}
-    assert by_name[F.COOL_AIR].bearing[Channel.HEAT] < 0
-    assert by_name[F.SUN].bearing == {
-        Channel.HEAT: pytest.approx(sun_at(TABLE_CONFIG, Place.STREAM, NINE))
+def test_kind_at() -> None:
+    assert kind_at(SMALL, (0, 1)) == Kind.FOOD
+    assert kind_at(SMALL, (1, 0)) == Kind.WATER
+    assert kind_at(SMALL, (-1, -1)) == Kind.PLEASANT
+    assert kind_at(SMALL, (-1, 1)) == Kind.OBSTACLE
+    assert kind_at(SMALL, (5, 5)) == Kind.OBSTACLE
+
+
+def test_layout_positions_and_frame() -> None:
+    positions = layout_positions(SMALL)
+    assert len(positions) == 9
+    assert positions[0] == (-1, 1)
+    assert frame(SMALL) == (-2, -2, 2, 2)
+
+
+def test_truth_at() -> None:
+    truth = truth_at(SMALL, (0, 1))
+    assert truth == {
+        Belief.BLOCKS: 1.0,
+        Belief.HURTS: 0.0,
+        Belief.FEEDS: 1.0,
+        Belief.QUENCHES: 0.0,
+        Belief.PLEASES: 0.0,
     }
-    assert by_name[F.MEADOW_SUN].bearing == TABLE_CONFIG.bearings[F.MEADOW_SUN]
-    meadow = {f.name: f for f in facts_at(TABLE_CONFIG, Place.MEADOW, NINE, True, True)}
-    assert meadow[F.OAK_LOG_SHADED].bearing == {Channel.HEAT: -1.0, Channel.ENERGY: -0.6}
-    assert meadow[F.OAK_LOG_SHADED].about is Place.OAK
-
-
-def test_air_at_neutral_is_warm_air_not_cool() -> None:
-    config = TABLE_CONFIG.model_copy(update={"air_neutral_c": 30.0})
-    facts = facts_at(config, Place.MEADOW, ONE, True, False)
-    assert facts[0].name is F.AIR
-    assert facts[0].bearing == {Channel.HEAT: pytest.approx(0.0)}
-
-
-def test_sun_below_the_fact_minimum_is_no_fact() -> None:
-    config = TABLE_CONFIG.model_copy(update={"sun_fact_min": 0.9})
-    got = [f.name for f in facts_at(config, Place.STREAM, ONE, True, False)]
-    assert F.SUN not in got  # 0.6 at the stream
-    assert F.MEADOW_SUN in got  # 1.0 in the meadow
-
-
-def test_air_at_follows_the_curve_and_the_place_offsets() -> None:
-    assert air_at(WorldConfig(), Place.MEADOW, ONE) == pytest.approx(30.0)
-    for minute in (0, 360, 500, 780, 900, 1100, 1200, 1500):
-        meadow = air_at(TABLE_CONFIG, Place.MEADOW, minute)
-        for place in Place:
-            offset = TABLE_CONFIG.place_air_offset[place]
-            assert air_at(TABLE_CONFIG, place, minute) == pytest.approx(meadow + offset)
-    assert air_at(TABLE_CONFIG, Place.MEADOW, 570) == pytest.approx(24.0)
-    assert air_at(TABLE_CONFIG, Place.MEADOW, 0) == pytest.approx(18.0)  # flat before
-    assert air_at(TABLE_CONFIG, Place.MEADOW, 1500) == pytest.approx(22.0)  # flat after
-
-
-def test_sun_at_scales_open_sun_by_the_place() -> None:
-    assert sun_at(TABLE_CONFIG, Place.MEADOW, 510) == pytest.approx(0.6)
-    assert sun_at(TABLE_CONFIG, Place.STREAM, 510) == pytest.approx(0.36)
-    assert sun_at(TABLE_CONFIG, Place.OAK, 510) == 0.0
-
-
-def test_the_log_is_in_the_sun_exactly_from_until() -> None:
-    config = WorldConfig(log_sun_from=600, log_sun_until=700)
-    assert log_shaded_at(config, 599)
-    assert not log_shaded_at(config, 600)
-    assert not log_shaded_at(config, 699)
-    assert log_shaded_at(config, 700)
-
-
-# --- config validation --------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    "changes",
+    ("layout", "place"),
     [
-        {"air_curve": [(360, 18.0)]},
-        {"air_curve": [(360, 18.0), (360, 20.0)]},
-        {"sun_curve": [(600, 0.2), (500, 1.0)]},
-        {"sun_curve": []},
-        {"start_minute": 600, "end_minute": 600},
-        {"tick_minutes": 0},
-        {"log_sun_from": 700, "log_sun_until": 600},
-        {"paces": {"meadow-oak": 1.0, "meadow-stream": 4.0}},
-        {"paces": {"meadow-oak": 1.0, "oak-meadow": 1.0, "meadow-stream": 4.0}},
-        {"paces": {"meadow-oak": 1.0, "meadow-stream": 4.0, "oak-pond": 5.0}},
-        {"paces": {"meadow-oak": 1.0, "meadow-stream": 4.0, "oak-oak": 5.0}},
-        {"paces": {"meadow-oak": 1.0, "meadow-stream": 4.0, "oak-stream": 5.0, "x": 1.0}},
-        {"place_air_offset": {"meadow": 0.0, "oak": -3.0}},
-        {"place_sun": {"meadow": 1.0, "stream": 0.6}},
-        {"place_sun": {}},
-        {"air_scale_c": 0.0},
-        {"air_scale_c": -5.0},
-        {"stream_full_probability": -0.1},
-        {"stream_full_probability": 1.1},
-        {"trickle_factor": -0.1},
-        {"trickle_factor": 1.5},
+        ((), "row"),
+        ((".@.", ".."), "row 2"),
+        (("x@",), "row 1, column 1"),
+        ((".", "."), "@"),
+        (("@.@",), "row 1, column 3"),
+        (("#@#",), "row 1, column 2"),
     ],
 )
-def test_world_config_rejects(changes: dict[str, object]) -> None:
-    with pytest.raises(ValidationError):
-        WorldConfig.model_validate(changes)
-
-
-@pytest.mark.parametrize("value", [0.0, 1.0])
-def test_world_config_accepts_the_ends_of_the_unit_numbers(value: float) -> None:
-    config = WorldConfig.model_validate({"stream_full_probability": value, "trickle_factor": value})
-    assert (config.stream_full_probability, config.trickle_factor) == (value, value)
-
-
-def test_a_place_table_missing_a_place_names_it() -> None:
-    with pytest.raises(ValidationError, match="missing: stream"):
-        WorldConfig.model_validate({"place_sun": {"meadow": 1.0, "oak": 0.0}})
-
-
-# every rate and cost of the body; each must be zero or more
-BODY_RATES = [
-    "heat_rate",
-    "air_gain",
-    "sun_gain",
-    "walk_heat",
-    "sweat_rate",
-    "sweat_cooling",
-    "sweat_water",
-    "water_drain",
-    "base_energy",
-    "walk_energy",
-    "hot_walk_factor",
-    "rest_gain",
-    "ground_rest_quality",
-    "drink_amount",
-    "stumble_energy",
-    "stumble_cost",
-]
-
-
-@pytest.mark.parametrize(
-    "changes",
-    [
-        *({name: -0.01} for name in BODY_RATES),
-        {"absorb_rate": 0.0},
-        {"absorb_rate": -0.1},
-        {"absorb_rate": 1.01},
-        {"heat_cold_limit": 1.2, "heat_hot_limit": 1.2},
-        {"heat_cold_limit": 0.5, "heat_hot_limit": 0.0},
-        {"water_floor": -0.01},
-        {"water_floor": 1.0},
-        {"energy_floor": -0.01},
-        {"energy_floor": 1.0},
-        {"collapse_ticks": 0},
-        {"water_delay": -1},
-        {"water_delay": 1.5},
-        {"signal_step": {"heat": 0.05, "water": 0.0, "energy": 0.05}},
-        {"signal_step": {"heat": -0.05, "water": 0.05, "energy": 0.05}},
-        {"signal_step": {"heat": 0.05, "water": 0.05}},
-        {"signal_noise": {"heat": 0.02, "water": -0.02, "energy": 0.02}},
-        {"signal_noise": {"heat": 0.02, "energy": 0.02}},
-    ],
-)
-def test_body_params_reject(changes: dict[str, object]) -> None:
-    with pytest.raises(ValidationError):
-        BodyParams.model_validate(changes)
-
-
-def test_body_params_accept_the_edges() -> None:
-    edges = dict.fromkeys(BODY_RATES, 0.0) | {
-        "absorb_rate": 1.0,
-        "water_floor": 0.0,
-        "energy_floor": 0.0,
-        "collapse_ticks": 1,
-        "water_delay": 0,
-        "signal_noise": {c: 0.0 for c in Channel},
-    }
-    assert BodyParams.model_validate(edges).water_delay == 0
-
-
-def test_a_channel_table_missing_a_channel_names_it() -> None:
-    with pytest.raises(ValidationError, match="missing: energy"):
-        BodyParams.model_validate({"signal_step": {"heat": 0.05, "water": 0.05}})
-
-
-@pytest.mark.parametrize("delay", [1, 3])
-def test_restore_refuses_a_water_history_of_another_length(delay: int) -> None:
-    state = ClearingWorld(WorldConfig(), 0, BODY, Place.MEADOW).snapshot()
-    other = WorldConfig(body=BodyParams(water_delay=delay))
-    with pytest.raises(ValueError, match="water_delay"):
-        ClearingWorld.restore(other, state)
-
-
-def test_paces_may_name_a_pair_in_either_order() -> None:
-    config = WorldConfig(paces={"oak-meadow": 1.0, "stream-meadow": 4.0, "stream-oak": 5.0})
-    world = ClearingWorld(quiet().model_copy(update={"paces": config.paces}), 0, BODY, Place.OAK)
-    assert world.step(Action.GO_STREAM).observation.place is Place.STREAM
-
-
-# --- offers and actions -------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("place", "offers"),
-    [
-        (Place.MEADOW, [Action.GO_OAK, Action.GO_STREAM, Action.REST, Action.LOOK]),
-        (Place.OAK, [Action.GO_MEADOW, Action.GO_STREAM, Action.REST, Action.LOOK]),
-        (
-            Place.STREAM,
-            [Action.GO_MEADOW, Action.GO_OAK, Action.DRINK, Action.REST, Action.LOOK],
-        ),
-    ],
-)
-def test_offers_per_place(place: Place, offers: list[Action]) -> None:
-    assert offers_at(place) == offers
-    assert ClearingWorld(WorldConfig(), 0, BODY, place).observe().offers == offers
-
-
-@pytest.mark.parametrize(
-    ("place", "action"),
-    [(Place.MEADOW, Action.GO_MEADOW), (Place.MEADOW, Action.DRINK), (Place.OAK, Action.DRINK)],
-)
-def test_an_action_not_offered_raises(place: Place, action: Action) -> None:
-    world = ClearingWorld(WorldConfig(), 0, BODY, place)
-    before = world.snapshot()
-    with pytest.raises(ValueError):
-        world.step(action)
-    assert world.snapshot() == before
-
-
-def test_clearing_world_satisfies_the_protocol() -> None:
-    world: World = ClearingWorld(WorldConfig(), 0, BODY, Place.MEADOW)
-    assert not world.done
-
-
-# --- the run as a whole -------------------------------------------------------------------------
-
-SCRIPT_CYCLE = [
-    Action.LOOK,
-    Action.GO_OAK,
-    Action.REST,
-    Action.REST,
-    Action.GO_STREAM,
-    Action.DRINK,
-    Action.DRINK,
-    Action.GO_MEADOW,
-    Action.REST,
-]
-
-
-def run_script(world: ClearingWorld, n: int | None = None) -> list[Outcome]:
-    """Follow SCRIPT_CYCLE, skipping what is not offered, until the day ends or n steps."""
-    out: list[Outcome] = []
-    i = 0
-    while not world.done and (n is None or len(out) < n):
-        action = SCRIPT_CYCLE[i % len(SCRIPT_CYCLE)]
-        i += 1
-        if action in world.observe().offers:
-            out.append(world.step(action))
-    return out
-
-
-def new_world(seed: int, config: WorldConfig | None = None) -> ClearingWorld:
-    return ClearingWorld(config or WorldConfig(), seed, BODY, Place.MEADOW)
-
-
-def test_the_same_seed_and_script_give_the_same_outcomes() -> None:
-    assert run_script(new_world(3)) == run_script(new_world(3))
-
-
-def test_a_different_seed_gives_a_different_signal_sequence() -> None:
-    a = [o.observation.signal for o in run_script(new_world(3))]
-    b = [o.observation.signal for o in run_script(new_world(4))]
-    assert a != b
-
-
-def test_stream_full_depends_only_on_the_seed() -> None:
-    values = set()
-    for seed in range(20):
-        a = ClearingWorld(WorldConfig(), seed, BODY, Place.MEADOW).snapshot().stream_full
-        other_body = BodyState(heat=0.5, water=0.2, energy=0.9)
-        b = ClearingWorld(WorldConfig(start_minute=780), seed, other_body, Place.STREAM)
-        assert b.snapshot().stream_full == a
-        values.add(a)
-    assert values == {True, False}
-
-
-def test_observe_before_any_step_is_start() -> None:
-    config = WorldConfig()
-    world = ClearingWorld(config, 5, BODY, Place.OAK)
-    obs = world.observe()
-    assert obs.event is Event.START
-    assert obs.step == 0
-    assert obs.minute == config.start_minute
-    assert obs.place is Place.OAK
-    assert obs.last_action is None
-    full = world.snapshot().stream_full
-    assert obs.facts == facts_at(config, Place.OAK, config.start_minute, full, looked=False)
-
-
-def test_the_signal_is_a_multiple_of_the_signal_step() -> None:
-    config = WorldConfig(
-        body=BodyParams(
-            signal_step={Channel.HEAT: 0.07, Channel.WATER: 0.03, Channel.ENERGY: 0.11},
-            signal_noise={Channel.HEAT: 0.05, Channel.WATER: 0.05, Channel.ENERGY: 0.05},
-        )
-    )
-    world = new_world(1, config)
-    observations = [world.observe()] + [o.observation for o in run_script(world)]
-    for obs in observations:
-        for c in Channel:
-            ratio = obs.signal.of(c) / config.body.signal_step[c]
-            assert ratio == pytest.approx(round(ratio), abs=1e-9)
-
-
-def test_the_signal_is_the_true_value_plus_noise() -> None:
-    config = quiet(signal_step={c: 1e-9 for c in Channel}, water_delay=0)
-    world = ClearingWorld(config, 0, BODY, Place.MEADOW)
-    obs = world.observe()
-    assert obs.signal.heat == pytest.approx(BODY.heat, abs=1e-6)
-    assert obs.signal.water == pytest.approx(BODY.water, abs=1e-6)
-    noisy = config.model_copy(
-        update={"body": config.body.model_copy(update={"signal_noise": {c: 0.1 for c in Channel}})}
-    )
-    signal = ClearingWorld(noisy, 0, BODY, Place.MEADOW).observe().signal
-    assert signal.heat != pytest.approx(BODY.heat, abs=1e-6)
-
-
-def test_step_after_the_end_raises_world_done() -> None:
-    config = WorldConfig(start_minute=1140, end_minute=1200, tick_minutes=30)
-    world = ClearingWorld(config, 0, BODY, Place.MEADOW)
-    world.step(Action.REST)
-    assert not world.done
-    last = world.step(Action.REST)
-    assert world.done
-    assert last.observation.minute == 1200
-    with pytest.raises(WorldDone):
-        world.step(Action.REST)
-
-
-def test_snapshot_and_restore_mid_run_continue_identically() -> None:
-    config = WorldConfig()
-    whole = run_script(new_world(7, config))
-    actions = [o.observation.last_action for o in whole]
-    cut = len(whole) // 2
-    world = new_world(7, config)
-    first = [world.step(a) for a in actions[:cut]]  # type: ignore[arg-type]
-    state = WorldState.model_validate_json(world.snapshot().model_dump_json())
-    restored = ClearingWorld.restore(config, state)
-    assert restored.observe() == world.observe()
-    rest = [restored.step(a) for a in actions[cut:]]  # type: ignore[arg-type]
-    assert first + rest == whole
-
-
-# --- one world step, rule by rule ---------------------------------------------------------------
-
-
-def test_walk_moves_and_costs_energy_by_pace() -> None:
-    config = quiet(walk_energy=0.01, hot_walk_factor=0.5)
-    world = world_at(config, body=BODY.model_copy(update={"heat": -0.4}))
-    out = world.step(Action.GO_STREAM)
-    assert out.observation.event is Event.ARRIVED
-    assert out.observation.place is Place.STREAM
-    assert out.info.body.energy == pytest.approx(0.7 - 0.01 * 4.0)
-
-
-def test_walk_costs_more_when_hot_and_heats_by_open_sun() -> None:
-    config = quiet(walk_energy=0.01, hot_walk_factor=0.5, walk_heat=0.03)
-    world = world_at(
-        config, place=Place.OAK, minute=510, body=BODY.model_copy(update={"heat": 0.4})
-    )
-    out = world.step(Action.GO_STREAM)
-    assert out.info.body.energy == pytest.approx(0.7 - 0.01 * 5.0 * (1 + 0.5 * 0.4))
-    # the meadow's open sun at the minute the walk starts (0.6 at 08:30), whatever the places
-    assert out.info.body.heat == pytest.approx(0.4 + 0.03 * 5.0 * 0.6)
-
-
-def test_a_tired_body_stumbles_and_stays() -> None:
-    config = quiet(walk_energy=0.01, stumble_energy=0.08, stumble_cost=0.005)
-    world = world_at(config, body=BODY.model_copy(update={"energy": 0.079}))
-    out = world.step(Action.GO_OAK)
-    assert out.observation.event is Event.STUMBLED
-    assert out.observation.place is Place.MEADOW
-    assert out.info.stumbled
-    assert out.info.body.energy == pytest.approx(0.079 - 0.005)
-    world = world_at(config, body=BODY.model_copy(update={"energy": 0.08}))
-    out = world.step(Action.GO_OAK)
-    assert out.observation.event is Event.ARRIVED
-    assert not out.info.stumbled
-
-
-@pytest.mark.parametrize(
-    ("place", "minute", "gain"),
-    [
-        (Place.OAK, NINE, 0.04),  # the log in shade
-        (Place.OAK, ONE, 0.04 * 0.5),  # the log in the sun: no better than the ground
-        (Place.MEADOW, NINE, 0.04 * 0.5),
-        (Place.STREAM, NINE, 0.04 * 0.5),
-    ],
-)
-def test_rest_quality(place: Place, minute: int, gain: float) -> None:
-    config = quiet(rest_gain=0.04, ground_rest_quality=0.5)
-    out = world_at(config, place=place, minute=minute).step(Action.REST)
-    assert out.observation.event is Event.RESTED
-    assert out.info.body.energy == pytest.approx(0.7 + gain)
-
-
-@pytest.mark.parametrize(("full", "amount"), [(True, 0.25), (False, 0.25 * 0.35)])
-def test_drink_full_against_trickle(full: bool, amount: float) -> None:
-    config = quiet(drink_amount=0.25, absorb_rate=0.4).model_copy(update={"trickle_factor": 0.35})
-    out = world_at(config, place=Place.STREAM, stream_full=full).step(Action.DRINK)
-    assert out.observation.event is Event.DRANK
-    assert out.info.body.gut == pytest.approx(amount * 0.6)
-    assert out.info.body.water == pytest.approx(0.7 + amount * 0.4)
-
-
-def test_absorption_over_steps() -> None:
-    config = quiet(absorb_rate=0.3)
-    world = world_at(config, body=BODY.model_copy(update={"water": 0.2, "gut": 0.4}))
-    for n in range(1, 6):
-        body = world.step(Action.REST).info.body
-        assert body.gut == pytest.approx(0.4 * 0.7**n)
-        assert body.water == pytest.approx(0.2 + 0.4 * (1 - 0.7**n))
-
-
-@pytest.mark.parametrize(("heat", "sweats"), [(0.5, True), (0.3, False), (0.1, False)])
-def test_sweat_above_the_threshold_only(heat: float, sweats: bool) -> None:
-    config = quiet(sweat_threshold=0.3, sweat_rate=0.5, sweat_cooling=0.2, sweat_water=0.03)
-    out = world_at(config, body=BODY.model_copy(update={"heat": heat})).step(Action.LOOK)
-    s = 0.5 * (heat - 0.3) if sweats else 0.0
-    assert out.info.body.heat == pytest.approx(heat - 0.2 * s)
-    assert out.info.body.water == pytest.approx(0.7 - 0.03 * s)
-
-
-def test_heat_moves_toward_the_place_target() -> None:
-    config = quiet(heat_rate=0.25, air_gain=0.5, sun_gain=0.5)
-    out = world_at(config, minute=ONE - 10).step(Action.REST)
-    air = (air_at(config, Place.MEADOW, ONE) - 25.0) / 5.0
-    target = 0.5 * air + 0.5 * sun_at(config, Place.MEADOW, ONE)
-    assert out.info.body.heat == pytest.approx(0.25 * target)
-    assert out.info.minute == ONE
-    assert out.info.air_c == pytest.approx(air_at(config, Place.MEADOW, ONE))
-
-
-def test_drain_and_base_energy() -> None:
-    config = quiet(water_drain=0.004, base_energy=0.006)
-    out = world_at(config).step(Action.LOOK)
-    assert out.observation.event is Event.LOOKED
-    assert out.info.body.water == pytest.approx(0.7 - 0.004)
-    assert out.info.body.energy == pytest.approx(0.7 - 0.006)
-
-
-def test_look_shows_the_log_until_the_next_step() -> None:
-    world = world_at(quiet())
-    looked = world.step(Action.LOOK).observation
-    assert F.OAK_LOG_SHADED in [f.name for f in looked.facts]
-    assert world.observe() == looked
-    after = world.step(Action.REST).observation
-    assert F.OAK_SHADE in [f.name for f in after.facts]
-
-
-# --- the body over time -------------------------------------------------------------------------
-
-
-def test_heat_now_thirst_later() -> None:
-    config = WorldConfig(
-        start_minute=780,
-        body=BodyParams(
-            signal_noise={c: 0.0 for c in Channel},
-            signal_step={c: 1e-9 for c in Channel},
-        ),
-    )
-    sun = ClearingWorld(config, 0, BODY, Place.MEADOW)
-    shade = ClearingWorld(config, 0, BODY, Place.OAK)
-    sun_out = [sun.step(Action.REST) for _ in range(12)]
-    shade_out = [shade.step(Action.REST) for _ in range(12)]
-    true_diff = [
-        i
-        for i, (a, b) in enumerate(zip(sun_out, shade_out, strict=True), start=1)
-        if a.info.body.water != pytest.approx(b.info.body.water, abs=1e-12)
-    ]
-    signal_diff = [
-        i
-        for i, (a, b) in enumerate(zip(sun_out, shade_out, strict=True), start=1)
-        if a.observation.signal.water != pytest.approx(b.observation.signal.water, abs=1e-6)
-    ]
-    assert true_diff and true_diff[0] <= 6
-    assert sun_out[5].info.body.water < shade_out[5].info.body.water
-    assert signal_diff[0] == true_diff[0] + config.body.water_delay
-
-
-def test_a_drink_raises_true_water_over_three_steps() -> None:
-    world = ClearingWorld(WorldConfig(), 0, BODY.model_copy(update={"water": 0.4}), Place.STREAM)
-    waters = [world.step(Action.DRINK).info.body.water]
-    waters += [world.step(Action.REST).info.body.water for _ in range(2)]
-    assert 0.4 < waters[0] < waters[1] < waters[2]
-
-
-@pytest.mark.parametrize("chosen", [Action.LOOK, Action.GO_OAK, Action.REST])
-def test_reaching_a_limit_forces_rest_then_releases(chosen: Action) -> None:
-    config = quiet(
-        base_energy=0.01,
-        energy_floor=0.03,
-        rest_gain=0.1,
-        ground_rest_quality=0.5,
-        collapse_ticks=3,
-    )
-    world = world_at(config, body=BODY.model_copy(update={"energy": 0.035}))
-    first = world.step(Action.LOOK)
-    assert first.observation.event is Event.LOOKED
-    assert not first.info.collapsed
+def test_layout_errors(layout: tuple[str, ...], place: str) -> None:
+    with pytest.raises(ValueError, match=place) as caught:
+        WorldConfig(layout=layout)
+    assert "layout" in str(caught.value)
+
+
+# moving
+
+
+@pytest.mark.parametrize("ground", [".", "P", "U"])
+def test_stepping_onto_ground_moves(ground: str) -> None:
+    w = world((f".@{ground}",))
+    outcome = w.step(Direction.EAST)
+    assert outcome.signal.moved is True
+    assert outcome.signal.position == (1, 0)
+
+
+@pytest.mark.parametrize("solid", ["#", "F", "T", "~", "B"])
+def test_stepping_into_solid_does_not_move(solid: str) -> None:
+    w = world((f".@{solid}",))
+    outcome = w.step(Direction.EAST)
+    assert outcome.signal.moved is False
+    assert outcome.signal.position == (0, 0)
+
+
+def test_off_the_layout_is_an_obstacle() -> None:
+    w = world(("@.",))
+    outcome = w.step(Direction.WEST)
+    assert outcome.signal.moved is False
+    assert outcome.signal.position == (0, 0)
+    assert outcome.info.target_kind == Kind.OBSTACLE
+
+
+# eating and drinking
+
+
+def test_food_eases_hunger() -> None:
+    w = world((".@F",), body=STILL, start_body=body(hunger=0.5))
+    signal = w.step(Direction.EAST).signal
+    assert signal.body[Channel.HUNGER] == pytest.approx(0.2)
+    assert signal.body[Channel.ACHE] == 0
+
+
+def test_eating_when_full_aches() -> None:
+    w = world((".@F",), body=STILL, start_body=body(hunger=0.1))
+    signal = w.step(Direction.EAST).signal
+    assert signal.body[Channel.HUNGER] == 0
+    assert signal.body[Channel.ACHE] == pytest.approx(1.5 * 0.2)
+
+
+def test_water_eases_thirst() -> None:
+    w = world((".@~",), body=STILL, start_body=body(thirst=0.5))
+    assert w.step(Direction.EAST).signal.body[Channel.THIRST] == pytest.approx(0.2)
+
+
+def test_drinking_when_quenched_changes_nothing_else() -> None:
+    w = world((".@~",), body=STILL, start_body=body(thirst=0.1))
+    assert w.step(Direction.EAST).signal.body == body()
+
+
+# drift and doses
+
+
+def test_drift() -> None:
+    w = world((".@.",), start_body=body(ache=0.4))
+    levels = w.step(Direction.EAST).signal.body
+    assert levels[Channel.HUNGER] == pytest.approx(0.012)
+    assert levels[Channel.THIRST] == pytest.approx(0.018)
+    assert levels[Channel.ACHE] == pytest.approx(0.3)
+
+
+@pytest.mark.parametrize(("tile", "channel"), [("P", Channel.PLEASURE), ("U", Channel.UNEASE)])
+def test_pleasant_and_unpleasant_ground(tile: str, channel: Channel) -> None:
+    w = world((f".@{tile}.",), start_body=body())
+    assert w.step(Direction.EAST).signal.body[channel] == pytest.approx(0.5)
+    assert w.step(Direction.EAST).signal.body[channel] == pytest.approx(0.25)
+
+
+def test_pushing_while_on_pleasant_ground_adds_no_pleasure() -> None:
+    w = world(("@P#",), start_body=body())
+    w.step(Direction.EAST)
+    assert w.step(Direction.EAST).signal.body[Channel.PLEASURE] == pytest.approx(0.25)
+
+
+# sickness
+
+
+@pytest.mark.parametrize(("tile", "channel"), [("T", Channel.HUNGER), ("B", Channel.THIRST)])
+def test_sickness_arrives_late(tile: str, channel: Channel) -> None:
+    w = world((f"{tile}@.",), body=STILL, start_body=body(**{channel.value: 0.5}))
+    first = w.step(Direction.WEST)
+    assert first.signal.body[channel] == pytest.approx(0.2)
+    (due,) = w.snapshot().pending_sickness
+    assert 1 + 2 <= due <= 1 + 4
+    assert first.signal.body[Channel.SICKNESS] == 0
+    assert first.info.sickness_arrived is False
+    for step in range(2, due + 2):
+        outcome = w.step(Direction.EAST)
+        arrived = step == due
+        assert outcome.info.step == step
+        assert outcome.info.sickness_arrived is arrived
+        assert outcome.signal.body[Channel.SICKNESS] == (0.5 if step >= due else 0)
+    assert w.snapshot().pending_sickness == ()
+
+
+def delay(seed: int) -> int:
+    w = world(("T@.",), seed=seed)
+    w.step(Direction.WEST)
+    (due,) = w.snapshot().pending_sickness
+    return due - 1
+
+
+def test_sickness_delays_vary_by_seed_and_repeat() -> None:
+    assert {delay(seed) for seed in range(30)} == {2, 3, 4}
+    assert all(delay(seed) == delay(seed) for seed in range(30))
+
+
+# smell and damp
+
+
+def test_smell_and_damp_count_neighbours() -> None:
+    w = world(("#~.", "@.F", ".T."))
+    signal = w.step(Direction.EAST).signal
+    assert signal.smell == 2
+    assert signal.damp == 1
+
+
+def test_smell_chance_zero() -> None:
+    for seed in range(10):
+        w = world(("#~.", "@.F", ".T."), seed=seed, body=BodyParams(smell_chance=0))
+        assert w.step(Direction.EAST).signal.smell == 0
+
+
+def smell_at(seed: int) -> int:
+    w = world(("@.F",), seed=seed, body=BodyParams(smell_chance=0.5))
+    return w.step(Direction.EAST).signal.smell
+
+
+def test_smell_chance_half() -> None:
+    assert {smell_at(seed) for seed in range(40)} == {0, 1}
+    assert all(smell_at(seed) == smell_at(seed) for seed in range(40))
+
+
+# observing, ending, snapshots
+
+
+def test_observe_before_any_step() -> None:
+    start = body(hunger=0.3, thirst=0.1)
+    signal = world((".@.",), start_body=start).observe()
+    assert signal.moved is None
+    assert signal.position == (0, 0)
+    assert signal.body == start
+
+
+def test_default_start_body() -> None:
+    assert world((".@.",)).observe().body == body(hunger=0.2, thirst=0.2)
+
+
+def test_done_after_steps() -> None:
+    w = world((".@.",), steps=3)
     for _ in range(3):
-        out = world.step(chosen)
-        assert out.observation.event is Event.COLLAPSED
-        assert out.info.collapsed
-        assert out.observation.place is Place.MEADOW
-        assert out.observation.offers == [Action.GO_OAK, Action.GO_STREAM, Action.REST, Action.LOOK]
-    assert out.info.body.energy == pytest.approx(0.035 - 0.01 + 3 * (0.05 - 0.01))
-    released = world.step(Action.LOOK)
-    assert released.observation.event is Event.LOOKED
-    assert not released.info.collapsed
+        assert not w.done
+        w.step(Direction.EAST)
+    assert w.done
+    with pytest.raises(WorldDone):
+        w.step(Direction.EAST)
 
 
-def test_forced_rest_still_refuses_an_action_not_offered() -> None:
-    config = quiet(base_energy=0.01, energy_floor=0.03)
-    world = world_at(config, body=BODY.model_copy(update={"energy": 0.035}))
-    world.step(Action.REST)
-    with pytest.raises(ValueError):
-        world.step(Action.DRINK)
+def test_snapshot_and_restore_continue_identically() -> None:
+    config = WorldConfig(layout=("T@P", ".~F"))
+    directions = [Direction.WEST, Direction.EAST, Direction.SOUTH, Direction.WEST]
+    directions += [Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST] * 3
+    straight = GridWorld(config, 7)
+    expected = [straight.step(d) for d in directions]
+
+    first = GridWorld(config, 7)
+    for d in directions[:2]:
+        first.step(d)
+    state = first.snapshot()
+    assert state.pending_sickness
+    resumed = GridWorld.restore(config, state)
+    assert [resumed.step(d) for d in directions[2:]] == expected[2:]
+    assert resumed.snapshot() == straight.snapshot()
 
 
-@pytest.mark.parametrize(
-    "body",
-    [
-        BodyState(heat=0.0, water=0.0, energy=0.7),
-    ],
-)
-def test_a_body_held_at_a_limit_still_ends_the_day_on_time(body: BodyState) -> None:
-    config = WorldConfig()
-    world = ClearingWorld(config, 0, body, Place.MEADOW)
-    outcomes = []
-    while not world.done:
-        outcomes.append(
-            world.step(Action.GO_OAK if world.observe().place is Place.MEADOW else Action.GO_MEADOW)
-        )
-    assert len(outcomes) == (config.end_minute - config.start_minute) // config.tick_minutes
-    assert outcomes[-1].observation.minute == config.end_minute
-    assert all(o.info.collapsed for o in outcomes[1:])
-    assert all(o.observation.event is Event.COLLAPSED for o in outcomes[1:])
-
-
-def test_a_hot_limit_collapses_too() -> None:
-    config = quiet(heat_hot_limit=1.2)
-    world = world_at(config, body=BODY.model_copy(update={"heat": 1.5}))
-    out = world.step(Action.REST)
-    assert out.info.body.heat == pytest.approx(1.2)
-    assert world.step(Action.REST).observation.event is Event.COLLAPSED
+def test_channels_stay_in_range() -> None:
+    w = world(DEFAULT_LAYOUT, steps=500)
+    rng = derive_rng(0, "walk")
+    while not w.done:
+        signal = w.step(rng.choice(list(Direction))).signal
+        assert all(0 <= level <= 1 for level in signal.body.values())
+        assert 0 <= signal.smell <= 4
+        assert 0 <= signal.damp <= 4
