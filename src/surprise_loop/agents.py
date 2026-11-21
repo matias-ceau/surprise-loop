@@ -59,7 +59,7 @@ from surprise_loop.state import (
     Sureness,
     Workspace,
 )
-from surprise_loop.world import Belief, Channel, Direction, Frozen, Unit, key, position_of
+from surprise_loop.world import Belief, Channel, Direction, Frozen, Unit, key, moved_to, position_of
 
 DELIBERATE_INSTRUCTIONS = f"{CREATURE_TEXT}\n\n{DELIBERATE_TEXT}"
 APPRAISE_INSTRUCTIONS = f"{CREATURE_TEXT}\n\n{APPRAISE_TEXT}"
@@ -309,8 +309,11 @@ def _map_view(own_map: CreatureMap, tries: dict[str, int], decimals: int) -> dic
 
 
 def _step_view(e: Episode, p: Params) -> dict[str, Any]:
+    # the felt record is after the step: a step that moved arrived on the spot it was toward
+    toward = e.felt.at if e.felt.moved else moved_to(e.felt.at, e.direction)
     return {
         "went": e.direction.value,
+        "toward": list(toward),
         "expected": _expected_words(e.expectation),
         "felt": _felt_words(e.felt),
         **_how_it_went(e.comparison, p.monitor),
@@ -358,13 +361,15 @@ def appraise_prompt(
 ) -> str:
     """The view of the creature before the step, with how it feels and where it is after it, and
     the step just taken: where it went, how it felt before it, what it expected, what changed,
-    and how that compared. The view's `you_feel` is the record before the step."""
+    and how that compared. The view's `you_feel` and `you_are_at` are from before the step."""
     before, after = view["you_feel"], _felt_words(felt_after)
+    east, north = view["you_are_at"]
     shown = {
         **view,
         "you_feel": after,
         "you_are_at": list(felt_after.at),
         "you_went": decision.direction.value,
+        "you_stepped_toward": list(moved_to((east, north), decision.direction)),
         "you_felt_before": before,
         "you_expected": _expected_words(decision.expectation),
         "what_changed": what_changed(before, after),

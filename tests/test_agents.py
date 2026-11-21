@@ -71,12 +71,12 @@ from surprise_loop.state import (
     TickDump,
     Workspace,
 )
-from surprise_loop.world import Belief, Channel, Direction, GridWorld, Kind
+from surprise_loop.world import Belief, Channel, Direction, GridWorld, Kind, moved_to
 
 EXPERIMENTS = TWO_MAPS.parent
 YOU_FEEL = ["moved", *Channel, "smell", "damp", "tone", "stir"]
 EXPECTED = ["moved", *Channel, "smell", "damp", "sure"]
-STEP_KEYS = ["went", "expected", "felt", "surprise", "it_went", "reading"]
+STEP_KEYS = ["went", "toward", "expected", "felt", "surprise", "it_went", "reading"]
 
 
 def ran(ticks: int, **changes: Any) -> AgentState:
@@ -349,6 +349,7 @@ def test_the_appraise_prompt_describes_the_step_and_the_body_after_it() -> None:
         "your_map",
         "your_last_steps",
         "you_went",
+        "you_stepped_toward",
         "you_felt_before",
         "you_expected",
         "what_changed",
@@ -441,6 +442,44 @@ def test_what_changed_lists_each_feeling_smell_or_damp_whose_word_changed(
     assert shown_after(before, after)["what_changed"] == changed
 
 
+def step_east_from_1_3(moved: bool) -> dict[str, Any]:
+    """The Appraise prompt, parsed, for a step east from [1, 3] that moved or was blocked."""
+    agent = initial()
+    agent = agent.model_copy(update={"felt": agent.felt.model_copy(update={"at": (1, 3)})})
+    after = agent.felt.model_copy(update={"moved": moved, "at": (2, 3) if moved else (1, 3)})
+    last = ran(2).memory.episodes[-1]
+    decision = Decision(direction=Direction.EAST, expectation=last.expectation, why="")
+    view = creature_view(agent, [], Params())
+    return json.loads(appraise_prompt(view, decision, after, last.comparison, Params()))
+
+
+def test_a_blocked_step_was_toward_the_next_spot_and_left_the_creature_where_it_was() -> None:
+    shown = step_east_from_1_3(moved=False)
+    assert shown["you_stepped_toward"] == [2, 3]
+    assert shown["you_are_at"] == [1, 3]
+
+
+def test_a_step_that_moved_was_toward_the_spot_it_arrived_on() -> None:
+    shown = step_east_from_1_3(moved=True)
+    assert shown["you_stepped_toward"] == shown["you_are_at"] == [2, 3]
+
+
+@pytest.mark.parametrize(
+    ("moved", "at"), [(True, (2, 3)), (False, (1, 3))], ids=["moved", "blocked"]
+)
+def test_a_last_step_says_which_spot_it_was_toward(moved: bool, at: tuple[int, int]) -> None:
+    agent = ran(2)
+    last = agent.memory.episodes[-1]
+    felt_after = last.felt.model_copy(update={"moved": moved, "at": at})
+    episode = last.model_copy(update={"direction": Direction.EAST, "felt": felt_after})
+
+    step = creature_view(agent, [episode], Params())["your_last_steps"][0]
+
+    assert step["went"] == "east"
+    assert step["toward"] == [2, 3]
+    assert list(step)[:2] == ["went", "toward"]
+
+
 def test_the_appraise_text_says_what_a_change_in_the_body_is_about() -> None:
     assert phrases.APPRAISE_TEXT == (
         "You have just taken a step. You are shown what you felt before it, what you expected, "
@@ -465,6 +504,7 @@ def test_the_appraise_phase_shows_the_map_before_this_tick_and_the_place_after_t
     assert ws.felt_after is not None and ws.decision is not None
     assert shown["you_are_at"] == list(ws.felt_after.at)
     assert shown["you_went"] == ws.decision.direction.value
+    assert shown["you_stepped_toward"] == list(moved_to(ws.agent.felt.at, ws.decision.direction))
     before = creature_view(ws.agent, [], config.params)
     assert shown["your_map"] == before["your_map"]
     assert shown["you_felt_before"] == before["you_feel"]
