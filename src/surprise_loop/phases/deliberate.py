@@ -1,6 +1,13 @@
 """Deliberate: choose a direction and say what the body will feel after it."""
 
-from surprise_loop.config import ConfigError, Runtime, derive_rng
+from surprise_loop.agents import (
+    creature_view,
+    deliberate_agent,
+    deliberate_prompt,
+    run_agent,
+    to_decision,
+)
+from surprise_loop.config import Runtime, derive_rng
 from surprise_loop.phases.heuristics import blind_decision, require, rule_expectation
 from surprise_loop.state import Decision, Workspace
 
@@ -18,5 +25,8 @@ async def deliberate(ws: Workspace, rt: Runtime) -> Workspace:
     elif backend == "blind":
         decision = blind_decision(agent.felt, derive_rng(rt.config.seed, "blind", tick))
     else:
-        raise ConfigError("the llm backend of deliberate arrives in Task 10")
+        recent = require(ws.percept, "percept", "deliberate").recent
+        view = creature_view(agent, recent, rt.config.params)
+        output = await run_agent(deliberate_agent, deliberate_prompt(view), ws, rt, None)
+        decision = to_decision(output)
     return ws.model_copy(update={"decision": decision})

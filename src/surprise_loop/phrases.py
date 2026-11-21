@@ -55,3 +55,10 @@ APPRAISE_TEXT = (
     "all five beliefs. Change only what this step, or something you now understand about an "
     "earlier step, gives you reason to change. List nothing if nothing changed."
 )
+
+# the one field of an answer whose meaning its name does not carry
+AT_HELP = "the spot, as [east, north]"
+
+# sent back to the model with a list of changes it must redo
+TOO_MANY_CHANGES = "List at most {max_changes} spots."
+TOO_FAR = "The spot {at} is too far away: each of its two numbers must be from -{reach} to {reach}."
