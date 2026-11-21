@@ -107,7 +107,7 @@ Further rules:
 - The world does not change. Food and water never run out.
 - Each creature lives in its own copy of the same layout. They never meet.
 - A run lasts a fixed number of steps, 120 by default.
-- The only random draws are the delay of each sickness and the noise on what is felt. Both come from the seed. The same config and seed give the same run.
+- The world's only random draw is the delay of each sickness. The noise on what is felt, and the stand-ins' tie-breaks (section 13), are drawn on the creature's side. Every draw comes from the run's seed, so the same config and seed give the same run.
 
 ## 7. The body, and what is felt
 
@@ -218,24 +218,26 @@ The reference for colours, brightness and mist is `docs/superpowers/specs/2026-1
 
 Each creature has two maps:
 
-- **Its own map.** Only the creature's answers change it (section 10, step 5).
+- **Its own map.** Only the creature's answers change it (section 10, step 6).
 - **The careful reasoner's map** (section 11).
 
 Both start from the temperament's presumption, so both start as the same picture. A tile's coordinates are counted from the creature's starting tile. The film shows the world's frame.
 
 ## 10. The tick
 
-One tick is one pass through seven steps. The order differs from the clearing in one place: Appraise now comes after the world has answered, so that a single tick holds a whole loop of predict, act, compare and revise.
+One tick is one pass through seven steps. The order differs from the clearing: Appraise now comes after the world has answered, and after Evaluate, so that a single tick holds a whole loop of predict, act, compare and revise.
 
 | # | Step | Done by | What happens |
 |---|---|---|---|
-| 1 | Perceive | code | Gather what the creature has to go on: its latest felt record, its own map, and its last few steps, each with its action, its expectation, what was felt and the surprise. |
-| 2 | Deliberate | model | Choose one of the four directions. Commit to an expectation: the felt record it expects after the step, and how sure it is (guessing, fairly sure, sure). One line of why. |
+| 1 | Perceive | code | Gather what the creature has to go on: its latest felt record, its own map, and its last few steps, each with its action, its expectation, what was felt, the surprise and the reading it gave. |
+| 2 | Deliberate | model | Choose one of the four directions. Commit to an expectation: whether it will move, and the word it expects for each of the eight worded channels. Say how sure it is (guessing, fairly sure, sure). One line of why. |
 | 3 | Act | world | The body's true numbers move. The world returns whether the creature moved, and the true numbers. |
-| 4 | Monitor | code | Pass the true numbers through the temperament to get the felt record. Compare it with the expectation, field by field. |
-| 5 | Appraise | model | Shown the expectation, the felt record and the surprise. Answer with one line on what it makes of it, and a short list of tiles whose five beliefs it now sets to new values. |
-| 6 | Evaluate | code | The careful reasoner updates its own map from the same felt record. Measure the distance between the two maps and from each to the world. This step returns measures and changes nothing of the creature's. |
-| 7 | Reconcile | code | Apply the creature's changes to its own map. Add one try to the target. Update tone and stir. Store the step as an episode, weighted by the size of the surprise. |
+| 4 | Monitor | code | Pass the true numbers through the temperament to get the felt channels. Compare them with the expectation, field by field: that is the surprise. Then set tone and stir, which completes the felt record. |
+| 5 | Evaluate | code | The careful reasoner updates its own map from the felt record. It changes nothing of the creature's, and the model is never shown anything of the reasoner's. |
+| 6 | Appraise | model | Shown the expectation, the felt record and the surprise. Answer with one line on what it makes of it, and a short list of tiles whose five beliefs it now sets to new values. |
+| 7 | Reconcile | code | Apply the creature's changes to its own map. Add one try to the target. Store the step as an episode, weighted by the size of the surprise. Then take the tick's measures: the distance between the two maps, and from each to the world. |
+
+The expectation covers `moved` and the eight worded channels. Tone, stir and position are not predicted; they follow from the rest.
 
 **Surprise, precisely.** For each of the eight worded channels the miss is the number of steps on the ladder between the word expected and the word felt. For `moved` the miss is zero or one. The surprise of the tick is a weighted sum of the misses, scaled to between 0 and 1, and larger when the creature said it was sure. Each miss also has a direction: better or worse for the body than expected. The weights are in the config.
 
@@ -280,9 +282,9 @@ The model is told, once, in fixed text:
 - Its aim is to stay comfortable: eat and drink enough and not too much, keep away from what hurts, enjoy what pleases.
 - The place is unknown to it. It keeps a map with five beliefs per spot and should keep it true.
 
-It is given data as JSON: the felt record, its own map, and its last few steps. It answers in JSON, through pydantic-ai's structured output.
+It is given data as JSON: the felt record, its own map, and its last few steps, each with the reading it gave at the time. It answers in JSON, through pydantic-ai's structured output.
 
-Deliberate answers with the action, the expected felt record, how sure it is, and one line of why.
+Deliberate answers with the action, whether it expects to move, the word it expects for each of the eight channels, how sure it is, and one line of why.
 
 Appraise answers with one line of reading and up to a few changes, each a tile's coordinates and its five new beliefs:
 
@@ -310,11 +312,21 @@ A failed model call stops the run with a one-line error. There is no silent fall
 
 Each model step has a deterministic stand-in with the same signature, chosen in the config.
 
-- **Rule chooser** for Deliberate: serve the loudest need at the nearest tile its map believes will serve it without hurting; with no such tile, go to the nearest untried one. Its expectation is read off its map and the world's rules. Ties are broken by the seed.
+- **Rule chooser** for Deliberate: it reads what the model reads, the creature's own map and its felt record. It serves the loudest need at the nearest tile the map believes will serve it without hurting; with no such tile, it goes to the nearest untried one. Its expectation is read off the map and the world's rules. Ties are broken by the seed.
 - **Blind chooser** for Deliberate: a seeded random direction, expecting no change. It reads nothing.
-- **Reasoner's appraiser** for Appraise: set the changed tiles to the careful reasoner's values. A creature on stand-ins therefore has two identical maps.
+- **Reasoner's appraiser** for Appraise: set the tiles the careful reasoner changed in this tick to the reasoner's values. A creature on stand-ins therefore has two identical maps.
 
-A claim about the model is reported as the model run set against the stand-in run on the same seeds, and next to the share of the model's choices that the rule chooser would also have made. A difference between temperaments that the blind chooser shows too comes from the code and is not a finding.
+There are three kinds of run:
+
+| Run | Deliberate | Appraise |
+|---|---|---|
+| model | the model | the model |
+| stand-in | rule chooser | reasoner's appraiser |
+| blind | blind chooser | reasoner's appraiser |
+
+The config also allows the model on one step and a stand-in on the other. Such mixed runs are not part of this milestone's results.
+
+A claim about the model is reported as the model run set against the stand-in run on the same seeds, and next to the share of the model's choices that the rule chooser would also have made (section 15). A difference between temperaments that the blind chooser shows too comes from the code and is not a finding.
 
 ## 14. What you watch
 
@@ -333,7 +345,7 @@ One exported page, built from two stored runs on the same layout.
                       [ play ]  step 37 of 120  [ < ] [ > ]
 ```
 
-- All three maps use the drawing rule of section 9.
+- All three maps use the drawing rule of section 9. The world's map shows where both creatures are, each in its own copy.
 - Under each creature's map a switch chooses between its own map and the careful reasoner's.
 - A second switch outlines the tiles where the shown map is on the wrong side of the truth.
 - The creature is a white dot. Its halo shows tone, and it pulses with stir.
@@ -348,7 +360,7 @@ For each run:
 
 - Steps outside comfort, per channel.
 - The surprise at every step, and how often each channel's expectation held.
-- The share of choices the rule chooser would also have made, counted only where it had more than one option.
+- The share of the creature's choices that the rule chooser would also have made from the same map and the same felt record. Where the rule is indifferent between several directions, any of them counts. It is reported next to the share a random direction would have scored.
 - Map error: the mean distance between a map's five beliefs and the world's, over tried tiles and over all tiles, at every step. For both maps.
 - The gap between the creature's own map and the careful reasoner's, at every step.
 - False harm and false safety: tried tiles believed to hurt that do not, and the reverse.
@@ -387,7 +399,9 @@ If all three fail, the build stops and the owner is told. The film is not built 
 
 ## 17. What changes in the code, and in the brief
 
-Kept, with small edits: the loop of seven phase functions, tick files, resume and replay; the config loader and the seeded generator; the model plumbing in `agents.py`; the command-line skeleton; the table writers; the film's play controls.
+Kept: tick files, resume, and the replay check; the config loader and the seeded generator; the model plumbing in `agents.py`; the command-line skeleton; the table writers; the film's play controls.
+
+Rewritten inside `loop.py`: the body of a tick. It becomes one pass in the order of section 10, with no second pass. The tick file also stores the careful reasoner's map, so that a run can be resumed.
 
 Replaced:
 
@@ -405,7 +419,7 @@ Removed: the clearing world, the scene sentences, the lens page, the ladder chec
 
 ## 18. Cost
 
-A creature's day is 120 steps with two model calls each, so 240 calls. A film of two creatures is 480 calls. Each call carries the map, which grows to a few thousand tokens by the end of a day. On the model used so far this should come to cents per day, as before. Gate 2 measures it before anything larger is run. Model runs are never part of the tests.
+A creature's day is 120 steps with two model calls each, so 240 calls. Gate 2 is 120 calls. The model-driven day of build step 6 (section 20) has three creatures, so 720 calls. Each call carries the map, which grows to a few thousand tokens by the end of a day. On the model used so far this should come to cents per day, as before. Gate 2 measures it before anything larger is run. Model runs are never part of the tests.
 
 ## 19. Where this falls short, stated in advance
 
@@ -424,7 +438,7 @@ A creature's day is 120 steps with two model calls each, so 240 calls. A film of
 3. The map, the careful reasoner, the stand-ins, the loop, tick files, resume and replay, measures. Gate 1.
 4. Deliberate and Appraise on the model. Gate 2.
 5. The film and its key, built on stored runs.
-6. One model-driven day for the wary and the hopeful creature, with the plain one for reference. The README: what was shown, and what was not.
+6. The results. Without the model: stand-in runs and blind runs for all four temperaments over 20 seeds. With the model: one day on one seed for the plain, the wary and the hopeful creature. The film of the wary and the hopeful creature's model runs. The README: what was shown, and what was not.
 
 Each step ends with tests passing and a commit.
 
@@ -448,7 +462,7 @@ Mine, for the owner to overrule:
 3. **"Undrinkable water" is foul water**: it quenches and brings sickness later.
 4. **Feelings reach the model as words, beliefs as numbers.**
 5. **The creature is told where it is**, in steps from its start.
-6. **Appraise moves to after the world's answer**, and the override and the gut pull are removed.
+6. **The order of the tick**: Appraise moves to after the world's answer and after the careful reasoner's update. The override and the gut pull are removed.
 7. **The model is sent its previous map and its last few steps**, not the whole history.
 8. **Sickness arrives 2 to 4 steps late.** This is what makes blame uncertain.
 9. **Three parts of temperament**: presumption, loudness, clarity. Sight is not biased; the owner called that one stupid and I agree.
@@ -459,6 +473,8 @@ Mine, for the owner to overrule:
 14. **The careful reasoner knows the rules and takes the felt record as honest.**
 15. **Gate 2 comes before the film**, with its pass marks and remedies.
 16. **The code is replaced in place**, as it was for the lever world, with the clearing kept at `24aff96`.
+17. **The rule chooser reads the creature's own map.** The share of choices it predicts then says whether the model acts on what it believes the way a simple rule would.
+18. **Three kinds of run** (model, stand-in, blind), and the dull creature on stand-ins only in this milestone.
 
 ## 22. Left to the builder
 
