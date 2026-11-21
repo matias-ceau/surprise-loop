@@ -174,16 +174,16 @@ def test_the_record_of_a_tick() -> None:
     assert set(Belief) == set(ws.appraisal.changes[0].beliefs)
 
 
-def test_an_llm_deliberate_backend_is_not_built_yet() -> None:
+def test_an_llm_deliberate_backend_with_no_resolved_model_raises_config_error() -> None:
     ws, rt = start(backends=Backends(deliberate="llm"))
     ws = run(perceive, ws, rt)
-    with pytest.raises(ConfigError):
+    with pytest.raises(ConfigError, match="no resolved model"):
         run(deliberate, ws, rt)
 
 
-def test_an_llm_appraise_backend_is_not_built_yet() -> None:
+def test_an_llm_appraise_backend_with_no_resolved_model_raises_config_error() -> None:
     ws, rt = start(backends=Backends(appraise="llm"))
     for phase in (perceive, deliberate, act, monitor, evaluate):
         ws = run(phase, ws, rt)
-    with pytest.raises(ConfigError):
+    with pytest.raises(ConfigError, match="no resolved model"):
         run(appraise, ws, rt)

@@ -140,7 +140,7 @@ class DeliberateOutput(Frozen):
 
 
 class ChangeOutput(Frozen):
-    at: tuple[int, int] = Field(description=AT_HELP)
+    at: list[int] = Field(min_length=2, max_length=2, description=AT_HELP)
     blocks: Unit
     hurts: Unit
     feeds: Unit
@@ -166,7 +166,8 @@ def to_decision(output: DeliberateOutput) -> Decision:
 
 def to_appraisal(output: AppraiseOutput) -> Appraisal:
     changes = tuple(
-        Change(at=c.at, beliefs={b: getattr(c, b.value) for b in Belief}) for c in output.changes
+        Change(at=(c.at[0], c.at[1]), beliefs={b: getattr(c, b.value) for b in Belief})
+        for c in output.changes
     )
     return Appraisal(reading=output.reading, changes=changes)
 
@@ -199,7 +200,7 @@ def _within_bounds(ctx: RunContext[AppraiseDeps], output: AppraiseOutput) -> App
         raise ModelRetry(TOO_MANY_CHANGES.format(max_changes=ctx.deps.max_changes))
     for change in output.changes:
         if any(abs(v) > ctx.deps.reach for v in change.at):
-            raise ModelRetry(TOO_FAR.format(at=list(change.at), reach=ctx.deps.reach))
+            raise ModelRetry(TOO_FAR.format(at=change.at, reach=ctx.deps.reach))
     return output
 
 

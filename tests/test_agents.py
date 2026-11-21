@@ -458,6 +458,24 @@ def test_a_belief_beyond_one_is_rejected_by_validation() -> None:
         ChangeOutput.model_validate({"at": [1, 0], **beliefs(0.0, -0.1, 0.0, 0.0, 0.0)})
 
 
+@pytest.mark.parametrize("at", [[1], [1, 0, 2], []], ids=["one", "three", "none"])
+def test_a_spot_of_other_than_two_numbers_is_rejected_by_validation(at: list[int]) -> None:
+    with pytest.raises(ValidationError):
+        ChangeOutput.model_validate({"at": at, **beliefs(0.0, 0.0, 0.0, 0.0, 0.0)})
+
+
+def test_the_schema_of_a_spot_is_a_plain_array_of_two_integers() -> None:
+    schema = AppraiseOutput.model_json_schema()
+    assert "prefixItems" not in json.dumps(schema)
+    at = schema["$defs"]["ChangeOutput"]["properties"]["at"]
+    assert (at["type"], at["items"], at["minItems"], at["maxItems"]) == (
+        "array",
+        {"type": "integer"},
+        2,
+        2,
+    )
+
+
 def test_the_request_carries_the_llm_params() -> None:
     settings = model_settings(LLMParams(temperature=0.4, timeout_s=12.5))
     assert settings.get("temperature") == 0.4 and settings.get("timeout") == 12.5
