@@ -1,0 +1,247 @@
+"""The rule chooser, its expectation, the blind chooser, the measures and the starting state."""
+
+import math
+
+from creatures import run_config
+
+from surprise_loop.config import RuleParams, initial_agent_state
+from surprise_loop.phases.heuristics import blind_decision, measures, rule_choice, rule_expectation
+from surprise_loop.reasoner import initial_reasoner, marginals, reasoner_beliefs
+from surprise_loop.state import AgentState, CreatureMap, FeltRecord, Sureness
+from surprise_loop.world import (
+    Belief,
+    Channel,
+    Direction,
+    GridWorld,
+    Position,
+    derive_rng,
+    key,
+    layout_positions,
+    truth_at,
+)
+
+P = RuleParams()
+ALL = tuple(Direction)
+
+
+def felt(at: Position = (0, 0), **levels: int) -> FeltRecord:
+    return FeltRecord(
+        moved=None,
+        levels=dict.fromkeys(Channel, 0) | {Channel(c): v for c, v in levels.items()},
+        smell=0,
+        damp=0,
+        tone=0,
+        stir=0,
+        at=at,
+    )
+
+
+def beliefs(**values: float) -> dict[Belief, float]:
+    return dict.fromkeys(Belief, 0.0) | {Belief(b): v for b, v in values.items()}
+
+
+def untried(agent: str) -> dict[Belief, float]:
+    return marginals(run_config(agent).agent.temperament.presumes)
+
+
+def a_map(agent: str = "plain", **tiles: dict[Belief, float]) -> CreatureMap:
+    """A map with `agent`'s untried beliefs; tile keywords are written like `t3_0` for (3, 0)."""
+    return CreatureMap(untried=untried(agent), tiles={_key(name): b for name, b in tiles.items()})
+
+
+def _key(name: str) -> str:
+    x, y = name[1:].replace("m", "-").split("_")
+    return f"{x},{y}"
+
+
+def choose(f: FeltRecord, m: CreatureMap, tries: dict[str, int], seed: int = 1):
+    return rule_choice(f, m, tries, P, derive_rng(seed, "rule", 1))
+
+
+# the starting state
+
+
+def test_initial_agent_state_for_the_plain_creature() -> None:
+    config = run_config("plain")
+    agent = initial_agent_state(config, GridWorld(config.world, config.seed).observe())
+    assert agent.felt.at == (0, 0)
+    assert agent.felt.moved is None
+    assert agent.felt.levels[Channel.HUNGER] == 1
+    assert agent.felt.levels[Channel.THIRST] == 1
+    assert agent.felt.stir == 0
+    assert agent.stir == 0.0
+    assert agent.own_map.untried == marginals(config.agent.temperament.presumes)
+    assert math.isclose(agent.own_map.untried[Belief.BLOCKS], 0.29)
+    assert agent.own_map.tiles == {}
+    assert agent.reasoner == initial_reasoner(config.agent.temperament.presumes)
+    assert agent.tries == {}
+    assert agent.memory.episodes == []
+    assert agent.tick == 0
+
+
+# rule_choice
+
+FOOD = beliefs(blocks=1.0, feeds=0.9)
+
+
+def test_a_hungry_creature_heads_for_tried_food() -> None:
+    rc = choose(felt(hunger=3), a_map(t3_0=FOOD), {"3,0": 1})
+    assert rc.best == (Direction.EAST,)
+    assert rc.choice == Direction.EAST
+
+
+def test_food_believed_to_hurt_is_no_goal() -> None:
+    rc = choose(felt(hunger=3), a_map(t3_0=beliefs(blocks=1.0, feeds=0.9, hurts=0.6)), {"3,0": 1})
+    assert rc.best == ALL
+
+
+def test_no_need_and_nothing_tried_explores_every_way() -> None:
+    a = choose(felt(), a_map(), {}, seed=7)
+    b = choose(felt(), a_map(), {}, seed=7)
+    assert a.best == ALL
+    assert a.choice in ALL
+    assert a == b
+
+
+def test_a_wary_creature_with_no_need_goes_back_to_what_it_knows() -> None:
+    rc = choose(felt(), a_map("wary", tm1_0=beliefs()), {"-1,0": 1})
+    assert rc.best == (Direction.WEST,)
+
+
+def test_a_wary_creature_with_nothing_tried_falls_back_to_untried_tiles() -> None:
+    assert choose(felt(), a_map("wary"), {}).best == ALL
+
+
+def test_a_believed_block_is_walked_round() -> None:
+    m = a_map(t1_0=beliefs(blocks=0.9), t2_0=FOOD)
+    rc = choose(felt(hunger=3), m, {"2,0": 1})
+    assert rc.best == (Direction.NORTH, Direction.SOUTH)
+
+
+def test_hunger_wins_a_tie_and_thirst_wins_when_louder() -> None:
+    water = beliefs(blocks=1.0, quenches=0.9)
+    m = a_map(t2_0=FOOD, tm2_0=water)
+    tries = {"2,0": 1, "-2,0": 1}
+    assert choose(felt(hunger=3, thirst=3), m, tries).best == (Direction.EAST,)
+    assert choose(felt(hunger=2, thirst=3), m, tries).best == (Direction.WEST,)
+
+
+# rule_expectation
+
+
+def test_expecting_to_eat() -> None:
+    m = a_map(t1_0=beliefs(blocks=1.0, feeds=0.9))
+    e = rule_expectation(Direction.EAST, felt(hunger=2), m, {"1,0": 2}, P)
+    assert not e.moved
+    assert e.levels[Channel.HUNGER] == 1
+    assert e.levels[Channel.ACHE] == 0
+    assert e.sure == Sureness.SURE
+    assert rule_expectation(Direction.EAST, felt(hunger=2), m, {"1,0": 1}, P).sure == (
+        Sureness.FAIRLY_SURE
+    )
+    assert rule_expectation(Direction.EAST, felt(hunger=2), m, {}, P).sure == Sureness.GUESSING
+
+
+def test_expecting_to_eat_when_full_expects_an_ache() -> None:
+    m = a_map(t1_0=beliefs(blocks=1.0, feeds=0.9))
+    e = rule_expectation(Direction.EAST, felt(hunger=0, ache=1), m, {}, P)
+    assert e.levels[Channel.HUNGER] == 0
+    assert e.levels[Channel.ACHE] == 2
+    top = rule_expectation(Direction.EAST, felt(ache=4), m, {}, P)
+    assert top.levels[Channel.ACHE] == 4
+
+
+def test_expecting_to_drink() -> None:
+    m = a_map(t1_0=beliefs(blocks=1.0, quenches=0.9))
+    e = rule_expectation(Direction.EAST, felt(thirst=2), m, {}, P)
+    assert not e.moved
+    assert e.levels[Channel.THIRST] == 1
+
+
+def test_expecting_pleasant_ground_and_the_smell_beside_it() -> None:
+    m = a_map(t1_0=beliefs(pleases=0.9), t2_0=FOOD, t1_1=FOOD, t1_m1=FOOD)
+    e = rule_expectation(Direction.EAST, felt(pleasure=1), m, {}, P)
+    assert e.moved
+    assert e.levels[Channel.PLEASURE] == 2
+    assert e.smell == 2  # three believed food beside the new spot, at most two on the ladder
+    assert e.damp == 0
+    high = rule_expectation(Direction.EAST, felt(pleasure=3), m, {}, P)
+    assert high.levels[Channel.PLEASURE] == 3
+
+
+def test_expecting_ground_believed_to_hurt() -> None:
+    m = a_map(t1_0=beliefs(hurts=0.9))
+    e = rule_expectation(Direction.EAST, felt(), m, {}, P)
+    assert e.moved
+    assert e.levels[Channel.UNEASE] == 2
+
+
+# blind_decision
+
+
+def test_the_blind_chooser_reads_only_the_felt_record() -> None:
+    f = felt(hunger=2, thirst=1)
+    d = blind_decision(f, derive_rng(3, "blind", 1))
+    assert d == blind_decision(f, derive_rng(3, "blind", 1))
+    assert d.expectation.moved
+    assert d.expectation.levels == f.levels
+    assert (d.expectation.smell, d.expectation.damp) == (f.smell, f.damp)
+    assert d.expectation.sure == Sureness.GUESSING
+    assert d.why == ""
+
+
+# measures
+
+
+def _agent(own_map: CreatureMap, tries: dict[str, int]) -> AgentState:
+    config = run_config("plain")
+    agent = initial_agent_state(config, GridWorld(config.world, config.seed).observe())
+    return agent.model_copy(update={"own_map": own_map, "tries": tries})
+
+
+def _error(a, b, tiles) -> float:
+    if not tiles:
+        return 0.0
+    return sum(abs(a(t)[x] - b(t)[x]) for t in tiles for x in Belief) / (len(tiles) * len(Belief))
+
+
+def test_measures_on_two_tried_tiles() -> None:
+    world = run_config("plain").world
+    harmful, fine = (1, 0), (-1, 0)  # both truly ground
+    own = a_map(t1_0=beliefs(hurts=0.9), tm1_0=beliefs())
+    agent = _agent(own, {key(harmful): 2, key(fine): 1, "0,1": 0})
+    m = measures(agent, world, run_config("plain").params.metrics)
+
+    tried = [harmful, fine]
+    everywhere = list(layout_positions(world))
+
+    def truth(t: Position) -> dict[Belief, float]:
+        return truth_at(world, t)
+
+    def reasoner(t: Position) -> dict[Belief, float]:
+        return reasoner_beliefs(agent.reasoner, t)
+
+    assert m.tiles_tried == 2
+    assert m.false_harm == 1
+    assert m.false_safe == 0
+    assert m.reasoner_false_harm == 0
+    assert m.reasoner_false_safe == 0
+    assert m.wrong == (key(harmful),)
+    assert math.isclose(m.own_error, 0.9 / 10)
+    assert math.isclose(m.start_error, _error(lambda t: own.untried, truth, tried))
+    assert math.isclose(m.reasoner_error, _error(reasoner, truth, tried))
+    assert math.isclose(m.gap, _error(own.at, reasoner, tried))
+    assert math.isclose(m.own_error_all, _error(own.at, truth, everywhere))
+    assert math.isclose(m.reasoner_error_all, _error(reasoner, truth, everywhere))
+    assert math.isclose(m.gap_all, _error(own.at, reasoner, everywhere))
+
+
+def test_measures_with_nothing_tried() -> None:
+    config = run_config("plain")
+    agent = _agent(a_map(), {})
+    m = measures(agent, config.world, config.params.metrics)
+    assert m.tiles_tried == 0
+    assert (m.start_error, m.own_error, m.reasoner_error, m.gap) == (0.0, 0.0, 0.0, 0.0)
+    assert (m.false_harm, m.false_safe, m.reasoner_false_harm, m.reasoner_false_safe) == (0,) * 4
+    assert m.wrong == ()
+    assert m.own_error_all > 0

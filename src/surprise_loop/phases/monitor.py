@@ -1,9 +1,10 @@
-"""Monitor: how what was felt compares with what was expected."""
+"""Monitor: what the body feels after the step, and how that compares with what was expected."""
 
-from surprise_loop.config import MonitorParams
-from surprise_loop.feeling import TOP_STEP, valence
-from surprise_loop.lens import NEAR_TOP
-from surprise_loop.state import Comparison, Expectation
+from surprise_loop.config import MonitorParams, Runtime, derive_rng
+from surprise_loop.feeling import TOP_STEP, next_stir, stir_step, tone_step, valence
+from surprise_loop.lens import NEAR_TOP, sense
+from surprise_loop.phases.heuristics import require
+from surprise_loop.state import Comparison, Expectation, FeltRecord, Workspace
 from surprise_loop.world import Channel
 
 
@@ -29,3 +30,25 @@ def compare(
         surprise=surprise,
         worse=worse,
     )
+
+
+async def monitor(ws: Workspace, rt: Runtime) -> Workspace:
+    agent = ws.agent
+    decision = require(ws.decision, "decision", "monitor")
+    signal = require(ws.outcome, "outcome", "monitor").signal
+    params = rt.config.params
+    rng = derive_rng(rt.config.seed, "sense", agent.tick + 1)
+    levels, smell, damp = sense(signal, agent.temperament, rng, params.lens)
+    moved = bool(signal.moved)
+    comparison = compare(decision.expectation, moved, levels, smell, damp, params.monitor)
+    stir = next_stir(agent.stir, comparison.surprise, params.feeling)
+    felt_after = FeltRecord(
+        moved=moved,
+        levels=levels,
+        smell=smell,
+        damp=damp,
+        tone=tone_step(levels, params.feeling),
+        stir=stir_step(stir, params.feeling),
+        at=signal.position,
+    )
+    return ws.model_copy(update={"felt_after": felt_after, "stir": stir, "comparison": comparison})

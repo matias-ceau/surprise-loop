@@ -13,10 +13,22 @@ from typing import Annotated, Literal
 import yaml
 from pydantic import Field, ValidationError, field_validator
 
-from surprise_loop.state import ChannelWeights, NonNegative, Step5, Sureness, Temperament, every
+from surprise_loop.state import (
+    AgentState,
+    ChannelWeights,
+    CreatureMap,
+    FeltRecord,
+    Memory,
+    NonNegative,
+    Step5,
+    Sureness,
+    Temperament,
+    every,
+)
 from surprise_loop.world import (
     Channel,
     Frozen,
+    Signal,
     Unit,
     World,
     WorldConfig,
@@ -278,6 +290,39 @@ def resolve_model(config: RunConfig) -> str | None:
     if env := os.environ.get(MODEL_ENV_VAR):
         return env
     raise ConfigError(f'a backend is "llm" but neither config `model` nor {MODEL_ENV_VAR} is set')
+
+
+def initial_agent_state(config: RunConfig, signal: Signal) -> AgentState:
+    """The creature before its first tick: what it feels on the starting tile, a map that holds
+    only its presumption, the reasoner's starting shares, no tries and no memory."""
+    # these modules import this one, so they are imported here
+    from surprise_loop.feeling import tone_step
+    from surprise_loop.lens import sense
+    from surprise_loop.reasoner import initial_reasoner, marginals
+
+    temperament = config.agent.temperament
+    levels, smell, damp = sense(
+        signal, temperament, derive_rng(config.seed, "sense", 0), config.params.lens
+    )
+    felt = FeltRecord(
+        moved=None,
+        levels=levels,
+        smell=smell,
+        damp=damp,
+        tone=tone_step(levels, config.params.feeling),
+        stir=0,
+        at=(0, 0),
+    )
+    return AgentState(
+        temperament=temperament,
+        felt=felt,
+        stir=0.0,
+        own_map=CreatureMap(untried=marginals(temperament.presumes), tiles={}),
+        reasoner=initial_reasoner(temperament.presumes),
+        tries={},
+        memory=Memory(episodes=[]),
+        tick=0,
+    )
 
 
 @dataclass(frozen=True)
