@@ -25,3 +25,10 @@ def test_creature_text_names_every_belief_and_feeling() -> None:
     for name in [*Belief, *Channel]:
         assert re.search(rf"\b{name}\b", phrases.CREATURE_TEXT)
     assert phrases.CREATURE_TEXT.count("\n\n") == 5
+
+
+def test_the_creature_is_told_that_hunger_and_thirst_grow_and_the_rest_fade() -> None:
+    assert (
+        "Hunger and thirst grow slowly on their own. The other four feelings fade on their own "
+        "over a few steps. You smell food" in phrases.CREATURE_TEXT
+    )

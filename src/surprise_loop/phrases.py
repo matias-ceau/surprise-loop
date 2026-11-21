@@ -27,8 +27,9 @@ sick, and the sickness comes a few steps later, not at once. Eating when you are
 your belly ache. Drinking when you are not thirsty does nothing.
 
 You feel your body: hunger, thirst, ache, sickness, unease and pleasure, each as one of none, \
-slight, clear, strong, overwhelming. Hunger and thirst grow slowly on their own. You smell food on \
-the spots next to you and feel damp when water is next to you, each as none, faint or strong. \
+slight, clear, strong, overwhelming. Hunger and thirst grow slowly on their own. The other four \
+feelings fade on their own over a few steps. You smell food on the spots next to you and feel damp \
+when water is next to you, each as none, faint or strong. \
 Neither tells you on which side it is or whether it is good, and either can miss something that \
 is there. You know whether your last step succeeded, and where you are, counted in steps east and \
 north of where you began.
