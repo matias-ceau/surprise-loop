@@ -193,19 +193,27 @@ def _beliefs(
 
 
 def map_distance(
-    a: AgentState, b: AgentState, world: WorldConfig, which: Literal["own", "reasoner"]
+    a: AgentState,
+    b: AgentState,
+    world: WorldConfig,
+    which: Literal["own", "reasoner"],
+    tiles: Literal["shared", "all"] = "shared",
 ) -> float | None:
-    """The mean absolute difference of the five beliefs over the layout tiles tried in both
-    states, read from each creature's own map or from the reasoner's; None when there is none."""
-    both = [at for at in layout_positions(world) if key(at) in a.tries and key(at) in b.tries]
-    if not both:
-        return None
+    """The mean absolute difference of the five beliefs, read from each creature's own map or
+    from the reasoner's. With `shared`, over the layout tiles tried in both states, and None when
+    there is none; with `all`, over every tile of the layout, where an untried tile has the map's
+    untried beliefs or the reasoner's presumption."""
+    over = layout_positions(world)
+    if tiles == "shared":
+        over = tuple(at for at in over if key(at) in a.tries and key(at) in b.tries)
+        if not over:
+            return None
     total = sum(
         abs(_beliefs(a, at, which)[belief] - _beliefs(b, at, which)[belief])
-        for at in both
+        for at in over
         for belief in Belief
     )
-    return total / (len(both) * len(Belief))
+    return total / (len(over) * len(Belief))
 
 
 def gate2(result: RunResult) -> Gate2:
@@ -350,6 +358,8 @@ DISTANCE_COLUMNS: tuple[str, ...] = (
     "seed_b",
     "own_distance",
     "reasoner_distance",
+    "own_distance_all",
+    "reasoner_distance_all",
 )
 
 
@@ -380,6 +390,8 @@ def distances_csv(results: Sequence[RunResult]) -> str:
                 second[1],
                 map_distance(a.agent, b.agent, world, "own"),
                 map_distance(a.agent, b.agent, world, "reasoner"),
+                map_distance(a.agent, b.agent, world, "own", tiles="all"),
+                map_distance(a.agent, b.agent, world, "reasoner", tiles="all"),
             ]
         )
     return _csv(DISTANCE_COLUMNS, rows)

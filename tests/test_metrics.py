@@ -89,7 +89,7 @@ def test_a_stand_in_run_is_alive_enough_to_measure(forty: RunResult) -> None:
     assert m.own_error < m.start_error
 
 
-def test_a_blind_run_strays_from_the_rule_about_as_often_as_chance() -> None:
+def test_a_blind_run_strays_from_the_rule_and_chance_is_the_mean_share() -> None:
     result = stand_in(40, backends=Backends(deliberate="blind"))
     m = summarize(result)
     assert m.rule_agreement < 1
@@ -186,6 +186,44 @@ def test_map_distance_reads_the_reasoners_map(forty: RunResult) -> None:
         total += sum(abs(ra[b] - rb[b]) for b in Belief)
     expected = total / (len(both) * len(Belief))
     assert map_distance(forty.agent, other.agent, world, "reasoner") == pytest.approx(expected)
+
+
+def test_map_distance_over_all_tiles_reads_untried_beliefs_where_a_tile_is_untried() -> None:
+    world = run_config().world
+    zero, one = dict.fromkeys(Belief, 0.0), dict.fromkeys(Belief, 1.0)
+    a = with_tiles(blank_agent(), {(1, 0): zero, (-1, 0): zero})
+    b = with_tiles(blank_agent(), {(1, 0): one, (0, -1): one})
+    untried = blank_agent().own_map.untried
+    layout = layout_positions(world)
+    assert {(1, 0), (-1, 0), (0, -1)} <= set(layout)
+    # (1, 0) is tried by both; (-1, 0) and (0, -1) by one, against the other's untried beliefs;
+    # every other tile is untried in both and adds nothing
+    total = (
+        len(Belief) * 1.0
+        + sum(abs(0.0 - untried[x]) for x in Belief)
+        + sum(abs(1.0 - untried[x]) for x in Belief)
+    )
+    shared, everywhere = 1.0, total / (len(layout) * len(Belief))
+    assert map_distance(a, b, world, "own") == pytest.approx(shared)
+    assert map_distance(a, b, world, "own", tiles="shared") == pytest.approx(shared)
+    assert map_distance(a, b, world, "own", tiles="all") == pytest.approx(everywhere)
+    assert everywhere != pytest.approx(shared)
+
+
+def test_map_distance_over_all_tiles_is_never_none(forty: RunResult) -> None:
+    world = forty.config.world
+    blank = blank_agent()
+    assert map_distance(blank, blank, world, "own", tiles="all") == 0.0
+    assert map_distance(blank, blank, world, "reasoner", tiles="all") == 0.0
+    layout = layout_positions(world)
+    expected = sum(
+        abs(reasoner_beliefs(forty.agent.reasoner, at)[x] - reasoner_beliefs(blank.reasoner, at)[x])
+        for at in layout
+        for x in Belief
+    ) / (len(layout) * len(Belief))
+    assert expected > 0
+    got = map_distance(forty.agent, blank, world, "reasoner", tiles="all")
+    assert got == pytest.approx(expected)
 
 
 # --- gate 2 -------------------------------------------------------------------------------------
@@ -293,7 +331,8 @@ def test_distances_csv_pairs_agents_at_a_seed_and_seeds_of_an_agent(
 ) -> None:
     text = experiment_tables(four)["distances.csv"]
     assert text.splitlines()[0] == (
-        "kind,agent_a,agent_b,seed_a,seed_b,own_distance,reasoner_distance"
+        "kind,agent_a,agent_b,seed_a,seed_b,own_distance,reasoner_distance,"
+        "own_distance_all,reasoner_distance_all"
     )
     table = rows(text)
     assert [(r["kind"], r["agent_a"], r["agent_b"], r["seed_a"], r["seed_b"]) for r in table] == [
@@ -306,6 +345,11 @@ def test_distances_csv_pairs_agents_at_a_seed_and_seeds_of_an_agent(
     world = four[0].config.world
     expected = map_distance(run["plain", 1].agent, run["wary", 1].agent, world, "reasoner")
     assert table[0]["reasoner_distance"] == format_cell(expected)
+    plain, wary = run["plain", 1].agent, run["wary", 1].agent
+    expected_all = map_distance(plain, wary, world, "own", tiles="all")
+    assert table[0]["own_distance_all"] == format_cell(expected_all)
+    expected_all = map_distance(plain, wary, world, "reasoner", tiles="all")
+    assert table[0]["reasoner_distance_all"] == format_cell(expected_all)
 
 
 def test_a_distance_without_shared_tiles_is_an_empty_cell(short: RunResult) -> None:
@@ -318,6 +362,7 @@ def test_a_distance_without_shared_tiles_is_an_empty_cell(short: RunResult) -> N
     table = rows(experiment_tables([short, far])["distances.csv"])
     assert len(table) == 1 and table[0]["kind"] == "within"
     assert table[0]["own_distance"] == table[0]["reasoner_distance"] == ""
+    assert table[0]["own_distance_all"] != "" and table[0]["reasoner_distance_all"] != ""
 
 
 def test_stability_csv_has_one_row_per_measure(four: list[RunResult]) -> None:
