@@ -6,7 +6,8 @@ be piped; anything informational goes to stderr. A `run` that fails on its way (
 answers nonsense, a network error) is reported as one `error: <run_id> failed: ...` line with
 exit code 1; the tick files written before the failure stay, and `--resume` continues from them.
 `replay` re-runs a stored run from its files and exits 1 when it differs from them. `gate2` prints
-a stored run's gate 2 marks as JSON and exits 0 when they pass, 1 when not.
+a stored run's gate 2 marks as JSON and exits 0 when they pass, 1 when not. `film` writes two
+stored runs on the same layout as one self-contained HTML page.
 
 `experiment` runs every (agent, seed) of a config into `DIR/<run_id>/` and writes results.csv,
 trace.csv, distances.csv and stability.csv (with at least two seeds) into
@@ -57,6 +58,7 @@ from surprise_loop.loop import (
 )
 from surprise_loop.metrics import TABLE_FILES, experiment_tables, gate2
 from surprise_loop.metrics import summarize as summarize_run
+from surprise_loop.viewer.film import film_html
 
 
 class CommandError(Exception):
@@ -107,6 +109,19 @@ def _parser() -> argparse.ArgumentParser:
         "gate2", help="print the gate 2 marks of a stored run; exit 0 when they pass"
     )
     gate2_cmd.add_argument("run_dir", type=Path)
+
+    film_cmd = commands.add_parser(
+        "film", help="write two stored runs on the same layout as one HTML page"
+    )
+    film_cmd.add_argument("run_a", type=Path, help="run directory shown on the left")
+    film_cmd.add_argument("run_b", type=Path, help="run directory shown on the right")
+    film_cmd.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        default=Path("film.html"),
+        help="the HTML file to write (default: film.html)",
+    )
     return parser
 
 
@@ -125,7 +140,7 @@ def _cannot_write(path: Path, e: OSError) -> CommandError:
     return CommandError(f"{path}: cannot write: {e.strerror or e}")
 
 
-# --- run, experiment, metrics, replay, gate2 ------------------------------------------------------
+# --- run, experiment, metrics, replay, gate2, film ------------------------------------------------
 
 
 def _select(path: Path, agent: str | None, seed: int | None) -> RunConfig:
@@ -339,12 +354,23 @@ def _gate2(args: argparse.Namespace) -> int:
     return 0 if marks.passed else 1
 
 
+def _film(args: argparse.Namespace) -> int:
+    html = film_html(args.run_a, args.run_b)
+    try:
+        write_atomic(args.output, html)
+    except OSError as e:
+        raise _cannot_write(args.output, e) from None
+    print(f"wrote {args.output}", file=sys.stderr)
+    return 0
+
+
 _COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "run": _run,
     "experiment": _experiment,
     "metrics": _metrics,
     "replay": _replay,
     "gate2": _gate2,
+    "film": _film,
 }
 
 
