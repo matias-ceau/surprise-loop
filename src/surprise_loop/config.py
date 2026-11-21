@@ -124,6 +124,11 @@ class RuleParams(Frozen):
     believe_at: Unit = 0.5
     # how far from the start the search looks, in steps along each axis
     reach: int = Field(default=12, ge=1)
+    # the step an expected pleasure or unease is raised to at least
+    felt_step: Step5 = 2
+    # the tries of a target that make an expectation sure, and fairly sure
+    sure_tries: int = Field(default=2, ge=1)
+    fairly_sure_tries: int = Field(default=1, ge=1)
 
 
 class MemoryParams(Frozen):

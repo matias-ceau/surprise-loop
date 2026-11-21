@@ -45,8 +45,9 @@ def shares_at(state: ReasonerState, at: Position) -> dict[Kind, float]:
 
 
 def marginals(shares: dict[Kind, float]) -> dict[Belief, float]:
-    """For each belief, the summed share of the kinds that have it."""
-    return {b: math.fsum(shares[k] for k in Kind if b in EFFECTS[k]) for b in Belief}
+    """For each belief, the summed share of the kinds that have it, at most 1.0 (a sum of shares
+    can overshoot 1 by a rounding error)."""
+    return {b: min(1.0, math.fsum(shares[k] for k in Kind if b in EFFECTS[k])) for b in Belief}
 
 
 def reasoner_beliefs(state: ReasonerState, at: Position) -> dict[Belief, float]:
@@ -141,7 +142,8 @@ def _sensed(
     observed: int,
     q: float,
 ) -> None:
-    """Step 6 for one sense: write the group's new share at each neighbour into `tiles`."""
+    """Step 6 for one sense: write the group's new share at each neighbour into `tiles`, where
+    any share moved by more than `MOVED_BY`."""
     before = [get(at) for at in around]
     held = [math.fsum(s[k] for k in group) for s in before]
     weights = []
@@ -154,7 +156,7 @@ def _sensed(
     for i, at in enumerate(around):
         share = math.fsum(w for holds, w in weights if holds[i]) / total
         scaled = _scaled(before[i], group, share)
-        if scaled != before[i]:
+        if any(abs(scaled[k] - before[i][k]) > MOVED_BY for k in Kind):
             tiles[key(at)] = scaled
 
 

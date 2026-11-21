@@ -143,6 +143,12 @@ def test_an_untouched_tile_is_what_is_presumed() -> None:
     assert reasoner_beliefs(s, (3, -2)) == marginals(EQUAL)
 
 
+def test_a_quiet_step_writes_only_its_target() -> None:
+    presumes = dict.fromkeys(Kind, 0.1) | {Kind.GROUND: 0.3}
+    new, _ = moved_north(initial_reasoner(presumes))
+    assert set(new.tiles) == {key((0, 0))}
+
+
 # steps 1 and 2: the target
 
 

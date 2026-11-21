@@ -38,12 +38,6 @@ from surprise_loop.world import (
     truth_at,
 )
 
-# the step an expected pleasure or unease is raised to at least
-FELT_STEP = 2
-# tries of a target that make an expectation fairly sure, and sure
-FAIRLY_SURE_TRIES = 1
-SURE_TRIES = 2
-
 # what a need is served by
 SERVES: dict[Channel, Belief] = {Channel.HUNGER: Belief.FEEDS, Channel.THIRST: Belief.QUENCHES}
 
@@ -102,9 +96,9 @@ def rule_choice(
     p: RuleParams,
     rng: random.Random,
 ) -> RuleChoice:
-    """The ten-line rule: walk the shortest believed-safe way to what serves the need, or with no
-    need to what is worth trying; failing that, to anything untried; failing that, anywhere
-    believed safe."""
+    """The ten-line rule: walk the shortest believed-safe way to the first goal set that has a goal
+    in reach (what serves the need, or with no need what is worth trying or already known);
+    failing every set, anywhere believed safe."""
     here = felt.at
 
     def safe(t: Position) -> bool:
@@ -119,26 +113,31 @@ def rule_choice(
     def untried(t: Position) -> bool:
         return t != here and not tried(t)
 
+    def untried_safe(t: Position) -> bool:
+        return untried(t) and safe(t)
+
+    def tried_safe(t: Position) -> bool:
+        return t != here and tried(t) and safe(t)
+
     need = _need(felt, p)
     u = own_map.untried
-    exploring = need is None and (
-        u[Belief.FEEDS] + u[Belief.QUENCHES] + u[Belief.PLEASES] > u[Belief.HURTS]
-    )
-    if exploring:
-        goal = untried
-    elif need is not None:
+    goal_sets: tuple[Callable[[Position], bool], ...]
+    if need is not None:
         serves = SERVES[need]
 
-        def goal(t: Position) -> bool:
-            return t != here and tried(t) and safe(t) and own_map.at(t)[serves] >= p.serve_at
+        def serving(t: Position) -> bool:
+            return tried_safe(t) and own_map.at(t)[serves] >= p.serve_at
+
+        goal_sets = (serving, untried_safe, untried)
+    elif u[Belief.FEEDS] + u[Belief.QUENCHES] + u[Belief.PLEASES] > u[Belief.HURTS]:
+        goal_sets = (untried_safe, tried_safe)
     else:
+        goal_sets = (tried_safe, untried_safe)
 
-        def goal(t: Position) -> bool:
-            return t != here and tried(t) and safe(t)
-
-    best = _search(here, goal, passable, p.reach)
-    if not best and not exploring:
-        best = _search(here, untried, passable, p.reach)
+    best: tuple[Direction, ...] = ()
+    for goal in goal_sets:
+        if best := _search(here, goal, passable, p.reach):
+            break
     if not best:
         best = tuple(d for d in Direction if safe(moved_to(here, d))) or tuple(Direction)
     return RuleChoice(best=best, choice=rng.choice(best))
@@ -169,14 +168,14 @@ def rule_expectation(
     if not moved and b[Belief.QUENCHES] >= p.believe_at and levels[Channel.THIRST] >= 1:
         levels[Channel.THIRST] -= 1
     if moved and b[Belief.PLEASES] >= p.believe_at:
-        levels[Channel.PLEASURE] = max(FELT_STEP, levels[Channel.PLEASURE])
+        levels[Channel.PLEASURE] = max(p.felt_step, levels[Channel.PLEASURE])
     if moved and b[Belief.HURTS] >= p.believe_at:
-        levels[Channel.UNEASE] = max(FELT_STEP, levels[Channel.UNEASE])
+        levels[Channel.UNEASE] = max(p.felt_step, levels[Channel.UNEASE])
     stand = target if moved else felt.at
     count = tries.get(key(target), 0)
-    if count >= SURE_TRIES:
+    if count >= p.sure_tries:
         sure = Sureness.SURE
-    elif count >= FAIRLY_SURE_TRIES:
+    elif count >= p.fairly_sure_tries:
         sure = Sureness.FAIRLY_SURE
     else:
         sure = Sureness.GUESSING

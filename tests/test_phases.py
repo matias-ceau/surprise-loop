@@ -122,7 +122,10 @@ def test_on_the_reasoner_backend_the_own_map_follows_the_reasoner() -> None:
             for y in range(south, north + 1):
                 own = agent.own_map.at((x, y))
                 theirs = reasoner_beliefs(agent.reasoner, (x, y))
+                # a belief that moved by no more than 1e-9 is not reported, so not rewritten
                 assert own == pytest.approx(theirs, abs=1e-9)
+        for at in ws.reasoner_changed:
+            assert agent.own_map.at(at) == reasoner_beliefs(agent.reasoner, at)
         ws = next_ws(ws)
 
 

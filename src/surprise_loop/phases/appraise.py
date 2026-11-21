@@ -11,12 +11,5 @@ async def appraise(ws: Workspace, rt: Runtime) -> Workspace:
         raise ConfigError("the llm backend of appraise arrives in Task 10")
     reasoner = require(ws.reasoner, "reasoner", "appraise")
     changed = require(ws.reasoner_changed, "reasoner_changed", "appraise")
-    changes = tuple(
-        Change(
-            at=at,
-            # a sum of shares can overshoot 1 by a rounding error
-            beliefs={b: min(1.0, max(0.0, v)) for b, v in reasoner_beliefs(reasoner, at).items()},
-        )
-        for at in changed
-    )
+    changes = tuple(Change(at=at, beliefs=reasoner_beliefs(reasoner, at)) for at in changed)
     return ws.model_copy(update={"appraisal": Appraisal(reading="", changes=changes)})

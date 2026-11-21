@@ -2,6 +2,7 @@
 
 import math
 
+import pytest
 from creatures import run_config
 
 from surprise_loop.config import RuleParams, initial_agent_state
@@ -124,6 +125,33 @@ def test_hunger_wins_a_tie_and_thirst_wins_when_louder() -> None:
     tries = {"2,0": 1, "-2,0": 1}
     assert choose(felt(hunger=3, thirst=3), m, tries).best == (Direction.EAST,)
     assert choose(felt(hunger=2, thirst=3), m, tries).best == (Direction.WEST,)
+
+
+def test_a_curious_creature_walks_past_an_untried_tile_it_believes_harmful() -> None:
+    tried_ground = {"t0_1": beliefs(), "t0_m1": beliefs(), "tm1_0": beliefs()}
+    m = a_map(t1_0=beliefs(hurts=0.9), **tried_ground)
+    rc = choose(felt(), m, {"0,1": 1, "0,-1": 1, "-1,0": 1})
+    assert rc.best == (Direction.NORTH, Direction.SOUTH, Direction.WEST)
+
+
+def test_a_loud_need_with_nothing_safe_to_try_heads_for_harm() -> None:
+    m = CreatureMap(untried=beliefs(hurts=0.9), tiles={"-1,0": beliefs()})
+    rc = choose(felt(hunger=3), m, {"-1,0": 1})
+    assert rc.best == (Direction.NORTH, Direction.EAST, Direction.SOUTH)
+
+
+@pytest.mark.parametrize(
+    "untried_beliefs",
+    [
+        beliefs(hurts=0.6, feeds=0.3, quenches=0.3, pleases=0.3),  # curious
+        beliefs(hurts=0.9),  # not curious
+    ],
+)
+def test_with_no_need_and_only_harm_untried_it_goes_back_to_what_it_knows(
+    untried_beliefs: dict[Belief, float],
+) -> None:
+    m = CreatureMap(untried=untried_beliefs, tiles={"-1,0": beliefs()})
+    assert choose(felt(), m, {"-1,0": 1}).best == (Direction.WEST,)
 
 
 # rule_expectation

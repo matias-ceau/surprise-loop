@@ -4,7 +4,7 @@ record of the tick. The loop, not this phase, advances the tick count."""
 from surprise_loop.config import Runtime
 from surprise_loop.phases.heuristics import measures, require
 from surprise_loop.state import Episode, Memory, TickRecord, Workspace
-from surprise_loop.world import key
+from surprise_loop.world import key, moved_to
 
 
 async def reconcile(ws: Workspace, rt: Runtime) -> Workspace:
@@ -20,7 +20,7 @@ async def reconcile(ws: Workspace, rt: Runtime) -> Workspace:
     reasoner_changed = require(ws.reasoner_changed, "reasoner_changed", "reconcile")
     appraisal = require(ws.appraisal, "appraisal", "reconcile")
 
-    target = key(outcome.info.target)
+    target = key(moved_to(agent.felt.at, decision.direction))
     episode = Episode(
         tick=tick,
         direction=decision.direction,
