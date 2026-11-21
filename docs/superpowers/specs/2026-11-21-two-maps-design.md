@@ -133,6 +133,8 @@ Two senses reach outward, from the tile the creature stands on:
 
 Neither says which neighbour, and neither says whether the thing is good.
 
+Build note, 2026-11-21: either sense can also miss a thing that is there, with a chance set in the config. With an exact count, a blocked step with no damp could never be water, and the doubt the owner described ("a wall, or water I did not need") would not exist.
+
 After each step the creature receives a **felt record**. It is the only thing it ever learns about the world.
 
 ```json
@@ -174,7 +176,7 @@ The first experiment file defines four temperaments. All four start with the sam
 | hopeful | more good than there is | good louder, bad quieter | clear |
 | dull | as plain | even | noisy and blurred |
 
-A temperament never appears in anything the model reads, and it does not change during a run.
+A temperament's loudness and clarity never appear in anything the model reads. Its presumption reaches the model only as the beliefs its map starts with. A temperament does not change during a run.
 
 ## 9. The map
 
