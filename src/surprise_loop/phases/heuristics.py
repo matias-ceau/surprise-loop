@@ -8,7 +8,7 @@ is ever read by a chooser.
 
 import math
 import random
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Sequence
 
 from surprise_loop.config import MetricsParams, RuleParams
 from surprise_loop.feeling import TOP_STEP
@@ -97,8 +97,8 @@ def rule_choice(
     rng: random.Random,
 ) -> RuleChoice:
     """The ten-line rule: walk the shortest believed-safe way to the first goal set that has a goal
-    in reach (what serves the need, or with no need what is worth trying or already known);
-    failing every set, anywhere believed safe."""
+    in reach (what serves the need, caution yielding sooner when the need is desperate; with no
+    need, what is worth trying or already known); failing every set, anywhere believed safe."""
     here = felt.at
 
     def safe(t: Position) -> bool:
@@ -126,9 +126,15 @@ def rule_choice(
         serves = SERVES[need]
 
         def serving(t: Position) -> bool:
-            return tried_safe(t) and own_map.at(t)[serves] >= p.serve_at
+            return t != here and own_map.at(t)[serves] >= p.serve_at
 
-        goal_sets = (serving, untried_safe, untried)
+        def serving_safe(t: Position) -> bool:
+            return serving(t) and safe(t)
+
+        if felt.levels[need] >= p.desperate_at:
+            goal_sets = (serving_safe, serving, untried_safe, untried)
+        else:
+            goal_sets = (serving_safe, untried_safe, serving, untried)
     elif u[Belief.FEEDS] + u[Belief.QUENCHES] + u[Belief.PLEASES] > u[Belief.HURTS]:
         goal_sets = (untried_safe, tried_safe)
     else:
@@ -200,45 +206,39 @@ def blind_decision(felt: FeltRecord, rng: random.Random) -> Decision:
     return Decision(direction=rng.choice(list(Direction)), expectation=expectation, why="")
 
 
-BeliefsAt = Callable[[Position], dict[Belief, float]]
+# the beliefs of one map, by tile
+MapBeliefs = dict[Position, dict[Belief, float]]
 
 
-def _error(a: BeliefsAt, b: BeliefsAt, tiles: Iterable[Position]) -> float:
+def _error(a: MapBeliefs, b: MapBeliefs, tiles: Sequence[Position]) -> float:
     """The mean absolute difference of two maps over `tiles` and the five beliefs; 0.0 for none."""
-    diffs = [abs(a(t)[x] - b(t)[x]) for t in tiles for x in Belief]
+    diffs = [abs(a[t][x] - b[t][x]) for t in tiles for x in Belief]
     return math.fsum(diffs) / len(diffs) if diffs else 0.0
 
 
 def measures(agent: AgentState, world: WorldConfig, p: MetricsParams) -> Measures:
-    """How far the creature's own map and the reasoner's are from the truth, and from each other."""
+    """How far the creature's own map and the reasoner's are from the truth, and from each other.
+    Each tile's beliefs and truth are read once."""
     tried = sorted(position_of(k) for k, n in agent.tries.items() if n >= 1)
     everywhere = layout_positions(world)
+    tiles = set(tried).union(everywhere)
+    own = {t: agent.own_map.at(t) for t in tiles}
+    reasoner = {t: reasoner_beliefs(agent.reasoner, t) for t in tiles}
+    truth = {t: truth_at(world, t) for t in tiles}
+    start = dict.fromkeys(tried, agent.own_map.untried)
 
-    def own(t: Position) -> dict[Belief, float]:
-        return agent.own_map.at(t)
-
-    def reasoner(t: Position) -> dict[Belief, float]:
-        return reasoner_beliefs(agent.reasoner, t)
-
-    def truth(t: Position) -> dict[Belief, float]:
-        return truth_at(world, t)
-
-    def start(t: Position) -> dict[Belief, float]:
-        return dict(agent.own_map.untried)
-
-    def false_harm(believed: BeliefsAt) -> int:
+    def false_harm(believed: MapBeliefs) -> int:
         return sum(
-            believed(t)[Belief.HURTS] >= p.wrong_side and truth(t)[Belief.HURTS] == 0 for t in tried
+            believed[t][Belief.HURTS] >= p.wrong_side and truth[t][Belief.HURTS] == 0 for t in tried
         )
 
-    def false_safe(believed: BeliefsAt) -> int:
+    def false_safe(believed: MapBeliefs) -> int:
         return sum(
-            believed(t)[Belief.HURTS] < p.wrong_side and truth(t)[Belief.HURTS] == 1 for t in tried
+            believed[t][Belief.HURTS] < p.wrong_side and truth[t][Belief.HURTS] == 1 for t in tried
         )
 
     def wrong_side(t: Position) -> bool:
-        b, real = own(t), truth(t)
-        return any((b[x] >= p.wrong_side) != (real[x] >= p.wrong_side) for x in Belief)
+        return any((own[t][x] >= p.wrong_side) != (truth[t][x] >= p.wrong_side) for x in Belief)
 
     return Measures(
         tiles_tried=len(tried),

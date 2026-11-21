@@ -14,6 +14,7 @@ from surprise_loop.world import (
     Channel,
     Direction,
     GridWorld,
+    Kind,
     Position,
     derive_rng,
     key,
@@ -91,9 +92,34 @@ def test_a_hungry_creature_heads_for_tried_food() -> None:
     assert rc.choice == Direction.EAST
 
 
-def test_food_believed_to_hurt_is_no_goal() -> None:
-    rc = choose(felt(hunger=3), a_map(t3_0=beliefs(blocks=1.0, feeds=0.9, hurts=0.6)), {"3,0": 1})
-    assert rc.best == ALL
+def test_food_believed_to_hurt_is_no_goal_until_the_need_is_desperate() -> None:
+    m = a_map(t3_0=beliefs(blocks=1.0, feeds=0.9, hurts=0.6))
+    assert choose(felt(hunger=2), m, {"3,0": 1}).best == ALL
+    assert choose(felt(hunger=3), m, {"3,0": 1}).best == (Direction.EAST,)
+
+
+WATER = beliefs(blocks=1.0, quenches=0.9)
+
+
+def test_believed_water_serves_a_need_before_it_is_tried() -> None:
+    assert choose(felt(thirst=2), a_map(t2_0=WATER), {}).best == (Direction.EAST,)
+
+
+def test_believed_water_that_may_hurt_waits_while_the_need_is_not_desperate() -> None:
+    m = a_map(t2_0=beliefs(blocks=1.0, quenches=1.0, hurts=0.75))
+    assert choose(felt(thirst=2), m, {}).best == ALL
+
+
+def test_a_desperate_need_heads_for_believed_water_that_may_hurt() -> None:
+    m = a_map(t2_0=beliefs(blocks=1.0, quenches=1.0, hurts=0.75))
+    assert choose(felt(thirst=3), m, {}).best == (Direction.EAST,)
+
+
+def test_a_curious_creature_tries_the_new_before_the_known() -> None:
+    tries = {"-1,0": 1}
+    curious = choose(felt(), a_map("plain", tm1_0=beliefs()), tries)
+    assert curious.best == (Direction.NORTH, Direction.EAST, Direction.SOUTH)
+    assert choose(felt(), a_map("wary", tm1_0=beliefs()), tries).best == (Direction.WEST,)
 
 
 def test_no_need_and_nothing_tried_explores_every_way() -> None:
@@ -110,6 +136,7 @@ def test_a_wary_creature_with_no_need_goes_back_to_what_it_knows() -> None:
 
 
 def test_a_wary_creature_with_nothing_tried_falls_back_to_untried_tiles() -> None:
+    assert untried("wary")[Belief.HURTS] < P.avoid_at
     assert choose(felt(), a_map("wary"), {}).best == ALL
 
 
@@ -262,6 +289,51 @@ def test_measures_on_two_tried_tiles() -> None:
     assert math.isclose(m.own_error_all, _error(own.at, truth, everywhere))
     assert math.isclose(m.reasoner_error_all, _error(reasoner, truth, everywhere))
     assert math.isclose(m.gap_all, _error(own.at, reasoner, everywhere))
+
+
+def pinned_agent() -> AgentState:
+    """Three tried tiles (ground, food, toxic) and an untried one, in both maps."""
+    own = a_map(
+        t1_0=beliefs(hurts=0.9),
+        t2_m1=beliefs(blocks=1.0, feeds=0.7, hurts=0.3),
+        tm1_m1=beliefs(blocks=1.0, feeds=0.8),
+        t0_1=beliefs(pleases=0.6),
+    )
+    agent = _agent(own, {"1,0": 1, "2,-1": 3, "-1,-1": 1})
+    reasoner = agent.reasoner.model_copy(
+        update={
+            "tiles": {
+                "2,-1": dict.fromkeys(Kind, 0.0) | {Kind.FOOD: 0.75, Kind.TOXIC: 0.25},
+                "-1,-1": dict.fromkeys(Kind, 0.0) | {Kind.FOOD: 0.5, Kind.TOXIC: 0.5},
+                "0,1": dict.fromkeys(Kind, 0.0) | {Kind.GROUND: 0.6, Kind.PLEASANT: 0.4},
+            }
+        }
+    )
+    return agent.model_copy(update={"reasoner": reasoner})
+
+
+# measures of pinned_agent, recorded before measures was rewritten to read each tile once
+PINNED = {
+    "tiles_tried": 3,
+    "start_error": 0.3426666666666666,
+    "own_error": 0.18000000000000002,
+    "reasoner_error": 0.09133333333333332,
+    "gap": 0.158,
+    "own_error_all": 0.16882539682539682,
+    "reasoner_error_all": 0.16396825396825396,
+    "gap_all": 0.008158730158730159,
+    "false_harm": 1,
+    "false_safe": 1,
+    "reasoner_false_harm": 0,
+    "reasoner_false_safe": 0,
+    "wrong": ("-1,-1", "1,0"),
+}
+
+
+def test_measures_pinned() -> None:
+    config = run_config("plain")
+    m = measures(pinned_agent(), config.world, config.params.metrics)
+    assert m.model_dump() == PINNED
 
 
 def test_measures_with_nothing_tried() -> None:

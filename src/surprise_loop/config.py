@@ -129,6 +129,8 @@ class RuleParams(Frozen):
     # the tries of a target that make an expectation sure, and fairly sure
     sure_tries: int = Field(default=2, ge=1)
     fairly_sure_tries: int = Field(default=1, ge=1)
+    # the least felt step of a need at which serving it outranks staying safe
+    desperate_at: Step5 = 3
 
 
 class MemoryParams(Frozen):
@@ -158,7 +160,7 @@ def _comfort_at() -> dict[Channel, float]:
 
 
 class MetricsParams(Frozen):
-    # a channel counts as comfortable while its true level is at or below this
+    # a step is uncomfortable for a channel when its true level is at or above this
     comfort_at: Annotated[dict[Channel, Unit], every(Channel)] = Field(default_factory=_comfort_at)
     # a belief is on the wrong side when the truth is on the other side of this
     wrong_side: Unit = 0.5

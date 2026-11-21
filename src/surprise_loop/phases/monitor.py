@@ -39,7 +39,7 @@ async def monitor(ws: Workspace, rt: Runtime) -> Workspace:
     params = rt.config.params
     rng = derive_rng(rt.config.seed, "sense", agent.tick + 1)
     levels, smell, damp = sense(signal, agent.temperament, rng, params.lens)
-    moved = bool(signal.moved)
+    moved = require(signal.moved, "outcome.signal.moved", "monitor")
     comparison = compare(decision.expectation, moved, levels, smell, damp, params.monitor)
     stir = next_stir(agent.stir, comparison.surprise, params.feeling)
     felt_after = FeltRecord(
