@@ -8,11 +8,11 @@ experiments run into the same directory:
 
 import sys
 from pathlib import Path
-from statistics import mean
+from statistics import mean, stdev
 
 from surprise_loop.loop import RunResult, load_dumps, load_result
 from surprise_loop.metrics import map_distance, summarize
-from surprise_loop.world import Belief, Channel, Kind, kind_at, position_of
+from surprise_loop.world import Belief, Channel, Kind, key, kind_at, layout_positions, position_of
 
 AGENTS, SEEDS = ("plain", "wary", "hopeful"), (1, 2)
 EXPERIMENTS = {"model": "two_maps_llm", "stand-in": "two_maps", "blind": "two_maps_blind"}
@@ -31,12 +31,34 @@ HELD = 0.5
 STRONG = 3
 
 
+def tried_in_layout(result: RunResult) -> int:
+    """Tiles of the layout tried. The measure `tiles_tried` also counts the ring around it."""
+    layout = {key(at) for at in layout_positions(result.config.world)}
+    return sum(1 for at, tries in result.agent.tries.items() if tries > 0 and at in layout)
+
+
+def layout_means(runs: Path, experiment: str) -> None:
+    """Over every seed found: tiles tried inside the layout, and the hopeful - wary difference."""
+    found: dict[str, dict[int, int]] = {}
+    for run_dir in sorted(runs.glob(f"{experiment}-*-s*")):
+        agent, seed = run_dir.name[len(experiment) + 1 :].rsplit("-s", 1)
+        found.setdefault(agent, {})[int(seed)] = tried_in_layout(load_result(run_dir))
+    for agent, by_seed in found.items():
+        print(f"  {agent:8s} {mean(by_seed.values()):.2f} over {len(by_seed)} seeds")
+    seeds = sorted(set(found.get("hopeful", {})) & set(found.get("wary", {})))
+    if len(seeds) > 1:
+        apart = [found["hopeful"][s] - found["wary"][s] for s in seeds]
+        two_se = 2 * stdev(apart) / len(apart) ** 0.5
+        print(f"  hopeful - wary: mean {mean(apart):.2f}, two standard errors {two_se:.2f}")
+
+
 def per_run(kind: str, result: RunResult) -> str:
     m = summarize(result)
     closed = (m.start_error - m.own_error) / (m.start_error - m.reasoner_error)
     return (
         f"{kind:9s} {result.config.agent.name:8s} s{result.config.seed}"
-        f"  tried {m.tiles_tried:2d}  sick {m.sickness_arrivals}"
+        f"  tried {m.tiles_tried:2d} ({tried_in_layout(result):2d} in the layout)"
+        f"  sick {m.sickness_arrivals}"
         f"  uncomfortable {m.uncomfortable_total:3d}"
         f"  start {m.start_error:.3f}  own {m.own_error:.3f}  reasoner {m.reasoner_error:.3f}"
         f"  closed {closed:.0%}  rule {m.rule_agreement:.2f}  chance {m.chance_agreement:.2f}"
@@ -154,6 +176,8 @@ def main(runs: Path) -> None:
             print(per_run(kind, result))
         print("distances between the final maps (mean absolute difference of a belief):")
         distances(results)
+        print("tiles of the layout tried:")
+        layout_means(runs, experiment)
         if kind == "blind":
             continue
         print("end of day:", total([end_of_day(r) for r in results.values()]))
