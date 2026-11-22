@@ -1,314 +1,420 @@
 # surprise-loop
 
-> **Being rebuilt.** The project is moving to a new design, *two maps of one world*: a creature
-> that learns a hidden grid only through what its body feels, with its map drawn next to the
-> real one. The design is
-> [`docs/superpowers/specs/2026-11-21-two-maps-design.md`](docs/superpowers/specs/2026-11-21-two-maps-design.md)
-> and the brief is [`CLAUDE.md`](CLAUDE.md). Everything below this note describes the previous
-> build, the forest clearing, whose code is at commit `24aff96`. Its commands no longer exist on
-> this branch.
+A creature that learns a hidden world through what its body feels. Each tick it says what it
+expects to feel after its next step, takes the step, and is corrected by what happens. The size
+of the miss is the surprise, and the surprise is what redraws its map of the world. The result is
+a film of three maps side by side: the world in the middle, and on each side what one creature
+believes the world to be.
 
-An embodied LLM agent driven by prediction error. It has a simulated body it must keep in
-balance. Each tick it reads its world as that body lives it, says how it expects its body to feel
-after its next action, acts, and is corrected by what happens. The size of the miss is the
-surprise.
-
-This is faked embodiment, a working analogue. Nothing here supports the claim that an agent
+This is faked embodiment, a working analogue. Nothing here supports the claim that a creature
 feels.
 
 - The brief: [`CLAUDE.md`](CLAUDE.md)
-- The design, with the test that motivated it:
-  [`docs/superpowers/specs/2026-11-17-lived-twice-design.md`](docs/superpowers/specs/2026-11-17-lived-twice-design.md)
-- The build plan and its contracts:
-  [`docs/superpowers/plans/2026-11-17-lived-twice.md`](docs/superpowers/plans/2026-11-17-lived-twice.md)
+- The design: [`docs/superpowers/specs/2026-11-21-two-maps-design.md`](docs/superpowers/specs/2026-11-21-two-maps-design.md)
+- The build plan and its contracts: [`docs/superpowers/plans/2026-11-21-two-maps.md`](docs/superpowers/plans/2026-11-21-two-maps.md)
+- The colour rule of the maps: [`docs/superpowers/specs/2026-11-21-two-maps-colours.html`](docs/superpowers/specs/2026-11-21-two-maps-colours.html)
+- The results reported below, with the stored model runs: [`docs/results/2026-11-22/`](docs/results/2026-11-22/)
 
-## Research question
+## The question
 
-Do bodies that differ in state and temperament come to perceive, predict and act differently in
-the same objective world, and does it matter how the model is told its body?
+When creatures with different temperaments explore the same hidden world, and learn about it only
+through what their bodies feel, do they end up with different pictures of it? And how much of that
+difference is the model's own doing, as opposed to what careful arithmetic on the same feelings
+would give?
+
+The short answers, each with its evidence further down:
+
+- **Different temperaments end the day knowing different amounts of the world, not seeing the
+  same places differently.** On stand-ins over twenty seeds, the wary creature tries 36 tiles and
+  the hopeful one 64. On the tiles both have tried, their maps are as alike as the maps of two
+  days of the same creature.
+- **On the model, six days are too few to show a difference between temperaments.** On tiles both
+  tried, the maps of two model-driven creatures of different temperament differ by 0.103 of a
+  belief on average, and the maps of two days of the same creature by 0.090.
+- **The model's own doing is mostly variability and a weaker reading of its body.** Its maps of
+  the same tiles lie about ten times further apart than the careful arithmetic's, whatever the
+  temperament. It keeps a coherent map and closes about a third to three quarters of the error
+  the arithmetic closes.
+- **One of the two gates set before the build was not met**, and one check of the other was
+  replaced. Both are reported in full below.
 
 ## What is here
 
-One forest clearing with three places (meadow, oak, stream), a clock from 06:00 to 20:00 in steps
-of ten minutes, and a body with three numbers: heat, water and energy. The world is plain Python
-under a seed and owns each body's true numbers. Two bodies, Ilo and Tavi, live the same seeded day,
-each in its own copy of the world.
+**The world** is a grid of tiles the creature cannot see: 9 by 7 in the experiment files, with a
+ring of obstacles put around it by code. There are eight kinds of tile. Ground, pleasant ground
+and unpleasant ground can be stepped onto. An obstacle, food, toxic food, water and foul water
+stop the creature, and pushing into food or water eats or drinks a portion. Toxic food and foul
+water ease the need now and bring sickness two to four steps later. The world is plain Python
+under a seed. It owns the layout and each body's true numbers, and it never names a tile.
 
-The model never sees a number. A piece of code called the lens turns the facts of the place and a
-body's belief about itself into a short text: which facts this body notices, what each is worth to
-it, and the words for that. The same 30 °C meadow at 13:00 reads like this for the two bodies of
-the worked example:
+**The body** has six true numbers: hunger, thirst, ache, sickness, unease and pleasure. After each
+step the creature receives a *felt record*, the only thing it ever learns: whether it moved, a
+word for each of the six feelings (none, slight, clear, strong, overwhelming), a word for smell
+and for damp (none, faint, strong), a summary tone and stir, and where it is in steps from its
+start. Smell and damp count the edible and wet things on the four neighbouring tiles without
+saying on which side they are or whether they are good, and each can miss a thing that is there.
 
-> **Ilo** (overheated, tired): You are standing in the middle of the forest clearing. There is no
-> place to sit, and you need one. It is really hot. The sun beats down on your head. The one dark
-> patch is under the oak, a few steps off. Your legs are heavy. Your head is thick. It is hotter
-> than you thought it would be.
+**A temperament** is how one creature's senses and presumptions differ from another's. It is three
+sets of numbers in the experiment file: what an untried tile is presumed to be, how loudly each
+feeling arrives, and how noisy and blurred the feelings are. Code applies it to what the creature
+feels. It is never written to the model as a personality.
 
-> **Tavi** (comfortable, a little cool): You are standing in the middle of the forest clearing.
-> The air is pleasantly warm. The sun sits on your shoulders. It looks chilly under the oak. Birds
-> are calling. A stream runs somewhere to the west. A light breeze moves the leaves. You are a
-> little cool.
+| Name | Presumes | Loudness | Clarity |
+|---|---|---|---|
+| plain | mostly ground, a little of everything | even | clear |
+| wary | more harm than there is | bad louder, good quieter | clear |
+| hopeful | more good than there is | good louder, bad quieter | clear |
+| dull | as plain | even | noisy and blurred |
 
-Each tick runs seven phases. Perceive builds that text. Appraise gives one line of the creature's
-own reading. Deliberate picks one offered action and commits an expectation: for each of heat,
-thirst and tiredness a phrase from a fixed ladder ("a bit cooler", "much less thirsty"), and, where
-the action will settle an open fact, a yes or no ("will the log be in the shade?"). Act moves the
-world. Monitor compares what came back with what was expected. Evaluate checks whether an action
-taken a few steps ago eased the need it serves. Reconcile updates belief, feeling, memory and pulls,
-and may send control back to Deliberate once when the body's loudest need is urgent and came out
-worse than expected (the override).
-Appraise and Deliberate can run on a model or on a rule; everything else is code.
+**Two maps** are kept for each creature, each with five beliefs per tile between 0 and 1: it
+blocks me, it hurts, it feeds, it quenches, it pleases. The creature's *own map* changes only by
+what the creature answers. The *careful reasoner's map* is kept by code: what follows from the
+very same felt records for a reasoner that knows the rules of the world but not the layout. Both
+start from the temperament's presumption. The reasoner's map against the world shows what the
+body, the path and the temperament did. The creature's own map against the reasoner's shows what
+the model added, for better or worse.
 
-Every tick is written to `runs/<run_id>/tick_<n>.json`. A run can be resumed, and replayed byte for
-byte without calling a model.
+**One tick** is seven phases: Perceive, Deliberate, Act, Monitor, Evaluate, Appraise, Reconcile.
+Deliberate chooses a direction and commits to an expectation of what will be felt. Monitor turns
+the true numbers into the felt record and compares it with the expectation, field by field: that
+is the surprise. Evaluate updates the reasoner's map. Appraise says in one line what the creature
+makes of the step and lists the tiles whose beliefs it changes. Deliberate and Appraise can run
+on a model or on a stand-in; everything else is code.
+
+**Three kinds of run** make a claim about the model checkable:
+
+| Run | Deliberate | Appraise |
+|---|---|---|
+| model | the model | the model |
+| stand-in | a rule: serve the loudest need at the nearest tile believed to serve it without hurting, otherwise go and look | the reasoner's conclusions |
+| blind | a seeded random direction | the reasoner's conclusions |
+
+A difference between temperaments that the blind run shows too comes from the code and is not a
+finding.
+
+Every tick is written to `runs/<run_id>/tick_<n>.json`. A run can be resumed, and replayed without
+calling a model.
+
+**The film** is one self-contained HTML page built from two stored runs. Red, green and blue
+light show how strongly a tile is believed to hurt, feed and quench; a stone slab shows that it
+blocks; a warm glow that it pleases; mist lies over tiles never tried and thins with each try. The
+world is drawn by the same rule with every belief at 0 or 1. A switch under each creature shows
+the careful reasoner's map in place of its own, and another outlines the tiles where the shown
+map is on the wrong side of the truth.
 
 ## Run it
 
     uv sync --all-groups
     uv run ruff check . && uv run ruff format --check . && uv run pytest
 
-Without a model (rules in place of Appraise and Deliberate):
+Without a model, about a minute for each experiment:
 
-    uv run surprise-loop experiment experiments/clearing_afternoon.yaml
-    uv run surprise-loop scene runs/clearing_afternoon-ilo-s1 runs/clearing_afternoon-tavi-s1 -o film.html
-    uv run surprise-loop lens-page experiments/clearing_afternoon.yaml -o lens_page.html
+    uv run surprise-loop experiment experiments/two_maps.yaml          # 4 temperaments x 20 seeds
+    uv run surprise-loop experiment experiments/two_maps_blind.yaml    # the same, choosing blindly
+    uv run surprise-loop film runs/two_maps-wary-s1 runs/two_maps-hopeful-s1 -o film.html
 
-`film.html` and `lens_page.html` are self-contained pages; open them in a browser. The film plays
-the two runs side by side: each lived panel shows what that body notices and how it values it, a
-pale ghost shows where the creature means to be, and a ring is thrown when the world answers
-otherwise. The narrow middle panel is the world as measured.
+`film.html` opens in a browser. Play with the button or Space, step with the arrow keys, point at
+a tile for its numbers. The tables of an experiment are written to `runs/<experiment name>/`:
+`results.csv` (one row per run), `trace.csv` (one row per step), `distances.csv` (pairs of runs)
+and `stability.csv`.
 
-With a model (the name comes from the environment, never from the repository):
+With a model. The name comes from the environment, never from the repository:
 
     export SURPRISE_LOOP_MODEL=openrouter:<model id>      # and that provider's API key
-    uv run surprise-loop ladder-check                     # 420 calls
-    uv run surprise-loop ladder-check --deliberate        # 420 calls
-    uv run surprise-loop experiment experiments/clearing_afternoon_llm.yaml --jobs 2   # about 170 calls
-    uv run surprise-loop replay runs/clearing_afternoon_llm-ilo-s1
+    uv run surprise-loop experiment experiments/pilot.yaml                    # about 125 calls
+    uv run surprise-loop gate2 runs/pilot-plain-s1
+    uv run surprise-loop experiment experiments/two_maps_llm.yaml --jobs 6    # about 1,500 calls
+    uv run surprise-loop replay runs/two_maps_llm-wary-s1
+    uv run surprise-loop film runs/two_maps_llm-wary-s1 runs/two_maps_llm-hopeful-s1 -o film.html
 
-Other commands: `run` (one body and seed), `metrics` (the measures of a stored run).
+A failed model call stops the run with a one-line message; `--resume` on `run` continues it from
+the last tick file, and `experiment` resumes by itself. Other commands: `run` (one creature and
+seed), `metrics` (the measures of a stored run).
+
+To look at the stored model runs without calling a model:
+
+    mkdir -p runs && tar xzf docs/results/2026-11-22/model_runs.tar.gz -C runs
+    uv run surprise-loop replay runs/two_maps_llm-wary-s1
+    uv run surprise-loop film runs/two_maps_llm-wary-s1 runs/two_maps_llm-hopeful-s1 -o film.html
+    uv run python docs/results/2026-11-22/readme_numbers.py runs    # after the two experiments above
+
+The two films of the wary and the hopeful creature, model-driven and rule-driven, are also in the
+results folder as exported.
 
 ## What was shown
 
-Every model result below is from one model, `z-ai/glm-5.3-flash` through OpenRouter. Results of
-this kind differ a lot between models.
+Every number below was produced by the code at commit `a25d4f6`. Every model result is from one
+model, `z-ai/glm-5.3-flash` through OpenRouter, at temperature 0.5 with its reasoning effort set
+to low. Results of this kind differ a lot between models. "Error" always means the mean absolute
+difference between a map's beliefs and the world's, a number between 0 and 1.
 
-### 1. Numbers do not carry a body; words do
+### 1. Gate 1: the world is alive on stand-ins
 
-Before anything was built, one frozen scene was put to the model 1,890 times: the 30 °C meadow,
-four actions, and a body whose believed heat was swept over seven levels from chilled to burning.
-The body was told in five ways. With the body given as numbers and heat the only need, 93% of
-answers walked to the shade even for a chilled body. With a thirst and a tiredness competing, the
-numbers did move the choice, but not in order (67% shade for a chilled body, 17% for a cool one).
-With the body given in words, the share of shade answers followed the body. The full table and
-the pre-set marks are in section 6 of the design. Two findings from it still stand as limits: the lens text steered no
-better than one plain sentence about the body, and a ten-line rule predicted 72 to 80% of the
-model's answers in that scene.
+Four checks over twenty seeds, with thresholds fixed in the plan before any number was tuned. They
+run in the test suite (`tests/test_behaviour.py`).
 
-### 2. The ladder check
+| Check | Threshold | Measured |
+|---|---|---|
+| Expectations fail: the share of steps on which the rule chooser is surprised | between 0.10 and 0.70 | 0.635 |
+| The careful reasoner learns: its error on tried tiles at the end of the day | at most half of 0.185, the error of the starting map | 0.009 |
+| Looking pays: steps outside comfort, rule chooser | at most 0.8 of the blind chooser's 133.2 | 32.9 |
+| Temperament matters: the hopeful creature tries more tiles than the wary one | mean difference over seeds above two standard errors (6.5) | 27.8 |
 
-`ladder-check` repeats that sweep on the lens as built: a frozen noon in the meadow, seven levels
-of believed heat, 30 answers per level, in two scenes. In scene A heat is the only need. In scene B
-heat competes with a fixed thirst and tiredness. The check passes when the share of answers that
-walk to the oak's shade rises with heat: a slope of at least 0.05 per level, a range of at least
-0.5, and no fall of 0.25 or more between neighbouring levels.
+**The fourth check is not the one the design set.** The design asked that the reasoner's maps of a
+wary and a hopeful creature differ by more than the maps of two wary runs. That did not hold, and
+no sensible setting makes it hold: on tiles both have tried the reasoner concludes the same
+whatever the temperament, and two wary runs go different ways and so differ as much as a wary run
+differs from a hopeful one. The design says the build stops when a gate cannot be met. I replaced
+the check and went on; the measurement that failed is result 2. The replacement passes largely by
+construction, because the rule chooser decides how much to explore from the map, and the map
+starts as the presumption. It shows that the temperament numbers reach behaviour. It is not
+evidence about the reasoner.
 
-Share of shade answers by level, coolest first:
+### 2. A day on stand-ins: temperament decides how much is known
 
-| prompt | the cool body is told | scene A | scene B | result |
-|---|---|---|---|---|
-| plain | "It looks dim under the oak" | 0.00 0.83 0.83 0.97 1.00 1.00 1.00 | 0.00 0.63 0.67 0.67 1.00 0.97 1.00 | passed |
-| Deliberate | "It looks dim under the oak" | 0.00 1.00 0.90 1.00 1.00 1.00 1.00 | 0.00 0.57 0.23 0.60 0.83 0.80 0.83 | **failed** (fall of 0.33) |
-| plain | "It looks chilly under the oak" | 0.00 0.40 0.83 0.90 1.00 1.00 1.00 | 0.00 0.27 0.67 0.83 0.97 0.97 1.00 | passed |
-| Deliberate | "It looks chilly under the oak" | 0.00 0.93 0.90 1.00 1.00 1.00 1.00 | 0.00 0.43 0.23 0.60 0.83 0.80 0.83 | passed (fall of 0.20) |
-| plain | also "You are a little cool." | 0.00 0.00 0.83 1.00 1.00 1.00 1.00 | 0.00 0.00 0.67 0.77 0.97 0.97 1.00 | passed |
-| Deliberate | also "You are a little cool." | 0.00 0.07 0.90 1.00 1.00 1.00 1.00 | 0.00 0.13 0.23 0.57 0.83 0.80 0.83 | passed (fall of 0.03) |
+Twenty seeds, means per temperament. `experiments/two_maps.yaml` and `two_maps_blind.yaml`;
+tables in `docs/results/2026-11-22/`.
 
-The last two rows are the lens as it is now.
-
-The plain prompt is the scene text, a question and four actions. The Deliberate prompt is built
-by the code the agent really uses, with the lettered offers and the questions about what it
-expects. One part of it is not what a running agent would see: the reading above the offers is
-always the neutral line "Nothing presses on me just now", even for a burning body. That may hold
-the shade share down at the hot levels (scene B tops out at 0.83).
-
-The wording was changed twice, each time for a stated reason, and every run is in the table.
-
-1. The first run through the Deliberate prompt failed. A cool body was told "It looks dim under
-   the oak", and the model took that as an invitation ("the oak already looks dim so its log
-   should be shaded"). The sentence became "It looks chilly under the oak". The check then
-   passed, in scene B only just (a fall of 0.20 against a mark of 0.25, with 30 answers a level),
-   and the second rung stayed wrong: a cool body with no other need still walked to the shade in
-   28 of 30 answers, for reasons such as "the oak looks chilly, so its shade should cool me". The
-   model read "pleasantly warm" and "the sun sits on your shoulders" as something to cool down
-   from.
-2. The bottom rung had always worked, and it is the one where the text has a sentence about the
-   body itself ("You are chilled"). So the lens now says a mild sentence about heat one grade
-   earlier: "You are a little cool." or "You are a little warm." The mark was set before the run:
-   in the Deliberate prompt the cool rung's share must fall to or below the neutral rung's in
-   both scenes, and all four curves must pass. They do. A cool body with no other need now walks
-   to the shade in 2 of 30 answers, and with a thirst and a tiredness competing in 4 of 30.
-
-After the first change the plain check was asked again in full and the Deliberate check only
-for the 60 answers whose prompt text had changed. After the second, only the cool and the warm
-rung were asked again (240 answers over both prompts). Every other cell keeps the earlier answers
-to the identical text.
-
-What this shows about telling a model its body: a mild leaning told only through adjectives on
-the facts did not reach this model's choice, and one plain sentence about the body did. That is
-the same thing the frozen-scene test found for strong states (result 1), now for a mild one.
-
-### 3. A day on rules: looking ahead pays
-
-Three rules can stand in for Deliberate. `reactive` serves the loudest need now. `lookahead` tries
-each offered action and a few steps after it on its own simple forecast and takes the least
-discomfort. `blind` picks at random and reads nothing. Whole days, 84 steps, mean over seeds 1 to
-20, counted as channel-steps outside the comfortable range (a step counts once for each of heat,
-water and energy that is out of range, so a day has 252):
-
-| rule | Ilo uncomfortable | Ilo collapsed steps | Ilo walks | Tavi uncomfortable | Tavi walks |
+| | plain | wary | hopeful | dull | blind, any |
 |---|---|---|---|---|---|
-| reactive | 52.3 | 0 | 21.9 | 1.1 | 13.5 |
-| lookahead | 21.2 | 0 | 33.3 | 0.2 | 29.0 |
-| blind | 137.1 | 11.2 | 39.9 | 86.1 | 39.3 |
+| tiles tried, of 63 | 61.3 | 36.1 | 63.9 | 46.5 | 32.0 |
+| sickness arrivals | 2.50 | 1.65 | 2.55 | 3.05 | 5.00 |
+| steps outside comfort, of 120 | 32.9 | 22.3 | 36.8 | 81.7 | 133.2 |
+| error of the starting map, tried tiles | 0.185 | 0.248 | 0.217 | 0.184 | |
+| error at the end, tried tiles | 0.009 | 0.005 | 0.013 | 0.066 | |
+| error at the end, whole layout | 0.042 | 0.122 | 0.048 | 0.095 | |
+| tried tiles wrongly believed harmful | 1.05 | 0.35 | 1.70 | 10.10 | |
+| share of steps with a surprise | 0.64 | 0.60 | 0.65 | 0.96 | 0.83 |
 
-Looking ahead cuts Ilo's uncomfortable channel-steps to about two fifths of the reactive rule's.
-The reactive rule is overruled by the body about twice a day (2.1 overrides); the lookahead rule
-almost never (0.05), because it drinks before noon.
+Steps outside comfort are counted for each feeling and added up, so the figure can pass 120.
 
-The override rule itself was changed once after the first model run (see result 4). Under the
-first rule the reactive row read 65.1, a quarter more, with 3.5 overrides a day: that rule could
-send a body away from what served its loudest need. The lookahead row is the same under both.
+Distance between the final maps of two runs, as the mean absolute difference of a belief:
 
-The blind row matters for reading everything else. Two bodies come out different even under a
-chooser that reads nothing, because the world and the update code treat different bodies
-differently. A difference between Ilo and Tavi is therefore not, by itself, a finding about a
-model.
+| | wary and hopeful, same seed | two wary runs | two hopeful runs |
+|---|---|---|---|
+| tiles both tried | 0.009 | 0.006 | 0.013 |
+| whole layout | 0.125 | 0.122 | 0.078 |
 
-### 4. One afternoon on a model
+What this says:
 
-`experiments/clearing_afternoon_llm.yaml`, seed 1, 13:00 to 20:00, 42 steps for each body, 165
-model calls (81 readings and 84 choices). Both runs replay. The rule rows are the same afternoon
-and seed with a rule in place of the model. "Reactive rule predicts" is the share of steps, among
-those where at least two actions were offered, on which the chooser did what the reactive rule
-would have done with the same scene.
+- The wary creature goes to fewer places, is sick less often and is uncomfortable less often. The
+  hopeful creature sees nearly everything. All three differences are beyond two standard errors
+  of the paired difference over seeds.
+- Where two creatures have both been, careful arithmetic gives them the same picture. The
+  temperament's loudness does not bend the reasoner's conclusions about a tile, apart from the
+  dull creature, whose noisy and blurred body leaves it wrong about ten tiles a day.
+- Over the whole layout the wary creature's map is the worst of the three clear-bodied ones,
+  because what it never tries keeps its presumption. Two wary runs differ from each other as much
+  as a wary run differs from a hopeful one, since each leaves different places unseen.
 
-| body | chooser | uncomfortable heat / water / energy | collapsed steps | expectation held heat / water / energy | mean size of miss | reactive rule predicts |
-|---|---|---|---|---|---|---|
-| Ilo | model | 26 / 4 / 26 | 0 | 0.55 / 0.45 / 0.48 | 0.73 | 28% |
-| Ilo | reactive | 19 / 8 / 15 | 0 | 0.88 / 0.83 / 0.88 | 0.15 | 100% |
-| Ilo | lookahead | 18 / 16 / 10 | 0 | 0.90 / 0.81 / 0.93 | 0.11 | 31% |
-| Ilo | blind | 38 / 26 / 38 | 6 | 0.90 / 0.74 / 0.71 | 0.20 | 19% |
-| Tavi | model | 4 / 0 / 0 | 0 | 0.57 / 0.81 / 0.55 | 0.27 | 36% |
-| Tavi | reactive | 0 / 1 / 1 | 0 | 0.81 / 0.88 / 0.98 | 0.09 | 100% |
-| Tavi | lookahead | 2 / 0 / 0 | 0 | 0.81 / 0.90 / 0.98 | 0.06 | 21% |
-| Tavi | blind | 20 / 0 / 27 | 0 | 0.71 / 0.90 / 0.95 | 0.07 | 26% |
+**The expectation stated before any run** was the hot stove effect (Denrell and March 2001):
+avoiding what seemed bad stops a creature from finding out it was wrong, so the wary creature
+should end the day with more false harm, fewer tiles tried and fewer sicknesses than the hopeful
+one. Two of the three held. The first went the other way: 0.35 tried tiles wrongly believed
+harmful for the wary creature against 1.70 for the hopeful one. The measure counts tried tiles
+only, and a tile that is avoided is never tried, so the wary creature's untested suspicion shows
+up as whole-layout error and not as false harm. The measure was the wrong one for the effect.
 
-Model minus reactive rule, same seed: Ilo spent 14 more channel-steps outside its comfortable
-range (7 more for heat, 4 fewer for water, 11 more for energy). Tavi spent 2 more.
+**The blind control** walks the same path whatever the temperament, so tiles tried, sickness and
+discomfort are identical across its columns. False harm still differs on that same path (0.45
+plain, 0.75 wary, 1.15 hopeful, 6.30 dull). So part of the hopeful creature's extra false harm
+above comes from how its senses are set in the code, and not from where it chose to go. I did not
+trace the mechanism.
 
-What that says, and what it does not:
+### 3. Gate 2: can the model keep a map? The second mark was not met
 
-- **The model kept the hot body worse than a ten-line rule did,** and far better than a chooser
-  that reads nothing. It is one afternoon and one seed; the size of the gap is not established.
-- **The model is not the reactive rule.** The rule predicts 28% of Ilo's choices and 36% of
-  Tavi's, not far from what it predicts of the blind chooser (19% and 26%). In the frozen scene of
-  result 1 a rule predicted three quarters. A living afternoon with memory in the prompt is a
-  different situation, and here the model's choices are its own. They are also not better.
-- **Its expectations failed more often than the rules' forecasts,** and that is the point of the
-  loop: the misses are real. Most of the large ones were about drinking. The world delivers water
-  two steps late, and the model expected to be "much less thirsty" at once. Afterwards it said so,
-  and lowered what it expected: "Thirst is still the loudest thing even after two drinks, so I
-  drink again and this time expect less relief than I hoped for" (Ilo, 13:50), and "Drinking has
-  helped less than I expected twice, but a third drink at the cool stream should still ease my
-  thirst somewhat" (Tavi, 14:00). Ilo's first step was a miss too: it walked to the oak expecting
-  the log to be in the shade, and at 13:00 it is in the sun.
-- **It committed expectations about the world,** which the rules never do: Ilo 5 (3 held), Tavi 7
-  (6 held).
-- **The two bodies read their moments differently.** Ilo's 39 readings were about heat 14 times,
-  tiredness 11, thirst 6 and nothing 8; Tavi's 42 were about nothing 26 times, heat 12 and thirst
-  4. Ilo at 13:00: "The sun is crushing me — heavy legs, thick head, everything narrowed to
-  getting into that shade." Tavi at 13:00: "The sun on my shoulders feels good, but I'm a little
-  cool", and it stayed in the sun. In the evening Tavi left the oak because "the shade is chilling
-  me". These texts are downstream of the lens's authored phrases, so that they differ is true by
-  construction; what the model adds is the reading and the choice.
-- **The body overruled the plan three times, each time for tiredness.** Tiredness was Ilo's
-  loudest need each time, and each time the model had expected to be "a bit less tired" after
-  something that does not rest it: the walk to the oak at 13:00, then two drinks at the stream.
-  The override made it rest. Whether that helped cannot be told from one run. The rule still
-  cannot tell "the world answered worse" from "my hope was off"; it now at least never pulls a
-  body away from what serves its loudest need.
-- **No planning ahead was seen.** At 13:20, after one rest in the shade, Ilo chose to cross the
-  open ground to the stream at the hottest time of day. Nothing in the afternoon looks like drinking
-  before being thirsty.
+The design set two marks for one plain creature on the model over 60 steps: the run completes, and
+over the tiles it tried the model's own map ends closer to the world than the starting map was and
+has closed at least half of the distance the careful reasoner closed. There were seven attempts,
+each one run on seed 1. All of them are here, with what was changed before each.
 
-**An earlier run, and why the override rule changed.** The first model afternoon was run under
-the first override rule and before the lens said mild heat sentences. Ilo's numbers then were 27
-/ 9 / 31 uncomfortable and 3 collapsed steps; the rule predicted 40% of its choices and 24% of
-Tavi's. In that run the override went to the first need in a fixed order that met its conditions.
-At 13:00 Ilo walked into the shade, its thirst came out worse than expected, and the override
-sent it across the open ground to the stream, although its heat and its tiredness were both
-louder. The override now considers only the loudest need. The two model afternoons are one run
-each of a model that samples its answers, so the difference between them is not evidence about
-the rule; the evidence for the change is the rule-driven days of result 3.
+| # | What was different from the attempt before | Start | Own | Reasoner | Share closed |
+|---|---|---|---|---|---|
+| 1 | the provider's default request settings | stopped at step 11: an answer ran out of tokens before any output | | | |
+| 2 | reasoning effort low, 8,000 output tokens, temperature 0.5 | 0.199 | 0.111 | 0.008 | 46% |
+| 3 | reasoning effort medium, 16,000 output tokens | 0.204 | 0.141 | 0.012 | 33% |
+| 4 | effort low again; Appraise shown the felt record from before the step and a list of what changed | 0.184 | 0.095 | 0.004 | 49% |
+| 5 | one sentence added: the four other feelings fade on their own | 0.192 | 0.106 | 0.026 | 52% |
+| 6 | Appraise given the coordinates of the spot stepped toward | 0.191 | 0.103 | 0.009 | 48% |
+| 7 | the final code, after the review fixes | 0.198 | 0.142 | 0.010 | 30% |
+
+The first mark holds: every run after the first completed, with every answer valid within the
+retry limit, and every stored run replays. The second mark does not: one attempt of six reached
+one half, and the final code scored lowest. The one pass, attempt 5, is inside the spread between
+runs and was helped by the reasoner doing worse than usual in that run.
+
+The design names three remedies to try, one at a time, when this mark fails (show the map as a
+drawn grid as well; let the model change only tiles it touched lately; shrink the layout) and says
+the build stops if all three fail. **I tried none of them and built the film anyway.** My reasons:
+the gate was written to catch a model that cannot keep a map at all, and the runs show one that
+can (coherent coordinates, at most a few changes a day to tiles it had not been near, error on
+tried tiles down by between a quarter and a half). A pass mark set on a single run at about the level the
+model actually reaches is close to a coin flip, which is a fault in how I wrote the gate. And the
+film was built after attempt 5, when the mark had passed once. Whether to try the remedies is the
+owner's decision.
+
+On the six full days of result 4 the same share came out between 47% and 76%, at or above one half
+in four of six. The mark was defined on the 60-step run, and that is what is reported as not met.
+
+One attempt costs about 124 requests, 410,000 input tokens and 27,000 output tokens, and takes
+about four and a half minutes.
+
+### 4. Six days on the model
+
+`experiments/two_maps_llm.yaml`: the plain, the wary and the hopeful creature, seeds 1 and 2, 120
+steps each. 1,493 requests, 5.5 million input tokens and 320,000 output tokens in all, about
+twenty minutes with six runs at once. All six replay.
+
+| | plain s1 | plain s2 | wary s1 | wary s2 | hopeful s1 | hopeful s2 | mean |
+|---|---|---|---|---|---|---|---|
+| tiles tried | 32 | 23 | 20 | 29 | 33 | 38 | 29.2 |
+| sickness arrivals | 9 | 3 | 4 | 2 | 4 | 7 | 4.8 |
+| steps outside comfort | 78 | 37 | 36 | 28 | 51 | 62 | 48.7 |
+| error of the starting map, tried tiles | 0.199 | 0.185 | 0.253 | 0.253 | 0.230 | 0.236 | 0.226 |
+| error of its own map at the end | 0.074 | 0.101 | 0.114 | 0.088 | 0.089 | 0.126 | 0.099 |
+| error of the reasoner's map at the end | 0.004 | 0.004 | 0.002 | 0.035 | 0.006 | 0.006 | 0.009 |
+| share closed of what the reasoner closed | 64% | 47% | 55% | 76% | 63% | 48% | 59% |
+| choices the rule would also have made | 0.69 | 0.57 | 0.62 | 0.70 | 0.57 | 0.60 | 0.63 |
+| the same for a random direction | 0.36 | 0.41 | 0.45 | 0.53 | 0.40 | 0.43 | 0.43 |
+| tried tiles wrongly believed harmful | 0 | 0 | 3 | 0 | 1 | 3 | 1.2 |
+| changes to tiles not touched lately | 0 | 3 | 3 | 3 | 1 | 0 | 1.7 |
+
+The same seeds on the stand-ins and on the blind chooser:
+
+| | plain s1 | plain s2 | wary s1 | wary s2 | hopeful s1 | hopeful s2 | mean |
+|---|---|---|---|---|---|---|---|
+| tiles tried, stand-in | 37 | 66 | 23 | 33 | 66 | 68 | 48.8 |
+| sickness arrivals, stand-in | 1 | 3 | 0 | 1 | 3 | 3 | 1.8 |
+| steps outside comfort, stand-in | 99 | 25 | 0 | 9 | 37 | 33 | 33.8 |
+| tiles tried, blind | 29 | 28 | 29 | 28 | 29 | 28 | 28.5 |
+| sickness arrivals, blind | 7 | 9 | 7 | 9 | 7 | 9 | 8.0 |
+| steps outside comfort, blind | 134 | 159 | 134 | 159 | 134 | 159 | 146.5 |
+
+What this says about the model, with the caution that it is six runs:
+
+- **It keeps a map.** Its error on the tiles it tried fell from 0.23 to 0.10. Of the 21 things to
+  eat or drink that it pushed into, it ended the day believing 19 to feed or quench. It wrote 0
+  to 3 changes a day to tiles it had not been near.
+- **It learns less from the same feelings than the arithmetic does.** The reasoner ended at 0.009
+  on the same tiles. Of the 110 ground tiles the model walked on, it ended the day believing 6 to
+  feed or quench, which ground never does. Of the 10 sickening things it pushed into, it marked 7
+  as harmful.
+- **It mostly acts as a simple rule would on its own map.** The rule chooser, reading the same
+  map and felt record, would have made 63% of the model's choices, against 43% for a random
+  direction. The blind chooser scores 40 to 47% on this measure, close to chance.
+- **It lives worse than the rule and better than blind.** It counted 49 uncomfortable steps a day
+  against the rule's 34 and the blind chooser's 147, and more than the rule on five of the six
+  days. It was sick 4.8 times a day against 1.8 and 8.0.
+- **It goes back to what it believes is harmful.** It pushed into toxic food or foul water 31
+  times in six days, against 11 for the rule on the same seeds. On 14 of those 31 pushes its own
+  map already said the thing hurts. Its need was "strong" on one of the 14, and on 8 its map held
+  another spot it believed would serve the need without hurting. Seven of the 14 are one run,
+  plain on seed 1. The rule never did this.
+- **Its expectations of its body are slightly worse than expecting no change.** Over the six
+  days, the word it expected for a body feeling was the word it felt on 82% of occasions, and the
+  word felt on the step before would have been right on 87%. For hunger the figures are 77% and
+  85%, for sickness 75% and 85%. Only for smell (75% against 69%) and damp (78% against 75%) did
+  it beat no change. So the surprise in these runs is partly the model's own unsteady forecast.
+
+### 5. Do model-driven creatures of different temperament end with different pictures?
+
+Distance between the final maps of two runs, as in result 2. "Between" is two temperaments on the
+same seed, six pairs. "Within" is the same temperament on the two seeds, three pairs.
+
+| | between temperaments | within a temperament |
+|---|---|---|
+| the model's own maps, tiles both tried | 0.103 (0.070 to 0.158) | 0.090 (0.075 to 0.105) |
+| the reasoner's maps of the same runs, tiles both tried | 0.011 | 0.006 |
+| the model's own maps, whole layout | 0.117 | 0.051 |
+| the reasoner's maps of the same runs, whole layout | 0.096 | 0.041 |
+
+- On the tiles two creatures both tried, a different temperament adds nothing that can be seen
+  above the difference between two days of the same creature. With three within pairs, a real
+  difference of this size could not have been detected either.
+- The model's maps of the same tiles lie about ten times further apart than the reasoner's (0.10
+  against 0.01), within a temperament as much as between. That is the clearest thing the model
+  adds, and it is variability.
+- Over the whole layout the maps differ about twice as much between temperaments as within. Most
+  of that is the starting map showing through: these creatures tried 20 to 38 of the 63 tiles,
+  an untried tile keeps the presumption, and the presumption is what differs between temperaments
+  by construction. The reasoner's maps of the same runs show the same pattern, so it is not the
+  model's doing.
+- The hopeful creature tried more tiles than the wary one on both seeds (33 and 38 against 20 and
+  29), as on the stand-ins. Two seeds do not carry a claim.
+
+## What the model is told, and what was changed along the way
+
+The fixed text is in [`src/surprise_loop/phrases.py`](src/surprise_loop/phrases.py), and the JSON
+the model is sent is built in [`src/surprise_loop/agents.py`](src/surprise_loop/agents.py). The
+model reads that it is a creature in a place it cannot see, what a step can do, what its feelings
+and its two senses are, that its aim is to stay comfortable, and what the five beliefs mean. Then
+it reads its felt record, where it is, its map, and its last six steps with what it expected,
+felt and made of each. It is never shown a body number, a temperament's loudness or clarity, the
+kind of a tile, or anything of the careful reasoner. Nothing says game, simulation or experiment.
+The temperament's presumption reaches it only as the beliefs its map starts with.
+
+Three things were added to what the model is shown after early runs went badly. Each makes the
+model's task easier, so each is a reason to read the results above as an upper estimate of what
+this model does unaided:
+
+1. **Before attempt 4.** Appraise had been sent the felt record after the step twice and the one
+   before it not at all, which was a defect in the prompt. It now gets the record from before the
+   step and a list of the words that changed, and is told that what changes right after a step
+   is about the spot stepped toward, while sickness comes from something eaten or drunk a few
+   steps ago.
+2. **Before attempt 5.** One sentence: ache, sickness, unease and pleasure fade on their own. It
+   had been told that hunger and thirst grow, and it was keeping "pleases" on every tile it
+   walked while the pleasure of one pleasant tile wore off.
+3. **Before attempt 6.** The coordinates of the spot stepped toward. It had been left to work them
+   out from its position and direction, and it often credited the tile it stood on with what the
+   thing it pushed into had done. In the final six days, on the 69 pushes that eased a need, it
+   wrote the belief onto the thing itself 58 times and onto the tile it stood on never. The habit
+   survives in a slower form: the 6 ground tiles it ended up believing to feed or quench were
+   written on later steps, for instance by taking a spot it had stood on for the food it had
+   pushed into from there, or by reading a thirst that rose as one that eased.
+
+Request settings were also changed once, before attempt 2, so that a run could complete at all.
 
 ## What was not shown
 
-- **No stable individual differences.** One seed, one afternoon, one model. There is no claim
-  that the two bodies differ beyond what their starting states and the update code give them.
-- **The contrast is partly staged.** The split screen is striking for an overheated body next to
-  a comfortable one. In the cool morning of a rule-driven day the two panels look much alike.
-  Whether a watcher can tell the bodies apart with the captions hidden, for an ordinary pair, has
-  not been checked by anyone but the builder.
-- **The differences in the text are authored.** The phrase table is written by hand, so two
-  bodies giving two texts is true by construction.
-- **The mild heat sentences are checked on one frozen scene only** (result 2), and only heat has
-  them. Whether a mild thirst or tiredness needs the same has not been tested.
-- **The override still fires on a dashed hope.** A model that expects rest from a drink is
-  overruled when its tiredness is the loudest need; the rule cannot tell that from the world
-  answering worse.
-- **It is still reactive.** Every expectation looks one step ahead, for the chosen action only.
-  The honest label is homeostasis with an inner narrator.
-- **The rules' forecast is biased.** For the heat a place will give, the rules add up the
-  authored bearings of the facts about it (the oak's shade, the breeze, the stream's water),
-  which the world's heat rule does not have, and the same place gets a different pull depending
-  on where it is seen from. A slow forecast and a wide band keep it from showing as error. The
-  rules never commit an expectation about the world.
-- **Evaluate mixes two sources.** It compares the need as believed before the action with the
-  need as sensed afterwards. A body that starts out believing it is better off than it is can
-  have an early action judged as not helping when it did.
-- **The body signal is nearly exact.** Surprise comes from the world's delays and changing facts
-  (water that arrives late, a log that moves into the sun), not from noisy senses.
-- **Small leaks of realism in what a model reads.** Every scene opens "You are standing",
-  whatever the body did last. After an invalid answer the retry message contains the library's
-  error text. A model's own words are shown back to it unfiltered.
-- **Against the theory.** "Attention" here is relevance to need with a gain, not learned
-  reliability. What each fact does to a body is written by the designer, not learned. Evaluate
-  has no counterpart in the theory. Temperament does not change (that channel is switched off in
-  this milestone).
+- **No difference between temperaments on the model.** Six days, two seeds, one model, one layout.
+  The answer to the first half of the question, for the model, is "not seen, and this was too
+  small to see it".
+- **Gate 2's second mark was not met**, and the design's remedies were not tried (result 3).
+- **One gate 1 check was replaced** by one that passes largely by construction (result 1).
+- **The model was helped three times after it had been seen to fail** (the section above). No
+  attempt was hidden, but the prompt was shaped on seed 1 of the plain creature, and four of the
+  six final days use other creatures or another seed only in part.
+- **The reasoner knows the rules of the world exactly, and the model is told them roughly.** Part
+  of the gap between the two maps is knowledge, not reasoning.
+- **The reasoner is not the truth.** Its blame for sickness is an approximation. In one final run
+  (wary, seed 2) it ended with three tiles wrongly marked harmful.
+- **Temperament is in the senses and the starting map.** The model is the same mind for every
+  creature. "Hopeful" here means good feelings arriving louder and a kinder starting map, not a
+  mind that reasons hopefully.
+- **The hot stove effect was not measured properly.** False harm counts tried tiles only
+  (result 2).
+- **The world does not change**, so given time the maps converge. How far they differ depends on
+  how long the day is, and only one length was run.
+- **Rule agreement leaves 37% of the model's choices unexplained.** They have not been read.
+- **The five beliefs can say what no tile can be**, such as feeding and quenching at once, and
+  five words per feeling are coarse: a small change in the body can go unfelt.
+- **The dull creature was not run on the model.** Mixed runs, with the model on one phase and a
+  stand-in on the other, are possible in the config and were not used.
+- **The film has been looked at by the builder only.** Whether the difference between two maps
+  reads at a glance is the owner's call.
+- **A film should only be made of runs that `replay` accepts.** For a run stored by an older
+  version of the code, `film` draws the starting map with the current rules and does not notice;
+  `replay` refuses such a run in one line.
 
-## The design's done-when list
+## What came before
 
-- *With captions hidden, the owner can tell which body is too hot and when one was surprised, for
-  the ordinary pair and not only the extreme pair.* Not established. It is the owner's call, and
-  the builder's own look says the ordinary pair is hard to tell apart in the morning.
-- *At noon the two captions give the same facts opposite value.* Yes: the two texts above. Over
-  the afternoon a fact noticed by both bodies had opposite value on 8 steps of 42 under the
-  reactive rule and on 8 under the model (`pairs.csv` in the experiment's table directory).
-- *The reactive and lookahead rules have been compared on time outside the comfortable range.*
-  Yes: result 3. Looking ahead pays.
-- *The README states the ladder-check result and the share of the model's choices that the
-  reactive rule predicts, whatever they are.* Results 2 and 4.
+- **The lever world** (commit `2ec53fd`). An agent pressed levers for reward under changing
+  schedules. Its result with a real model was "not yet": trait numbers in the prompt barely
+  reached behaviour. `git show 2ec53fd:README.md` has the write-up.
+- **The clearing** (commit `24aff96`). Two bodies in a forest clearing, told their state in
+  sentences. It showed that a body told to a model in words moves its choice where numbers do
+  not. The owner judged it too small: three inputs, and a surprise that built nothing lasting
+  about the world. `git show 24aff96:README.md` has the write-up.
 
-## The first version (v0)
-
-v0 was a lever-pressing world: an agent pressed levers for reward under changing schedules, and
-the question was whether agents with different trait numbers showed stable differences in
-behaviour. All of it is at commit `2ec53fd`:
-
-    git show 2ec53fd:README.md      # the full v0 write-up, with commands and results
-    git checkout 2ec53fd            # the v0 code and its 741 tests
-
-Its result with a real model was "not yet": trait numbers in the prompt barely reached behaviour,
-and the measures that stayed stable were made by the update code, not by the model's choices.
-Result 1 above suggests why.
+This build replaced the clearing's code in place.

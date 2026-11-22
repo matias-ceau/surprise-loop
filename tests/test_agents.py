@@ -1078,9 +1078,9 @@ def test_the_pilot_is_the_plain_creature_on_a_model() -> None:
     assert pilot.params == base.params.model_copy(update={"llm": PILOT_LLM})
 
 
-def test_two_maps_on_a_model_is_three_creatures_on_one_seed() -> None:
+def test_two_maps_on_a_model_is_three_creatures_on_two_seeds() -> None:
     llm, base = load_config(EXPERIMENTS / "two_maps_llm.yaml"), load_two_maps()
-    assert llm.seeds == [1]
+    assert llm.seeds == [1, 2]
     assert llm.ticks is None
     assert llm.params == base.params.model_copy(update={"llm": PILOT_LLM})
     assert llm.backends == BOTH_LLM

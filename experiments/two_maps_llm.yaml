@@ -1,7 +1,8 @@
-# Three creatures of two_maps.yaml on one seed, with Deliberate and Appraise on a model. They
-# differ only in temperament. The model comes from SURPRISE_LOOP_MODEL.
+# Three creatures of two_maps.yaml on two seeds, with Deliberate and Appraise on a model. They
+# differ only in temperament. Two seeds, so that two creatures of different temperament can be
+# set against two days of the same creature. The model comes from SURPRISE_LOOP_MODEL.
 name: two_maps_llm
-seeds: [1]
+seeds: [1, 2]
 model: null
 backends:
   deliberate: llm

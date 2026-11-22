@@ -399,6 +399,8 @@ If mark 2 fails, one remedy at a time is tried, in this order, each once:
 
 If all three fail, the build stops and the owner is told. The film is not built before this gate.
 
+Build note, 2026-11-22: mark 1 holds and mark 2 was not met. Seven attempts were made, one run each. The first stopped at step 11 on the provider's default request settings. The six that completed closed 46%, 33%, 49%, 52%, 48% and 30% of what the careful reasoner closed, the last on the final code. Between attempts three things were added to what the model is shown: the felt record from before the step with a list of what changed, a sentence saying that four feelings fade, and the coordinates of the spot stepped toward. None of the three remedies above was tried, and the film was built after the one attempt that passed. This departs from the paragraph above, and it was the builder's decision, not the owner's. The reasons and every attempt are in the README, result 3. Whether to try the remedies is left to the owner.
+
 ## 17. What changes in the code, and in the brief
 
 Kept: tick files, resume, and the replay check; the config loader and the seeded generator; the model plumbing in `agents.py`; the command-line skeleton; the table writers; the film's play controls.
@@ -440,7 +442,7 @@ A creature's day is 120 steps with two model calls each, so 240 calls. Gate 2 is
 3. The map, the careful reasoner, the stand-ins, the loop, tick files, resume and replay, measures. Gate 1.
 4. Deliberate and Appraise on the model. Gate 2.
 5. The film and its key, built on stored runs.
-6. The results. Without the model: stand-in runs and blind runs for all four temperaments over 20 seeds. With the model: one day on one seed for the plain, the wary and the hopeful creature. The film of the wary and the hopeful creature's model runs. The README: what was shown, and what was not.
+6. The results. Without the model: stand-in runs and blind runs for all four temperaments over 20 seeds. With the model: one day on one seed for the plain, the wary and the hopeful creature. The film of the wary and the hopeful creature's model runs. The README: what was shown, and what was not. (Build note, 2026-11-22: the model days were run on two seeds, not one. With one seed there is no pair of days of the same creature, and section 15 asks for the distance between two temperaments to be set against exactly that. The tables, the two films and the stored model runs are in `docs/results/2026-11-22/`.)
 
 Each step ends with tests passing and a commit.
 
