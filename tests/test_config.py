@@ -357,6 +357,11 @@ def test_unit_params_reject_out_of_range_nan_and_inf(
         (MonitorParams, "scale", math.inf),
         (MonitorParams, "moved_weight", math.nan),
         (MonitorParams, "worse_edge", -0.1),
+        # strictly between 0 and 1: at either end the reasoner's shares can all become 0
+        (ReasonerParams, "slip", 0.0),
+        (ReasonerParams, "slip", 1.0),
+        (ReasonerParams, "ache_when_slight", 0.0),
+        (ReasonerParams, "ache_when_slight", 1.0),
         (RuleParams, "need_at", 5),
         (RuleParams, "reach", 0),
         (MemoryParams, "recent_k", -1),

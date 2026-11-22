@@ -136,11 +136,29 @@ def test_marginals_of_certain_toxic() -> None:
 
 def test_an_untouched_tile_is_what_is_presumed() -> None:
     s = initial_reasoner(EQUAL)
-    assert s.tiles == {}
+    assert set(s.tiles) == {key((0, 0))}
     assert s.touched == ()
     assert s.onsets == ()
     assert shares_at(s, (3, -2)) == EQUAL
     assert reasoner_beliefs(s, (3, -2)) == marginals(EQUAL)
+
+
+def test_the_start_is_known_to_be_walkable() -> None:
+    presumes = dict.fromkeys(Kind, 0.1) | {Kind.GROUND: 0.3}
+    start = shares_at(initial_reasoner(presumes), (0, 0))
+    for kind in Kind:
+        if kind not in WALKABLE:
+            assert start[kind] == 0
+    assert start[Kind.GROUND] == pytest.approx(0.6)
+    assert start[Kind.PLEASANT] == pytest.approx(0.2)
+    assert start[Kind.UNPLEASANT] == pytest.approx(0.2)
+    assert reasoner_beliefs(initial_reasoner(presumes), (0, 0))[Belief.BLOCKS] == 0
+
+
+def test_a_start_presumed_with_no_walkable_share_gets_one_third_each() -> None:
+    presumes = shares(obstacle=0.5, water=0.5)
+    start = shares_at(initial_reasoner(presumes), (0, 0))
+    assert start == shares(ground=1 / 3, pleasant=1 / 3, unpleasant=1 / 3)
 
 
 def test_a_quiet_step_writes_only_its_target() -> None:

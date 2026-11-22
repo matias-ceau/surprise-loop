@@ -2,13 +2,13 @@
 blind chooser, and the measures of a creature's map against the truth.
 
 The choosers read only what the creature has: its felt record, its own map and its tries.
-`measures` is the one place on the creature's side that reads the truth, and nothing it returns
-is ever read by a chooser.
+`measures` and the "wrong side" rule it shares with the film are the one place on the creature's
+side that reads the truth, and nothing they return is ever read by a chooser.
 """
 
 import math
 import random
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 
 from surprise_loop.config import MetricsParams, RuleParams
 from surprise_loop.feeling import TOP_STEP
@@ -116,8 +116,9 @@ def rule_choice(
     def untried_safe(t: Position) -> bool:
         return untried(t) and safe(t)
 
-    def tried_safe(t: Position) -> bool:
-        return t != here and tried(t) and safe(t)
+    def tried_passable(t: Position) -> bool:
+        # with nothing to do it goes to stand on ground it knows; it does not push at things
+        return t != here and tried(t) and passable(t)
 
     need = _need(felt, p)
     u = own_map.untried
@@ -136,9 +137,9 @@ def rule_choice(
         else:
             goal_sets = (serving_safe, untried_safe, serving, untried)
     elif u[Belief.FEEDS] + u[Belief.QUENCHES] + u[Belief.PLEASES] > u[Belief.HURTS]:
-        goal_sets = (untried_safe, tried_safe)
+        goal_sets = (untried_safe, tried_passable)
     else:
-        goal_sets = (tried_safe, untried_safe)
+        goal_sets = (tried_passable, untried_safe)
 
     best: tuple[Direction, ...] = ()
     for goal in goal_sets:
@@ -216,10 +217,31 @@ def _error(a: MapBeliefs, b: MapBeliefs, tiles: Sequence[Position]) -> float:
     return math.fsum(diffs) / len(diffs) if diffs else 0.0
 
 
+def tried_tiles(tries: dict[str, int]) -> list[Position]:
+    """The positions tried at least once, sorted."""
+    return sorted(position_of(k) for k, n in tries.items() if n >= 1)
+
+
+def wrong_tiles(
+    believed: Callable[[Position], dict[Belief, float]],
+    tried: Iterable[Position],
+    world: WorldConfig,
+    edge: float,
+) -> tuple[str, ...]:
+    """The keys, sorted, of the tiles of `tried` where any belief of `believed` is on the other
+    side of `edge` from the truth: the one "wrong side" rule, for the measures and the film."""
+
+    def wrong(t: Position) -> bool:
+        b, truth = believed(t), truth_at(world, t)
+        return any((b[x] >= edge) != (truth[x] >= edge) for x in Belief)
+
+    return tuple(sorted(key(t) for t in tried if wrong(t)))
+
+
 def measures(agent: AgentState, world: WorldConfig, p: MetricsParams) -> Measures:
-    """How far the creature's own map and the reasoner's are from the truth, and from each other.
-    Each tile's beliefs and truth are read once."""
-    tried = sorted(position_of(k) for k, n in agent.tries.items() if n >= 1)
+    """How far the creature's own map and the reasoner's are from the truth, and from each
+    other."""
+    tried = tried_tiles(agent.tries)
     everywhere = layout_positions(world)
     tiles = set(tried).union(everywhere)
     own = {t: agent.own_map.at(t) for t in tiles}
@@ -237,9 +259,6 @@ def measures(agent: AgentState, world: WorldConfig, p: MetricsParams) -> Measure
             believed[t][Belief.HURTS] < p.wrong_side and truth[t][Belief.HURTS] == 1 for t in tried
         )
 
-    def wrong_side(t: Position) -> bool:
-        return any((own[t][x] >= p.wrong_side) != (truth[t][x] >= p.wrong_side) for x in Belief)
-
     return Measures(
         tiles_tried=len(tried),
         start_error=_error(start, truth, tried),
@@ -253,5 +272,5 @@ def measures(agent: AgentState, world: WorldConfig, p: MetricsParams) -> Measure
         false_safe=false_safe(own),
         reasoner_false_harm=false_harm(reasoner),
         reasoner_false_safe=false_safe(reasoner),
-        wrong=tuple(sorted(key(t) for t in tried if wrong_side(t))),
+        wrong=wrong_tiles(own.__getitem__, tried, world, p.wrong_side),
     )

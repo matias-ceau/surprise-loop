@@ -6,10 +6,11 @@ of the surprise, so it rises when expectations fail and settles when they hold.
 
 from surprise_loop.config import FeelingParams
 from surprise_loop.lens import ladder_step
+from surprise_loop.phrases import FEEL_WORDS
 from surprise_loop.world import Channel
 
 # the top step of the five-word ladder, which a tone sum is scaled by
-TOP_STEP = 4
+TOP_STEP = len(FEEL_WORDS) - 1
 
 
 def valence(c: Channel) -> int:

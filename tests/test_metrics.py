@@ -270,6 +270,15 @@ def test_gate2_fails_when_the_run_stopped_short(short: RunResult) -> None:
     assert not g.completed and not g.passed
 
 
+def test_gate2_counts_a_day_shorter_than_its_tick_cap_as_completed() -> None:
+    base = run_config("plain")
+    world = base.world.model_copy(update={"steps": 5})
+    result = stand_in(9, world=world)
+    assert len(result.records) == 5
+    g = gate2(with_errors(result, start=0.3, own=0.1, reasoner=0.05))
+    assert g.completed and g.passed
+
+
 # --- tables -------------------------------------------------------------------------------------
 
 AGENTS, SEEDS = ("plain", "wary"), (1, 2)

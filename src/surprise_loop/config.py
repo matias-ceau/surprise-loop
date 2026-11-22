@@ -32,6 +32,7 @@ from surprise_loop.world import (
     Unit,
     World,
     WorldConfig,
+    key,
 )
 from surprise_loop.world import derive_rng as derive_rng  # re-exported for the phases
 
@@ -109,10 +110,11 @@ class MonitorParams(Frozen):
 
 
 class ReasonerParams(Frozen):
-    # the chance that an event is seen when its cause is absent, or missed when present
-    slip: Unit = 0.05
+    # the chance that an event is seen when its cause is absent, or missed when present; strictly
+    # between 0 and 1, as is the next, or a tile's shares can all become 0
+    slip: float = Field(default=0.05, gt=0, lt=1)
     # the chance of an ache from eating when only slightly hungry
-    ache_when_slight: Unit = 0.5
+    ache_when_slight: float = Field(default=0.5, gt=0, lt=1)
 
 
 class RuleParams(Frozen):
@@ -305,11 +307,12 @@ def resolve_model(config: RunConfig) -> str | None:
 
 def initial_agent_state(config: RunConfig, signal: Signal) -> AgentState:
     """The creature before its first tick: what it feels on the starting tile, a map that holds
-    only its presumption, the reasoner's starting shares, no tries and no memory."""
+    its presumption and the starting tile, the reasoner's starting shares, no tries and no
+    memory."""
     # these modules import this one, so they are imported here
     from surprise_loop.feeling import tone_step
     from surprise_loop.lens import sense
-    from surprise_loop.reasoner import initial_reasoner, marginals
+    from surprise_loop.reasoner import initial_reasoner, marginals, reasoner_beliefs
 
     temperament = config.agent.temperament
     levels, smell, damp = sense(
@@ -324,12 +327,17 @@ def initial_agent_state(config: RunConfig, signal: Signal) -> AgentState:
         stir=0,
         at=(0, 0),
     )
+    reasoner = initial_reasoner(temperament.presumes)
     return AgentState(
         temperament=temperament,
         felt=felt,
         stir=0.0,
-        own_map=CreatureMap(untried=marginals(temperament.presumes), tiles={}),
-        reasoner=initial_reasoner(temperament.presumes),
+        # both maps start as the same picture, the starting tile known to be walkable
+        own_map=CreatureMap(
+            untried=marginals(temperament.presumes),
+            tiles={key((0, 0)): reasoner_beliefs(reasoner, (0, 0))},
+        ),
+        reasoner=reasoner,
         tries={},
         memory=Memory(episodes=[]),
         tick=0,

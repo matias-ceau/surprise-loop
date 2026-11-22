@@ -155,3 +155,17 @@ def test_a_missing_run_directory_is_an_error(
 ) -> None:
     assert main([command, str(tmp_path / "nowhere")]) == 2
     assert "no such run directory" in assert_one_line_error(capsys)
+
+
+def test_ctrl_c_during_a_run_is_one_line_and_exit_130(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    async def interrupted(*args: object, **kwargs: object) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("surprise_loop.cli.run", interrupted)
+    assert main(["run", str(TWO_MAPS), "--runs-dir", str(tmp_path)]) == 130
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err == "interrupted; rerun with --resume to continue\n"
+    assert "Traceback" not in err

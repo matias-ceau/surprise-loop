@@ -11,6 +11,7 @@ from creatures import LAYOUT, run_config
 
 from surprise_loop.cli import main
 from surprise_loop.loop import RunError, load_dumps, run
+from surprise_loop.phases.heuristics import tried_tiles, wrong_tiles
 from surprise_loop.phrases import (
     FEEL_WORDS,
     NEAR_WORDS,
@@ -77,9 +78,13 @@ def test_two_runs_of_every_tick_over_the_frame_of_the_world(data: dict[str, Any]
     assert [r["name"] for r in data["runs"]] == [f"two_maps-{a}-s1" for a in AGENTS]
     assert [r["agent"] for r in data["runs"]] == list(AGENTS)
     assert [len(r["ticks"]) for r in data["runs"]] == [TICKS, TICKS]
-    assert [[t["tick"] for t in r["ticks"]] for r in data["runs"]] == [
-        list(range(1, TICKS + 1))
-    ] * 2
+    for r in data["runs"]:
+        for t in r["ticks"]:
+            # exactly what the page reads
+            assert set(t) == {
+                "at", "direction", "target", "felt", "tone", "stir", "expected",
+                "surprise", "it_went", "reading", "changes", "reasoner", "wrong",
+            }  # fmt: skip
 
     width, height = len(LAYOUT[0]), len(LAYOUT)
     tiles = data["world"]["tiles"]
@@ -109,8 +114,10 @@ def test_replaying_the_changes_gives_both_maps_and_the_tries_at_every_tick(
     runs: tuple[Path, Path], data: dict[str, Any]
 ) -> None:
     for run_dir, shown in zip(runs, data["runs"], strict=True):
-        own: dict[str, dict[str, float]] = {}
-        reasoner: dict[str, dict[str, float]] = {}
+        own = dict(shown["start_tiles"]["own"])
+        reasoner = dict(shown["start_tiles"]["reasoner"])
+        assert own == reasoner == {"0,0": pytest.approx(reasoner["0,0"])}
+        assert own["0,0"]["blocks"] == 0
         tries: dict[str, int] = {}
         dumps = load_dumps(run_dir)
         assert any(t["changes"] for t in shown["ticks"])
@@ -147,11 +154,32 @@ def test_each_tick_is_its_record(runs: tuple[Path, Path], data: dict[str, Any]) 
             assert t["target"] == list(r.outcome.info.target)
             assert t["felt"]["moved"] == r.felt.moved
             assert t["expected"]["moved"] == r.decision.expectation.moved
-            assert t["misses"]["moved"] == r.comparison.moved_miss
-            assert t["misses"]["hunger"] == r.comparison.misses[Channel.HUNGER]
             assert t["reading"] == r.appraisal.reading
-            assert t["wrong"] == list(r.measures.wrong)
             assert [c["at"] for c in t["reasoner"]] == [list(at) for at in r.reasoner_changed]
+
+
+def test_the_outline_is_the_wrong_side_rule_of_the_measures(
+    runs: tuple[Path, Path], data: dict[str, Any]
+) -> None:
+    world = run_config("wary").world
+    edge = run_config("wary").params.metrics.wrong_side
+    seen = set()
+    for run_dir, shown in zip(runs, data["runs"], strict=True):
+        for dump, t in zip(load_dumps(run_dir), shown["ticks"], strict=True):
+            agent = dump.agent
+            assert t["wrong"]["own"] == list(dump.record.measures.wrong)
+            reasoner = wrong_tiles(
+                lambda at, a=agent: reasoner_beliefs(a.reasoner, at),
+                tried_tiles(agent.tries),
+                world,
+                edge,
+            )
+            assert t["wrong"]["reasoner"] == list(reasoner)
+            seen.update(f"own {k}" for k in t["wrong"]["own"])
+            seen.update(f"reasoner {k}" for k in t["wrong"]["reasoner"])
+    # both maps are outlined somewhere, so the check checks something
+    assert any(s.startswith("own") for s in seen)
+    assert any(s.startswith("reasoner") for s in seen)
 
 
 def test_feelings_are_words(data: dict[str, Any]) -> None:
@@ -223,6 +251,22 @@ def test_runs_on_different_layouts_are_refused(runs: tuple[Path, Path], tmp_path
     other = world.model_copy(update={"layout": (*LAYOUT[:-1], "....F#..P")})
     with pytest.raises(RunError, match="layout"):
         film_data(runs[0], stored_run(tmp_path, "plain", world=other))
+
+
+def test_runs_in_worlds_that_differ_beyond_the_layout_are_refused(
+    runs: tuple[Path, Path], tmp_path: Path
+) -> None:
+    world = run_config("plain").world
+    other = world.model_copy(update={"body": world.body.model_copy(update={"smell_chance": 0.5})})
+    with pytest.raises(RunError, match="worlds differ"):
+        film_data(runs[0], stored_run(tmp_path, "plain", world=other))
+
+
+def test_a_run_that_is_not_complete_is_refused(runs: tuple[Path, Path], tmp_path: Path) -> None:
+    config = run_config("plain", ticks=TICKS)
+    asyncio.run(run(config, tmp_path / config.run_id, stop_after_tick=TICKS - 5))
+    with pytest.raises(RunError, match="not complete"):
+        film_data(runs[0], tmp_path / config.run_id)
 
 
 def test_runs_with_different_metrics_params_are_refused(

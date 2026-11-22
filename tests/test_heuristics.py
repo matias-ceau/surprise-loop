@@ -74,8 +74,10 @@ def test_initial_agent_state_for_the_plain_creature() -> None:
     assert agent.stir == 0.0
     assert agent.own_map.untried == marginals(config.agent.temperament.presumes)
     assert math.isclose(agent.own_map.untried[Belief.BLOCKS], 0.29)
-    assert agent.own_map.tiles == {}
     assert agent.reasoner == initial_reasoner(config.agent.temperament.presumes)
+    assert agent.own_map.tiles == {"0,0": reasoner_beliefs(agent.reasoner, (0, 0))}
+    assert agent.own_map.at((0, 0))[Belief.BLOCKS] == 0
+    assert reasoner_beliefs(agent.reasoner, (0, 0))[Belief.BLOCKS] == 0
     assert agent.tries == {}
     assert agent.memory.episodes == []
     assert agent.tick == 0
@@ -179,6 +181,27 @@ def test_with_no_need_and_only_harm_untried_it_goes_back_to_what_it_knows(
 ) -> None:
     m = CreatureMap(untried=untried_beliefs, tiles={"-1,0": beliefs()})
     assert choose(felt(), m, {"-1,0": 1}).best == (Direction.WEST,)
+
+
+@pytest.mark.parametrize(
+    "untried_beliefs",
+    [
+        beliefs(hurts=0.6, feeds=0.3, quenches=0.3, pleases=0.3),  # curious
+        beliefs(hurts=0.9),  # not curious
+    ],
+)
+def test_with_no_need_it_stands_on_known_ground_and_does_not_push_at_things(
+    untried_beliefs: dict[Belief, float],
+) -> None:
+    food = beliefs(blocks=1.0, feeds=0.9)
+    m = CreatureMap(untried=untried_beliefs, tiles={"1,0": food, "0,1": beliefs()})
+    # the tried, safe food east is no goal; the tried, safe ground north is
+    assert choose(felt(), m, {"1,0": 3, "0,1": 1}).best == (Direction.NORTH,)
+
+
+def test_with_no_need_and_only_a_tried_obstacle_known_it_explores() -> None:
+    m = a_map("wary", t1_0=beliefs(blocks=1.0))
+    assert choose(felt(), m, {"1,0": 2}).best == (Direction.NORTH, Direction.SOUTH, Direction.WEST)
 
 
 # rule_expectation

@@ -151,8 +151,10 @@ def test_spots_hold_tried_and_changed_tiles_north_first_then_east_with_rounded_b
 
     spots = creature_view(agent, [], Params())["your_map"]["spots"]
 
-    assert [s["at"] for s in spots] == [[2, 3], [0, 1], [-1, 0], [1, 0]]
-    assert [s["tries"] for s in spots] == [0, 1, 1, 2]
+    # the starting tile has an entry from the start: it is known to be walkable
+    assert [s["at"] for s in spots] == [[2, 3], [0, 1], [-1, 0], [0, 0], [1, 0]]
+    assert [s["tries"] for s in spots] == [0, 1, 1, 0, 2]
+    assert spots[3]["blocks"] == 0.0
     assert spots[2] == {
         "at": [-1, 0],
         "tries": 1,
@@ -949,6 +951,71 @@ def test_the_experiment_command_prints_the_tokens_of_each_model_run(
 
     code, out, err = cli(["experiment", str(stand_in), *runs], capsys)
     assert code == 0
+    assert not USAGE_LINE.search(err)
+
+
+def test_a_failed_model_run_prints_its_tokens_before_the_error_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    llm = short_experiment(tmp_path, "llm", backends=BOTH_LLM, model="test", ticks=12)
+    runs = ["--runs-dir", str(tmp_path / "runs")]
+    rec = Recorder(fail_on=8)
+    with deliberate_agent.override(model=rec.model), appraise_agent.override(model=rec.model):
+        code = main(["run", str(llm), *runs])
+    out, err = capsys.readouterr()
+    assert code == 1 and out == ""
+    lines = err.splitlines()
+    assert USAGE_LINE.match(lines[0]) and not lines[0].startswith("llm-plain-s1: 0 ")
+    assert lines[1].startswith("error: llm-plain-s1 failed")
+    assert len(lines) == 2
+
+
+def test_a_failed_model_run_of_an_experiment_prints_its_tokens(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    llm = short_experiment(tmp_path, "llm", backends=BOTH_LLM, model="test", ticks=12)
+    runs = ["--runs-dir", str(tmp_path / "runs")]
+    rec = Recorder(fail_on=8)
+    with deliberate_agent.override(model=rec.model), appraise_agent.override(model=rec.model):
+        code = main(["experiment", str(llm), *runs])
+    err = capsys.readouterr().err
+    assert code == 1
+    usage = USAGE_LINE.findall(err)
+    assert usage and all(not line.split(": ")[1].startswith("0 ") for line in usage)
+    assert err.index(usage[-1]) < err.index("error: ")
+
+
+def test_a_complete_run_not_rerun_prints_no_token_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    llm = short_experiment(tmp_path, "llm", backends=BOTH_LLM, model="test")
+    runs = ["--runs-dir", str(tmp_path / "runs")]
+    code, _, err = cli(["experiment", str(llm), *runs], capsys)
+    assert code == 0 and len(USAGE_LINE.findall(err)) == 2
+
+    code, _, err = cli(["experiment", str(llm), *runs], capsys)
+    assert code == 0
+    assert "complete, not rerun" in err
+    assert not USAGE_LINE.search(err)
+
+
+def test_resuming_a_complete_model_run_needs_no_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    llm = short_experiment(tmp_path, "llm", backends=BOTH_LLM)
+    args = ["run", str(llm), "--runs-dir", str(tmp_path / "runs")]
+    monkeypatch.setenv(MODEL_ENV_VAR, "test")
+    code, first, _ = cli(args, capsys)
+    assert code == 0
+
+    monkeypatch.delenv(MODEL_ENV_VAR)
+    rec = Recorder()
+    with deliberate_agent.override(model=rec.model), appraise_agent.override(model=rec.model):
+        code = main([*args, "--resume"])
+    out, err = capsys.readouterr()
+    assert code == 0, err
+    assert out == first
+    assert rec.calls == []
     assert not USAGE_LINE.search(err)
 
 

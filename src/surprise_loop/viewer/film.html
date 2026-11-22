@@ -86,8 +86,6 @@
   .readout thead th { font-size:11px; color:#728197; }
   .readout tbody th { text-align:left; color:var(--dim); width:4.6em; }
   .readout td { color:var(--ink); }
-  .readout td.off { color:var(--wrong); }
-  .readout td.off::after { content:"\00d7"; margin-left:1px; }
   .readout .foot { font-size:11px; margin-top:3px; }
 
   .status { margin-top:12px; display:grid; gap:4px; font-size:13px; color:var(--dim); }
@@ -296,7 +294,8 @@ const num = v => v.toFixed(2);
 
 /* ---------- each run, replayed once: both maps, the tries and the position at every frame ---------- */
 function prepare(run) {
-  const snaps = { own: [{}], reasoner: [{}] }, tries = [{}], at = [keyOf(run.start.at)];
+  const snaps = { own: [Object.assign({}, run.start_tiles.own)], reasoner: [Object.assign({}, run.start_tiles.reasoner)] };
+  const tries = [{}], at = [keyOf(run.start.at)];
   run.ticks.forEach((t, i) => {
     for (const [which, part] of [["own", "changes"], ["reasoner", "reasoner"]]) {
       const next = Object.assign({}, snaps[which][i]);
@@ -327,11 +326,8 @@ function ringed(s, which, f) {
   }
   return out;
 }
-/* the beliefs of `b` on the other side of `wrong_side` from the truth at `k` */
-function offSide(s, b, k) {
-  const edge = s.run.marks.wrong_side, t = TRUTH[k].beliefs;
-  return KEYS.filter(x => (b[x] >= edge) !== (t[x] >= edge));
-}
+/* the tried tiles where the shown map is on the wrong side of the truth, as Python worked them out */
+const wrongKeys = (s, which, f) => f === 0 ? [] : s.run.ticks[f - 1].wrong[which];
 
 /* ---------- the switches ---------- */
 let WHICH = "own", OUTLINE = false;
@@ -446,13 +442,13 @@ function creaturePanel(i) {
   p.readout = () => {
     if (!p.sel) { out.textContent = hint; return; }
     const k = p.sel, b = beliefsAt(s, WHICH, frame, k), n = s.tries[frame][k] || 0;
-    const truth = TRUTH[k], off = n >= 1 ? offSide(s, b, k) : [];
+    const truth = TRUTH[k], off = wrongKeys(s, WHICH, frame).includes(k);
     const here = s.at[frame] === k ? " · it is here" : "";
     out.innerHTML = `<b>${title(where(k))}</b> · ${triesText(n)}${here} · really <b>${KIND_NAME[truth.kind]}</b>`
       + `<table><thead><tr><th></th>${KEYS.map(x => `<th scope="col">${x}</th>`).join("")}</tr></thead><tbody>`
-      + `<tr><th scope="row">${WHICH === "own" ? "believes" : "reasoner"}</th>${KEYS.map(x => `<td${off.includes(x) ? ' class="off"' : ""}>${num(b[x])}</td>`).join("")}</tr>`
+      + `<tr><th scope="row">${WHICH === "own" ? "believes" : "reasoner"}</th>${KEYS.map(x => `<td>${num(b[x])}</td>`).join("")}</tr>`
       + `<tr><th scope="row">really</th>${KEYS.map(x => `<td>${truth.beliefs[x]}</td>`).join("")}</tr></tbody></table>`
-      + (off.length ? `<div class="foot">× on the wrong side of ${s.run.marks.wrong_side} from what is really there</div>` : "");
+      + (off ? `<div class="foot">a belief is on the wrong side of ${s.run.marks.wrong_side} from what is really there</div>` : "");
   };
 
   p.render = f => {
@@ -462,9 +458,7 @@ function creaturePanel(i) {
     p.svg.setAttribute("aria-label", `${NAMES[i]}: ${WHICH_NAME[WHICH]}`);
     for (const k of FRAME_KEYS) paint(p.tiles[k], beliefsAt(s, WHICH, f, k), tries[k] || 0);
     p.q("rings").innerHTML = [...ringed(s, WHICH, f)].map(ringSVG).join("");
-    p.q("wrongs").innerHTML = OUTLINE
-      ? FRAME_KEYS.filter(k => (tries[k] || 0) >= 1 && offSide(s, beliefsAt(s, WHICH, f, k), k).length).map(wrongSVG).join("")
-      : "";
+    p.q("wrongs").innerHTML = OUTLINE ? wrongKeys(s, WHICH, f).map(wrongSVG).join("") : "";
     /* the last step: a trace when it moved, a bar where it was stopped */
     let trail = "";
     if (f > 0) {

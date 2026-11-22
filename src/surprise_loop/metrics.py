@@ -220,7 +220,9 @@ def gate2(result: RunResult) -> Gate2:
     """Gate 2's marks: the run completed, and over the tiles it tried the creature's own map ended
     closer to the world than its start, closing at least half of what the reasoner closed."""
     config = result.config
-    ticks = config.ticks if config.ticks is not None else config.world.steps
+    # a tick cap longer than the day ends with the day
+    steps = config.world.steps
+    ticks = min(config.ticks, steps) if config.ticks is not None else steps
     completed = len(result.records) == ticks
     last = _last_measures(result)
     start, own, reasoner = last.start_error, last.own_error, last.reasoner_error

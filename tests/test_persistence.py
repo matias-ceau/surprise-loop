@@ -20,6 +20,7 @@ from surprise_loop.loop import (
     load_result,
     replay,
     run,
+    write_atomic,
     write_dump,
 )
 from surprise_loop.state import TickDump
@@ -435,3 +436,11 @@ def test_a_run_file_that_cannot_be_written_is_a_run_error_naming_it(
     message = str(info.value)
     assert message == f"{run_dir / name}: cannot write: {reason}"
     assert "\n" not in message
+
+
+def test_a_failed_write_leaves_no_temp_file(tmp_path: Path) -> None:
+    target = tmp_path / "tick_000001.json"
+    target.mkdir()  # the rename onto a directory fails
+    with pytest.raises(OSError):
+        write_atomic(target, "{}")
+    assert sorted(p.name for p in tmp_path.iterdir()) == [target.name]

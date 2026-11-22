@@ -1,6 +1,7 @@
 """The grid world and the body: vocabulary, layout, one step, and snapshots."""
 
 import pytest
+from pydantic import ValidationError
 
 from surprise_loop.world import (
     EFFECTS,
@@ -11,8 +12,10 @@ from surprise_loop.world import (
     Direction,
     GridWorld,
     Kind,
+    Signal,
     WorldConfig,
     WorldDone,
+    WorldState,
     derive_rng,
     frame,
     key,
@@ -297,3 +300,26 @@ def test_channels_stay_in_range() -> None:
         assert all(0 <= level <= 1 for level in signal.body.values())
         assert 0 <= signal.smell <= 4
         assert 0 <= signal.damp <= 4
+
+
+def test_a_world_restored_past_its_day_refuses_a_step() -> None:
+    config = WorldConfig(layout=(".@.",), steps=3)
+    w = world((".@.",), steps=3)
+    w.step(Direction.EAST)
+    beyond = w.snapshot().model_copy(update={"step": 4})
+    restored = GridWorld.restore(config, beyond)
+    assert restored.done
+    with pytest.raises(WorldDone):
+        restored.step(Direction.EAST)
+
+
+def test_a_world_state_or_signal_missing_a_channel_is_rejected_when_loaded() -> None:
+    w = world((".@.",))
+    state = w.snapshot().model_dump(mode="json")
+    del state["body"]["ache"]
+    with pytest.raises(ValidationError, match="missing keys: ache"):
+        WorldState.model_validate(state)
+    signal = w.observe().model_dump(mode="json")
+    del signal["body"]["pleasure"]
+    with pytest.raises(ValidationError, match="missing keys: pleasure"):
+        Signal.model_validate(signal)

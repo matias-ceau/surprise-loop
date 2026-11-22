@@ -9,6 +9,7 @@ import random
 from statistics import fmean
 
 from surprise_loop.config import LensParams
+from surprise_loop.phrases import NEAR_WORDS
 from surprise_loop.state import Temperament
 from surprise_loop.world import Channel, Signal
 
@@ -18,8 +19,8 @@ BLUR_GROUPS: tuple[tuple[Channel, ...], ...] = (
     (Channel.ACHE, Channel.SICKNESS, Channel.UNEASE),
 )
 
-# the strongest smell or damp has three words: none, faint, strong
-NEAR_TOP = 2
+# the top step of the three-word ladder of smell and damp: none, faint, strong
+NEAR_TOP = len(NEAR_WORDS) - 1
 
 
 def felt_levels(

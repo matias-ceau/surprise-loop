@@ -248,6 +248,11 @@ class Signal(Frozen):
     damp: Annotated[int, Field(ge=0, le=4)]
     position: Position
 
+    @field_validator("body")
+    @classmethod
+    def _every_channel(cls, value: dict[Channel, float]) -> dict[Channel, float]:
+        return require_keys(value, Channel)
+
 
 class StepInfo(Frozen):
     step: int
@@ -267,6 +272,11 @@ class WorldState(Frozen):
     position: Position
     body: dict[Channel, Unit]
     pending_sickness: tuple[int, ...]
+
+    @field_validator("body")
+    @classmethod
+    def _every_channel(cls, value: dict[Channel, float]) -> dict[Channel, float]:
+        return require_keys(value, Channel)
 
 
 class WorldDone(RuntimeError):
@@ -321,7 +331,7 @@ class GridWorld:
         )
 
     def step(self, direction: Direction) -> Outcome:
-        if self._step == self._config.steps:
+        if self.done:
             raise WorldDone(f"the world ends after {self._config.steps} steps")
         self._step += 1
         step = self._step

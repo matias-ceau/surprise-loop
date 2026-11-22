@@ -2,7 +2,7 @@
 
 The four checks and their thresholds are fixed by the plan's section "Gates". Every run is made
 once, in memory, and shared between the checks. `pytest -s` also shows a table of the 20-seed
-means of a few measures per creature, which nothing asserts.
+means of a few measures per creature; only its shape is asserted.
 """
 
 import asyncio
@@ -71,10 +71,17 @@ def test_g1d_the_hopeful_creature_tries_more_tiles_than_the_wary_one(runs: Runs)
 
 
 def test_the_table_of_means(runs: Runs) -> None:
-    """Prints the creatures' 20-seed means; shown only with `pytest -s`."""
+    """The creatures' 20-seed means: one row per creature, a finite number in each of the six
+    columns. Printed with `pytest -s`."""
+    table = {name: {field: mean(runs, name, field) for field in TABLE} for name in CREATURES}
+    assert list(table) == list(CREATURES)
+    for row in table.values():
+        assert list(row) == list(TABLE)
+        assert all(isinstance(v, float) and math.isfinite(v) for v in row.values())
+
     width = max(len(name) for name in ("creature", *CREATURES))
     print()
     print(f"{'creature':<{width}}  " + "  ".join(f"{field:>19}" for field in TABLE))
-    for name in CREATURES:
-        cells = "  ".join(f"{mean(runs, name, field):>19.4f}" for field in TABLE)
+    for name, row in table.items():
+        cells = "  ".join(f"{row[field]:>19.4f}" for field in TABLE)
         print(f"{name:<{width}}  {cells}")

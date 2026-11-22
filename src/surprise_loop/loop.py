@@ -110,7 +110,11 @@ def write_atomic(path: Path, text: str) -> None:
     temp.write_text(text, encoding="utf-8", newline="")
     # No fsync: after a power loss a renamed file may still be empty or partial. That is loud,
     # not silent: load_dumps or read_config then refuses the file, and the run is restarted.
-    os.replace(temp, path)
+    try:
+        os.replace(temp, path)
+    except OSError:
+        temp.unlink(missing_ok=True)
+        raise
 
 
 def _write_run_file(path: Path, text: str) -> None:

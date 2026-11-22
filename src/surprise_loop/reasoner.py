@@ -37,7 +37,10 @@ Shares = dict[Kind, float]
 
 
 def initial_reasoner(presumes: dict[Kind, float]) -> ReasonerState:
-    return ReasonerState(presumes=dict(presumes), tiles={}, touched=(), onsets=())
+    """The presumption everywhere, except the starting tile: the creature stands on it, so it is
+    known to be walkable, as if a step onto it had moved."""
+    start = _after_moving(dict(presumes), moved=True)
+    return ReasonerState(presumes=dict(presumes), tiles={key((0, 0)): start}, touched=(), onsets=())
 
 
 def shares_at(state: ReasonerState, at: Position) -> dict[Kind, float]:

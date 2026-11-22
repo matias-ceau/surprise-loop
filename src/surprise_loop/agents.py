@@ -254,7 +254,7 @@ def _within_bounds(ctx: RunContext[AppraiseDeps], output: AppraiseOutput) -> App
 # --- the view and the prompts -------------------------------------------------------------------
 
 
-def _felt_words(felt: FeltRecord) -> dict[str, Any]:
+def felt_words(felt: FeltRecord) -> dict[str, Any]:
     return {
         "moved": felt.moved,
         **{c.value: FEEL_WORDS[felt.levels[c]] for c in Channel},
@@ -265,7 +265,7 @@ def _felt_words(felt: FeltRecord) -> dict[str, Any]:
     }
 
 
-def _expected_words(e: Expectation) -> dict[str, Any]:
+def expected_words(e: Expectation) -> dict[str, Any]:
     return {
         "moved": e.moved,
         **{c.value: FEEL_WORDS[e.levels[c]] for c in Channel},
@@ -279,7 +279,7 @@ def _beliefs(beliefs: dict[Belief, float], decimals: int) -> dict[str, float]:
     return {b.value: round(beliefs[b], decimals) for b in Belief}
 
 
-def _how_it_went(comparison: Comparison, p: MonitorParams) -> dict[str, str]:
+def how_it_went(comparison: Comparison, p: MonitorParams) -> dict[str, str]:
     if comparison.worse >= p.worse_edge:
         went = WENT_WORSE
     elif comparison.worse <= -p.worse_edge:
@@ -314,9 +314,9 @@ def _step_view(e: Episode, p: Params) -> dict[str, Any]:
     return {
         "went": e.direction.value,
         "toward": list(toward),
-        "expected": _expected_words(e.expectation),
-        "felt": _felt_words(e.felt),
-        **_how_it_went(e.comparison, p.monitor),
+        "expected": expected_words(e.expectation),
+        "felt": felt_words(e.felt),
+        **how_it_went(e.comparison, p.monitor),
         "reading": e.reading,
     }
 
@@ -327,7 +327,7 @@ def creature_view(agent: AgentState, recent: Sequence[Episode], p: Params) -> di
     k = p.memory.recent_k
     last = list(recent)[-k:] if k else []
     return {
-        "you_feel": _felt_words(agent.felt),
+        "you_feel": felt_words(agent.felt),
         "you_are_at": list(agent.felt.at),
         "your_map": _map_view(agent.own_map, agent.tries, p.prompt.decimals),
         "your_last_steps": [_step_view(e, p) for e in last],
@@ -362,7 +362,7 @@ def appraise_prompt(
     """The view of the creature before the step, with how it feels and where it is after it, and
     the step just taken: where it went, how it felt before it, what it expected, what changed,
     and how that compared. The view's `you_feel` and `you_are_at` are from before the step."""
-    before, after = view["you_feel"], _felt_words(felt_after)
+    before, after = view["you_feel"], felt_words(felt_after)
     east, north = view["you_are_at"]
     shown = {
         **view,
@@ -371,8 +371,8 @@ def appraise_prompt(
         "you_went": decision.direction.value,
         "you_stepped_toward": list(moved_to((east, north), decision.direction)),
         "you_felt_before": before,
-        "you_expected": _expected_words(decision.expectation),
+        "you_expected": expected_words(decision.expectation),
         "what_changed": what_changed(before, after),
-        **_how_it_went(comparison, p.monitor),
+        **how_it_went(comparison, p.monitor),
     }
     return json.dumps(shown, ensure_ascii=False)

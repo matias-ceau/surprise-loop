@@ -5,6 +5,7 @@ the marks of gate 2.
 be piped; anything informational goes to stderr. A `run` that fails on its way (a model that
 answers nonsense, a network error) is reported as one `error: <run_id> failed: ...` line with
 exit code 1; the tick files written before the failure stay, and `--resume` continues from them.
+`--resume` on a run that is already complete prints its metrics and needs no model.
 `replay` re-runs a stored run from its files and exits 1 when it differs from them. `gate2` prints
 a stored run's gate 2 marks as JSON and exits 0 when they pass, 1 when not. `film` writes two
 stored runs on the same layout as one self-contained HTML page.
@@ -31,7 +32,8 @@ failed runs from their last dump and skips the complete ones. One progress line 
 stderr.
 
 A bad config, or a file that cannot be written, or a run directory that cannot be started,
-resumed or read, is reported as one `error: ...` line on stderr with exit code 2.
+resumed or read, is reported as one `error: ...` line on stderr with exit code 2. Ctrl-C is
+reported as one line on stderr with exit code 130.
 """
 
 import argparse
@@ -162,8 +164,9 @@ def _print_metrics(result: RunResult) -> None:
 
 
 def _print_usage(config: RunConfig, usage: TokenCount) -> None:
-    """One line on stderr with what a run's model calls used; none for a run without a model."""
-    if config.model is None:
+    """One line on stderr with what a run's model calls used, finished or failed; none for a run
+    that made no model request (a stand-in run, or a complete run that was not rerun)."""
+    if usage.requests == 0:
         return
     print(
         f"{config.run_id}: {usage.requests} model requests, {usage.input_tokens} input tokens, "
@@ -177,16 +180,37 @@ def _check_runs_dir(runs_dir: Path) -> None:
         raise RunError(f"{runs_dir}: --runs-dir is not a directory")
 
 
+def _model_for(config: RunConfig, stored: RunResult | None) -> str | None:
+    """The run's model, resolved. A complete run is only loaded, so it needs none: when none is
+    set, the model stored in its config.json stands in."""
+    if stored is not None and is_complete(stored):
+        try:
+            return resolve_model(config)
+        except ConfigError:
+            return stored.config.model
+    return resolve_model(config)
+
+
 def _run(args: argparse.Namespace) -> int:
     config = _select(args.config, args.agent, args.seed)
     _check_runs_dir(args.runs_dir)
     run_dir = args.runs_dir / config.run_id
+    if args.resume and has_run_files(run_dir):
+        stored = load_result(run_dir)
+        if is_complete(stored):
+            # nothing to run: its metrics, with no model needed
+            if stored.config != config.model_copy(update={"model": _model_for(config, stored)}):
+                raise RunError(f"{run_dir}: config.json differs from the given config")
+            print(f"run directory: {run_dir}", file=sys.stderr)
+            _print_metrics(stored)
+            return 0
     usage = TokenCount()
     try:
         result = asyncio.run(run(config, run_dir, resume=args.resume, usage=usage))
     except (ConfigError, CommandError, RunError):
         raise
     except Exception as e:  # e.g. a model that answers nonsense, or a network error
+        _print_usage(config, usage)
         print(
             f"error: {config.run_id} failed: {_one_line(e)}; rerun with --resume", file=sys.stderr
         )
@@ -236,14 +260,7 @@ async def _plan(configs: list[RunConfig], runs_dir: Path) -> list[_Planned]:
     for config in configs:
         run_dir = runs_dir / config.run_id
         stored = load_result(run_dir) if has_run_files(run_dir) else None
-        if stored is not None and is_complete(stored):
-            try:
-                model = resolve_model(config)
-            except ConfigError:
-                model = stored.config.model
-        else:
-            model = resolve_model(config)
-        config = config.model_copy(update={"model": model})
+        config = config.model_copy(update={"model": _model_for(config, stored)})
         if stored is not None and stored.config != config:
             raise RunError(f"{run_dir}: config.json differs from the experiment's config")
         planned.append(_Planned(config=config, stored=stored))
@@ -293,8 +310,7 @@ async def _run_experiment(
                 what += f", {len(result.records)} ticks"
         finished += 1
         print(f"[{finished}/{len(plan)}] {planned.config.run_id}: {what}", file=sys.stderr)
-        if isinstance(outcome, RunResult):
-            _print_usage(outcome.config, usage)
+        _print_usage(planned.config, usage)
         return outcome
 
     return plan, list(await asyncio.gather(*(one(p) for p in plan)))
@@ -398,3 +414,7 @@ def main(argv: list[str] | None = None) -> int:
     except (ConfigError, CommandError, RunError) as e:
         _error(e)
         return 2
+    except KeyboardInterrupt:
+        # the tick files written so far stay; a resumed run continues from the last one
+        print("interrupted; rerun with --resume to continue", file=sys.stderr)
+        return 130
