@@ -263,8 +263,8 @@ the gate was written to catch a model that cannot keep a map at all, and the run
 can (coherent coordinates, at most a few changes a day to tiles it had not been near, error on
 tried tiles down by between a quarter and a half). A pass mark set on a single run at about the level the
 model actually reaches is close to a coin flip, which is a fault in how I wrote the gate. And the
-film was built after attempt 5, when the mark had passed once. Whether to try the remedies is the
-owner's decision.
+film was built after attempt 5, when the mark had passed once. Asked on 2026-11-23, the owner
+chose to accept the result as reported and leave the remedies untried.
 
 On the six full days of result 4 the same share came out between 47% and 76%, at or above one half
 in four of six. The mark was defined on the 60-step run, and that is what is reported as not met.
@@ -412,7 +412,8 @@ before attempt 3 to try more reasoning effort, and back before attempt 4.
 - **No difference between temperaments on the model.** Six days, two seeds, one model, one layout.
   The answer to the first half of the question, for the model, is "not seen, and this was too
   small to see it".
-- **Gate 2's second mark was not met**, and the design's remedies were not tried (result 3).
+- **Gate 2's second mark was not met**, and the design's remedies were not tried (result 3). The
+  owner accepted that afterwards; it was not agreed before the film was built.
 - **One gate 1 check was replaced** by one that passes largely by construction (result 1).
 - **The model was helped three times after it had been seen to fail** (the section above). The
   prompt was shaped on seed 1: on the plain creature's 60-step runs and, for the third change, on
