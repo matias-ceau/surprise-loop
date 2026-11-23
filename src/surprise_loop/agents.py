@@ -16,7 +16,7 @@ from collections.abc import Sequence
 from typing import Annotated, Any, Literal, cast
 
 from pydantic import AfterValidator, Field
-from pydantic_ai import Agent, ModelRetry, ModelSettings, RunContext, UserError, models
+from pydantic_ai import Agent, ModelRetry, ModelSettings, RunContext, RunUsage, UserError, models
 from pydantic_ai.models import Model
 
 from surprise_loop.config import (
@@ -98,20 +98,24 @@ async def ask[D, T](
     usage: TokenCount | None = None,
 ) -> T:
     """One call of `agent` on `model`: its validated output. The call's requests and tokens are
-    added to `usage`.
+    added to `usage`, also when the call fails.
 
     Output that fails validation is sent back to the model up to `params.output_retries` times;
     after that pydantic-ai raises `UnexpectedModelBehavior`."""
-    result = await agent.run(
-        prompt,
-        model=model,
-        deps=deps,
-        model_settings=model_settings(params),
-        retries={"output": params.output_retries},
-    )
-    if usage is not None:
-        used = result.usage
-        usage.add(used.requests, used.input_tokens, used.output_tokens)
+    # pydantic-ai adds to this as each request completes, so it holds what a failed call used
+    used = RunUsage()
+    try:
+        result = await agent.run(
+            prompt,
+            model=model,
+            deps=deps,
+            model_settings=model_settings(params),
+            retries={"output": params.output_retries},
+            usage=used,
+        )
+    finally:
+        if usage is not None:
+            usage.add(used.requests, used.input_tokens, used.output_tokens)
     return result.output
 
 

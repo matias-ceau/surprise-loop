@@ -671,6 +671,18 @@ def test_a_persistently_unknown_word_stops_with_an_error_naming_the_tick(
     assert any("deliberate failed at tick 7" in note for note in info.value.__notes__)
 
 
+def test_a_call_that_fails_after_its_retries_still_counts_what_it_used() -> None:
+    model, calls = scripted({**DECISION, "direction": "up"})
+    ws, rt = deliberate_ws(with_llm(llm_config(), output_retries=2), model)
+
+    with pytest.raises(UnexpectedModelBehavior):
+        asyncio.run(deliberate(ws, rt))
+
+    assert len(calls) == 3
+    assert rt.usage.requests == 3
+    assert rt.usage.input_tokens > 0 and rt.usage.output_tokens > 0
+
+
 def change(at: list[int], *values: float) -> dict[str, Any]:
     return {"at": at, **beliefs(*values)}
 
