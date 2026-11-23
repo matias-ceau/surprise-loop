@@ -1,50 +1,45 @@
-"""Pure helpers shared by the phases: expectation bands, the comparison, the belief update, which
-actions serve a need, and the stubs' crude model of their own body.
+"""The rules the stand-ins and the code phases share: the rule chooser and what it expects, the
+blind chooser, and the measures of a creature's map against the truth.
 
-Units: a band is in channel units. Felt strength is positive for more strain; for heat that is a
-higher level, for water and energy a lower one, so their bands are mirrored.
+The choosers read only what the creature has: its felt record, its own map and its tries.
+`measures` and the "wrong side" rule it shares with the film are the one place on the creature's
+side that reads the truth, and nothing they return is ever read by a chooser.
 """
 
-from collections.abc import Callable
+import math
+import random
+from collections.abc import Callable, Iterable, Sequence
 
-from surprise_loop.config import (
-    BeliefParams,
-    DeliberateParams,
-    ExpectationParams,
-    MonitorParams,
-    StubModelParams,
-)
-from surprise_loop.feeling import discomfort, felt
+from surprise_loop.config import MetricsParams, RuleParams
+from surprise_loop.feeling import TOP_STEP
+from surprise_loop.lens import near_step
+from surprise_loop.reasoner import reasoner_beliefs
 from surprise_loop.state import (
-    Band,
-    ChangeWord,
-    Comparison,
+    AgentState,
+    CreatureMap,
     Decision,
-    FeltScene,
-    SurpriseNote,
-    Temperament,
+    Expectation,
+    FeltRecord,
+    Measures,
+    RuleChoice,
+    Sureness,
 )
 from surprise_loop.world import (
-    GO_TARGET,
-    QUESTION_OF,
-    Action,
+    Belief,
     Channel,
-    Event,
-    Fact,
-    FactName,
-    Levels,
-    Observation,
-    OpenQuestion,
-    Place,
+    Direction,
+    Position,
+    WorldConfig,
+    key,
+    layout_positions,
+    moved_to,
+    neighbours,
+    position_of,
+    truth_at,
 )
 
-# the fact on arrival that answers each open question with "yes"
-_ANSWERED_BY: dict[OpenQuestion, FactName] = {
-    OpenQuestion.LOG_SHADED: FactName.LOG,
-    OpenQuestion.STREAM_FULL: FactName.WATER,
-}
-# the facts that show there is something to drink here
-_DRINKABLE = (FactName.WATER, FactName.TRICKLE)
+# what a need is served by
+SERVES: dict[Channel, Belief] = {Channel.HUNGER: Belief.FEEDS, Channel.THIRST: Belief.QUENCHES}
 
 
 def require[T](value: T | None, name: str, phase: str) -> T:
@@ -54,199 +49,228 @@ def require[T](value: T | None, name: str, phase: str) -> T:
     return value
 
 
-def clamp(x: float, lo: float, hi: float) -> float:
-    return min(max(x, lo), hi)
+def _need(felt: FeltRecord, p: RuleParams) -> Channel | None:
+    """Hunger or thirst, whichever is felt louder (hunger on a tie), if it is loud enough."""
+    hunger, thirst = felt.levels[Channel.HUNGER], felt.levels[Channel.THIRST]
+    need = Channel.HUNGER if hunger >= thirst else Channel.THIRST
+    return need if felt.levels[need] >= p.need_at else None
 
 
-def _to_level(c: Channel, f: float, t: Temperament) -> float:
-    """The level of channel `c` at felt strength `f`: the inverse of `felt`."""
-    offset = f / t.tightness[c]
-    return t.setpoint.of(c) + (offset if c is Channel.HEAT else -offset)
+def _search(
+    start: Position,
+    goal: Callable[[Position], bool],
+    passable: Callable[[Position], bool],
+    reach: int,
+) -> tuple[Direction, ...]:
+    """The first direction of every shortest path from `start` to a goal, breadth-first. A goal
+    ends a path whether or not it is passable; only passable tiles are walked through. Only
+    tiles within `reach` of (0, 0) along each axis are visited; `start` is never a goal."""
 
+    def open_to(t: Position) -> bool:
+        return abs(t[0]) <= reach and abs(t[1]) <= reach and (goal(t) or passable(t))
 
-def bands_from_words(
-    words: dict[Channel, ChangeWord], belief: Levels, t: Temperament, p: ExpectationParams
-) -> dict[Channel, Band]:
-    """Each word is a band of change in felt strength, added to the present felt strength and
-    converted to channel units (water and energy mirrored, so lo and hi swap)."""
-    change: dict[ChangeWord, tuple[float | None, float | None]] = {
-        ChangeWord.MUCH_LESS: (None, -p.much),
-        ChangeWord.BIT_LESS: (-p.much, -p.bit),
-        ChangeWord.SAME: (-p.bit, p.bit),
-        ChangeWord.BIT_MORE: (p.bit, p.much),
-        ChangeWord.MUCH_MORE: (p.much, None),
-    }
-    now = felt(belief, t)
-    out: dict[Channel, Band] = {}
-    for c in Channel:
-        lo, hi = (None if d is None else _to_level(c, now[c] + d, t) for d in change[words[c]])
-        out[c] = Band(lo=lo, hi=hi) if c is Channel.HEAT else Band(lo=hi, hi=lo)
-    return out
-
-
-def bands_from_forecast(forecast: Levels, p: ExpectationParams) -> dict[Channel, Band]:
-    """A stub's band: its forecast plus or minus the channel's tolerance."""
-    return {
-        c: Band(lo=forecast.of(c) - p.stub_tolerance[c], hi=forecast.of(c) + p.stub_tolerance[c])
-        for c in Channel
-    }
-
-
-def _into(x: float, b: Band) -> float:
-    if b.lo is not None and x < b.lo:
-        return b.lo
-    if b.hi is not None and x > b.hi:
-        return b.hi
-    return x
-
-
-def nearest(signal: Levels, bands: dict[Channel, Band]) -> Levels:
-    """Each channel of the signal clamped into its band."""
-    return Levels(**{c.value: _into(signal.of(c), bands[c]) for c in Channel})
-
-
-def world_truth(question: OpenQuestion, facts: list[Fact]) -> bool:
-    """The answer to an open question read from the facts on arrival."""
-    return any(f.name is _ANSWERED_BY[question] for f in facts)
-
-
-def compare(
-    decision: Decision, observation: Observation, t: Temperament, p: MonitorParams
-) -> Comparison:
-    """What arrived against what was expected: (a) the body per channel, (b) the open question,
-    (c) whether the body is better or worse off than expected, and the overall size."""
-    expectation = decision.expectation
-    signal = observation.signal
-    edge = nearest(signal, expectation.bands)
-    body = {c: signal.of(c) - edge.of(c) for c in Channel}
-    body_felt = {c: body[c] * t.tightness[c] * (1 if c is Channel.HEAT else -1) for c in Channel}
-    question = QUESTION_OF[decision.action]
-    world: bool | None = None
-    if (
-        observation.event is Event.ARRIVED
-        and question is not None
-        and expectation.world is not None
-    ):
-        world = expectation.world != world_truth(question, observation.facts)
-    size = sum(abs(v) for v in body_felt.values()) + (p.world_weight if world else 0)
-    return Comparison(
-        body=body,
-        body_felt=body_felt,
-        world=world,
-        better=discomfort(edge, t) - discomfort(signal, t),
-        size=size,
-    )
-
-
-def updated_belief(
-    signal: Levels, bands: dict[Channel, Band], t: Temperament, p: BeliefParams
-) -> Levels:
-    """From the nearest edge of the expectation toward the signal, by how much the body trusts
-    its signal against the expectation; inside the band, the signal itself."""
-    edge = nearest(signal, bands)
-    out: dict[str, float] = {}
-    for c in Channel:
-        k = t.trust[c] / (t.trust[c] + p.expectation_weight[c])
-        out[c.value] = edge.of(c) + k * (signal.of(c) - edge.of(c))
-    return Levels(**out)
-
-
-def voiced_note(
-    action: Action, comparison: Comparison, expected_world: bool | None, voice_threshold: float
-) -> SurpriseNote | None:
-    """What a pass's surprise voices: the loudest body error if it reaches `voice_threshold`,
-    else a world mismatch (what turned out true is the opposite of `expected_world`), else None.
-    A body note's `worse` is set when the felt error is above zero: hotter than expected for heat
-    (whichever way the body's need points), more need than expected for water and energy.
-    Reconcile voices it in the next scene; a recalled episode is told with it."""
-    felt_error = comparison.body_felt
-    top = loudest(felt_error)[0]
-    if abs(felt_error[top]) >= voice_threshold:
-        return SurpriseNote(channel=top, worse=felt_error[top] > 0)
-    question = QUESTION_OF[action]
-    if comparison.world and question is not None and expected_world is not None:
-        return SurpriseNote(question=question, actual=not expected_world)
-    return None
-
-
-def too_much(c: Channel, need: float) -> bool:
-    """Whether a need is one of too much: heat when positive; thirst and tiredness always."""
-    return c is not Channel.HEAT or need > 0
-
-
-def serving_actions(channel: Channel, too_much: bool, place: Place) -> list[Action]:
-    """The actions that serve a need at a place."""
-    match channel:
-        case Channel.HEAT if too_much:
-            return [Action.REST] if place is Place.OAK else [Action.GO_OAK]
-        case Channel.HEAT:
-            return [Action.REST] if place is Place.MEADOW else [Action.GO_MEADOW]
-        case Channel.WATER:
-            return [Action.DRINK] if place is Place.STREAM else [Action.GO_STREAM]
-        case Channel.ENERGY:
-            return [Action.REST]
-
-
-def heat_pull(facts: list[Fact], about: Place | None) -> float:
-    """The sum of the heat bearings of the facts about `about` (None: about here)."""
-    return sum(f.bearing.get(Channel.HEAT, 0) for f in facts if f.about is about)
-
-
-def forecast(belief: Levels, pull: float, action: Action, p: StubModelParams) -> Levels:
-    """The stubs' private one-step model of their own body: heat moves toward the place's pull,
-    water drains (more when hot) and comes back with a drink, energy goes on a walk and comes
-    back with a rest."""
-    heat = belief.heat + p.heat_rate * (pull * p.heat_per_bearing - belief.heat)
-    water = belief.water - p.water_drain - p.sweat_water * max(0, belief.heat)
-    if action is Action.DRINK:
-        water += p.drink_water
-    energy = belief.energy
-    if action in GO_TARGET:
-        energy -= p.walk_energy
-    elif action is Action.REST:
-        energy += p.rest_energy
-    return Levels(heat=heat, water=water, energy=energy)
-
-
-def clipped(strength: dict[Channel, float]) -> dict[Channel, float]:
-    """Felt strength as need: water and energy clipped at 0 from below."""
-    return {c: v if c is Channel.HEAT else max(0, v) for c, v in strength.items()}
-
-
-def loudest(need: dict[Channel, float]) -> list[Channel]:
-    """The channels by |need|, largest first; ties in `Channel` order."""
-    return sorted(Channel, key=lambda c: -abs(need[c]))
+    # each tile of the present layer, with the first directions of its shortest paths
+    layer: dict[Position, set[Direction]] = {}
+    for direction in Direction:
+        if open_to(t := moved_to(start, direction)):
+            layer.setdefault(t, set()).add(direction)
+    seen = {start, *layer}
+    while layer:
+        found = [t for t in layer if goal(t)]
+        if found:
+            return tuple(d for d in Direction if any(d in layer[t] for t in found))
+        following: dict[Position, set[Direction]] = {}
+        for t, firsts in layer.items():
+            for n in neighbours(t):
+                if n not in seen and open_to(n):
+                    following.setdefault(n, set()).update(firsts)
+        seen.update(following)
+        layer = following
+    return ()
 
 
 def rule_choice(
-    need: dict[Channel, float],
-    place: Place,
-    offers: list[Action],
-    qualifies: Callable[[Action], bool],
-    p: DeliberateParams,
-) -> Action:
-    """The reactive rule: serve the loudest need at or above `act_threshold` with the first
-    offered serving action that `qualifies`; else LOOK, or the first offer when LOOK is not
-    offered (pass 1 of an override offers only the serving actions)."""
-    for c in loudest(need):
-        if abs(need[c]) < p.act_threshold:
+    felt: FeltRecord,
+    own_map: CreatureMap,
+    tries: dict[str, int],
+    p: RuleParams,
+    rng: random.Random,
+) -> RuleChoice:
+    """The ten-line rule: walk the shortest believed-safe way to the first goal set that has a goal
+    in reach (what serves the need, caution yielding sooner when the need is desperate; with no
+    need, what is worth trying or already known); failing every set, anywhere believed safe."""
+    here = felt.at
+
+    def safe(t: Position) -> bool:
+        return own_map.at(t)[Belief.HURTS] < p.avoid_at
+
+    def passable(t: Position) -> bool:
+        return own_map.at(t)[Belief.BLOCKS] < p.believe_at and safe(t)
+
+    def tried(t: Position) -> bool:
+        return tries.get(key(t), 0) >= 1
+
+    def untried(t: Position) -> bool:
+        return t != here and not tried(t)
+
+    def untried_safe(t: Position) -> bool:
+        return untried(t) and safe(t)
+
+    def tried_passable(t: Position) -> bool:
+        # with nothing to do it goes to stand on ground it knows; it does not push at things
+        return t != here and tried(t) and passable(t)
+
+    need = _need(felt, p)
+    u = own_map.untried
+    goal_sets: tuple[Callable[[Position], bool], ...]
+    if need is not None:
+        serves = SERVES[need]
+
+        def serving(t: Position) -> bool:
+            return t != here and own_map.at(t)[serves] >= p.serve_at
+
+        def serving_safe(t: Position) -> bool:
+            return serving(t) and safe(t)
+
+        if felt.levels[need] >= p.desperate_at:
+            goal_sets = (serving_safe, serving, untried_safe, untried)
+        else:
+            goal_sets = (serving_safe, untried_safe, serving, untried)
+    elif u[Belief.FEEDS] + u[Belief.QUENCHES] + u[Belief.PLEASES] > u[Belief.HURTS]:
+        goal_sets = (untried_safe, tried_passable)
+    else:
+        goal_sets = (tried_passable, untried_safe)
+
+    best: tuple[Direction, ...] = ()
+    for goal in goal_sets:
+        if best := _search(here, goal, passable, p.reach):
             break
-        for action in serving_actions(c, too_much(c, need[c]), place):
-            if action in offers and qualifies(action):
-                return action
-    return Action.LOOK if Action.LOOK in offers else offers[0]
+    if not best:
+        best = tuple(d for d in Direction if safe(moved_to(here, d))) or tuple(Direction)
+    return RuleChoice(best=best, choice=rng.choice(best))
 
 
-def reactive_choice(scene: FeltScene, offers: list[Action], p: DeliberateParams) -> Action:
-    """The rule on the felt scene: a walk needs a noticed fact about where it leads, a drink a
-    noticed WATER or TRICKLE; a rest always qualifies."""
-    noticed = [f for f in scene.facts if f.noticed]
+def _near(own_map: CreatureMap, at: Position, belief: Belief, p: RuleParams) -> int:
+    """The ladder step of the neighbours of `at` believed to have `belief`."""
+    return near_step(sum(own_map.at(n)[belief] >= p.believe_at for n in neighbours(at)))
 
-    def qualifies(action: Action) -> bool:
-        if action in GO_TARGET:
-            return any(f.about is GO_TARGET[action] for f in noticed)
-        if action is Action.DRINK:
-            return any(f.name in _DRINKABLE for f in noticed)
-        return True
 
-    return rule_choice(clipped(scene.felt), scene.place, offers, qualifies, p)
+def rule_expectation(
+    direction: Direction,
+    felt: FeltRecord,
+    own_map: CreatureMap,
+    tries: dict[str, int],
+    p: RuleParams,
+) -> Expectation:
+    """What the rule expects to feel after stepping `direction`, from its own map alone."""
+    target = moved_to(felt.at, direction)
+    b = own_map.at(target)
+    moved = b[Belief.BLOCKS] < p.believe_at
+    levels = dict(felt.levels)
+    if not moved and b[Belief.FEEDS] >= p.believe_at:
+        if levels[Channel.HUNGER] >= 1:
+            levels[Channel.HUNGER] -= 1
+        else:
+            levels[Channel.ACHE] = min(TOP_STEP, levels[Channel.ACHE] + 1)
+    if not moved and b[Belief.QUENCHES] >= p.believe_at and levels[Channel.THIRST] >= 1:
+        levels[Channel.THIRST] -= 1
+    if moved and b[Belief.PLEASES] >= p.believe_at:
+        levels[Channel.PLEASURE] = max(p.felt_step, levels[Channel.PLEASURE])
+    if moved and b[Belief.HURTS] >= p.believe_at:
+        levels[Channel.UNEASE] = max(p.felt_step, levels[Channel.UNEASE])
+    stand = target if moved else felt.at
+    count = tries.get(key(target), 0)
+    if count >= p.sure_tries:
+        sure = Sureness.SURE
+    elif count >= p.fairly_sure_tries:
+        sure = Sureness.FAIRLY_SURE
+    else:
+        sure = Sureness.GUESSING
+    return Expectation(
+        moved=moved,
+        levels=levels,
+        smell=_near(own_map, stand, Belief.FEEDS, p),
+        damp=_near(own_map, stand, Belief.QUENCHES, p),
+        sure=sure,
+    )
+
+
+def blind_decision(felt: FeltRecord, rng: random.Random) -> Decision:
+    """A chooser that reads nothing: any direction, expecting to move and feel no change."""
+    expectation = Expectation(
+        moved=True,
+        levels=dict(felt.levels),
+        smell=felt.smell,
+        damp=felt.damp,
+        sure=Sureness.GUESSING,
+    )
+    return Decision(direction=rng.choice(list(Direction)), expectation=expectation, why="")
+
+
+# the beliefs of one map, by tile
+MapBeliefs = dict[Position, dict[Belief, float]]
+
+
+def _error(a: MapBeliefs, b: MapBeliefs, tiles: Sequence[Position]) -> float:
+    """The mean absolute difference of two maps over `tiles` and the five beliefs; 0.0 for none."""
+    diffs = [abs(a[t][x] - b[t][x]) for t in tiles for x in Belief]
+    return math.fsum(diffs) / len(diffs) if diffs else 0.0
+
+
+def tried_tiles(tries: dict[str, int]) -> list[Position]:
+    """The positions tried at least once, sorted."""
+    return sorted(position_of(k) for k, n in tries.items() if n >= 1)
+
+
+def wrong_tiles(
+    believed: Callable[[Position], dict[Belief, float]],
+    tried: Iterable[Position],
+    world: WorldConfig,
+    edge: float,
+) -> tuple[str, ...]:
+    """The keys, sorted, of the tiles of `tried` where any belief of `believed` is on the other
+    side of `edge` from the truth: the one "wrong side" rule, for the measures and the film."""
+
+    def wrong(t: Position) -> bool:
+        b, truth = believed(t), truth_at(world, t)
+        return any((b[x] >= edge) != (truth[x] >= edge) for x in Belief)
+
+    return tuple(sorted(key(t) for t in tried if wrong(t)))
+
+
+def measures(agent: AgentState, world: WorldConfig, p: MetricsParams) -> Measures:
+    """How far the creature's own map and the reasoner's are from the truth, and from each
+    other."""
+    tried = tried_tiles(agent.tries)
+    everywhere = layout_positions(world)
+    tiles = set(tried).union(everywhere)
+    own = {t: agent.own_map.at(t) for t in tiles}
+    reasoner = {t: reasoner_beliefs(agent.reasoner, t) for t in tiles}
+    truth = {t: truth_at(world, t) for t in tiles}
+    start = dict.fromkeys(tried, agent.own_map.untried)
+
+    def false_harm(believed: MapBeliefs) -> int:
+        return sum(
+            believed[t][Belief.HURTS] >= p.wrong_side and truth[t][Belief.HURTS] == 0 for t in tried
+        )
+
+    def false_safe(believed: MapBeliefs) -> int:
+        return sum(
+            believed[t][Belief.HURTS] < p.wrong_side and truth[t][Belief.HURTS] == 1 for t in tried
+        )
+
+    return Measures(
+        tiles_tried=len(tried),
+        start_error=_error(start, truth, tried),
+        own_error=_error(own, truth, tried),
+        reasoner_error=_error(reasoner, truth, tried),
+        gap=_error(own, reasoner, tried),
+        own_error_all=_error(own, truth, everywhere),
+        reasoner_error_all=_error(reasoner, truth, everywhere),
+        gap_all=_error(own, reasoner, everywhere),
+        false_harm=false_harm(own),
+        false_safe=false_safe(own),
+        reasoner_false_harm=false_harm(reasoner),
+        reasoner_false_safe=false_safe(reasoner),
+        wrong=wrong_tiles(own.__getitem__, tried, world, p.wrong_side),
+    )

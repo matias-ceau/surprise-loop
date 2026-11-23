@@ -1,7 +1,7 @@
 [project]
 name = "surprise-loop"
 version = "0.1.0"
-description = "A prediction-error-driven LLM agent with a simulated body, in a small forest clearing."
+description = "A creature that learns a hidden world through what its body feels, and its map next to the real one."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

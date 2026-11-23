@@ -1,321 +1,210 @@
 """Experiment configuration, parameters and run setup.
 
-Every number that shapes behaviour lives here or in a body's `Temperament`. Each default can be
-overridden from YAML.
+Every number that shapes behaviour lives here or in a creature's `Temperament`. Each default can
+be overridden from YAML.
 """
 
 import os
-import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from itertools import pairwise
 from pathlib import Path
 from typing import Annotated, Literal
 
 import yaml
-from pydantic import Field, ValidationError, field_validator, model_validator
+from pydantic import Field, JsonValue, ValidationError, field_validator
 
 from surprise_loop.state import (
     AgentState,
-    Feeling,
+    ChannelWeights,
+    CreatureMap,
+    FeltRecord,
     Memory,
-    Pulls,
-    SurpriseNote,
+    NonNegative,
+    Step5,
+    Sureness,
     Temperament,
-    require_keys,
+    every,
 )
 from surprise_loop.world import (
-    Action,
-    BodyState,
     Channel,
-    FactKind,
     Frozen,
-    Levels,
-    Place,
+    Signal,
     Unit,
     World,
     WorldConfig,
+    key,
 )
+from surprise_loop.world import derive_rng as derive_rng  # re-exported for the phases
 
 MODEL_ENV_VAR = "SURPRISE_LOOP_MODEL"
 
-NonNegative = Annotated[float, Field(ge=0)]
 Positive = Annotated[float, Field(gt=0)]
 SafeName = Annotated[str, Field(pattern=r"^[A-Za-z0-9_.-]+$")]
 
 
-def _ascending_edges(value: tuple[float, ...]) -> tuple[float, ...]:
-    if not value:
-        raise ValueError("needs at least one edge")
-    if any(a >= b for a, b in zip(value, value[1:], strict=False)):
+def _edges(value: tuple[float, ...], count: int) -> tuple[float, ...]:
+    """`count` edges between the words of a ladder of `count + 1`, strictly ascending."""
+    if len(value) != count:
+        raise ValueError(f"needs exactly {count} edges")
+    if any(a >= b for a, b in pairwise(value)):
         raise ValueError("edges must be strictly ascending")
     return value
 
 
 class LensParams(Frozen):
-    # sharpness of the softmax over fact relevance, and how arousal sharpens it
-    gain_base: NonNegative = 0.5
-    gain_arousal: NonNegative = 1.5
-    # how many facts get through: fewer when stirred up, never fewer than min_noticed
-    min_noticed: int = Field(default=3, ge=1)
-    drop_per_arousal: NonNegative = 4.0
-    # extra relevance for a fact bearing on the channel the last reading was about
-    attention_bonus: NonNegative = 0.3
-    # how many body channels may speak, at or above narrow_arousal and below it
-    narrow_arousal: Unit = 0.5
-    body_lines_narrow: int = Field(default=2, ge=0)
-    body_lines_wide: int = Field(default=3, ge=0)
-    # the least body grade that gets a sentence, per channel. Heat speaks from grade one: it is
-    # the one channel where the same fact (warm air, shade) changes value with the body's state,
-    # so the reader needs the body's side to read the facts.
-    body_speak_grade: dict[Channel, Annotated[int, Field(ge=1)]] = Field(
-        default_factory=lambda: {Channel.HEAT: 1, Channel.WATER: 2, Channel.ENERGY: 2}
-    )
-    # grade edges for a fact's value and a channel's felt strength, positive and strictly
-    # ascending; the first value edge is also where a value stops being neutral
-    value_edges: tuple[Positive, ...] = (0.25, 1.0, 2.0, 3.0)
-    body_edges: tuple[Positive, ...] = (0.5, 1.0, 2.0, 3.0)
+    # where a felt level crosses from one of the five words to the next
+    edges: tuple[float, ...] = (0.1, 0.3, 0.55, 0.8)
 
-    @field_validator("value_edges", "body_edges")
+    @field_validator("edges")
     @classmethod
-    def _edges(cls, value: tuple[float, ...]) -> tuple[float, ...]:
-        return _ascending_edges(value)
+    def _five_words(cls, value: tuple[float, ...]) -> tuple[float, ...]:
+        return _edges(value, 4)
 
-    @field_validator("body_speak_grade")
-    @classmethod
-    def _every_channel(cls, value: dict[Channel, int]) -> dict[Channel, int]:
-        return require_keys(value, Channel)
+
+def _tone_weights() -> dict[Channel, float]:
+    return dict.fromkeys(Channel, 1.0) | {Channel.HUNGER: 0.5, Channel.THIRST: 0.5}
 
 
 class FeelingParams(Frozen):
-    # how strongly standing discomfort lowers valence
-    tone_gain: NonNegative = 0.12
-    # the phasic lift from a better-than-expected outcome, and its decay per tick
-    phasic_gain: NonNegative = 0.3
-    phasic_decay: Unit = 0.5
-    # arousal's target: surprise size, plus the loudest need relative to strain_full
-    surprise_gain: NonNegative = 0.5
-    strain_gain: NonNegative = 0.6
-    strain_full: Positive = 3.0
-    arousal_inertia: Unit = 0.5
-    mood_inertia: Unit = 0.9
+    # how much each channel weighs in the tone of feeling, and the edges of its five words
+    tone_weights: ChannelWeights = Field(default_factory=_tone_weights)
+    tone_edges: tuple[float, ...] = (-0.75, -0.3, 0.15, 0.6)
+    # how fast stir follows the size of the surprise, and the edges of its three words
+    stir_rate: Unit = 0.5
+    stir_edges: tuple[float, ...] = (0.15, 0.4)
 
-
-def _per_channel(heat: float, water: float, energy: float) -> dict[Channel, float]:
-    return {Channel.HEAT: heat, Channel.WATER: water, Channel.ENERGY: energy}
-
-
-class ExpectationParams(Frozen):
-    # a model's change words in felt strength: "a bit" from bit to much, "much" beyond much
-    bit: Positive = 0.25
-    much: Positive = 1.0
-    # half the width of a stub's band around its forecast, in channel units
-    stub_tolerance: dict[Channel, NonNegative] = Field(
-        default_factory=lambda: _per_channel(0.12, 0.06, 0.03)
-    )
-
-    @field_validator("stub_tolerance")
+    @field_validator("tone_edges")
     @classmethod
-    def _every_channel(cls, value: dict[Channel, float]) -> dict[Channel, float]:
-        return require_keys(value, Channel)
+    def _tone(cls, value: tuple[float, ...]) -> tuple[float, ...]:
+        return _edges(value, 4)
 
-    @model_validator(mode="after")
-    def _ordered(self) -> "ExpectationParams":
-        if self.bit > self.much:
-            raise ValueError("bit must be <= much")
-        return self
+    @field_validator("stir_edges")
+    @classmethod
+    def _stir(cls, value: tuple[float, ...]) -> tuple[float, ...]:
+        return _edges(value, 2)
+
+
+def _sure_factor() -> dict[Sureness, float]:
+    return {Sureness.GUESSING: 0.5, Sureness.FAIRLY_SURE: 0.75, Sureness.SURE: 1.0}
 
 
 class MonitorParams(Frozen):
-    # the size a world mismatch adds to a comparison, beside the body's felt error
-    world_weight: NonNegative = 1.0
-
-
-class BeliefParams(Frozen):
-    # how strongly the expectation holds against the signal: k = trust / (trust + weight)
-    expectation_weight: dict[Channel, Positive] = Field(
-        default_factory=lambda: _per_channel(0.5, 0.5, 0.5)
+    # the weight of each kind of miss in the surprise, and the miss that makes it whole
+    moved_weight: NonNegative = 1.0
+    channel_weight: ChannelWeights = Field(default_factory=lambda: dict.fromkeys(Channel, 1.0))
+    sense_weight: NonNegative = 0.5
+    scale: Positive = 2.0
+    # how much of the surprise a miss counts for, by how sure the expectation was
+    sure_factor: Annotated[dict[Sureness, NonNegative], every(Sureness)] = Field(
+        default_factory=_sure_factor
     )
+    # none, small, large, for what the model is shown
+    surprise_edges: tuple[float, ...] = (0.05, 0.4)
+    # |worse| below this is "as expected"
+    worse_edge: NonNegative = 0.1
 
-    @field_validator("expectation_weight")
+    @field_validator("surprise_edges")
     @classmethod
-    def _every_channel(cls, value: dict[Channel, float]) -> dict[Channel, float]:
-        return require_keys(value, Channel)
+    def _three_words(cls, value: tuple[float, ...]) -> tuple[float, ...]:
+        return _edges(value, 2)
 
 
-class StubModelParams(Frozen):
-    """The stubs' private one-step model of their own body."""
+class ReasonerParams(Frozen):
+    # the chance that an event is seen when its cause is absent, or missed when present; strictly
+    # between 0 and 1, as is the next, or a tile's shares can all become 0
+    slip: float = Field(default=0.05, gt=0, lt=1)
+    # the chance of an ache from eating when only slightly hungry
+    ache_when_slight: float = Field(default=0.5, gt=0, lt=1)
 
-    # heat moves by heat_rate toward the place's heat pull times heat_per_bearing
-    heat_rate: Unit = 0.1
-    heat_per_bearing: float = 0.5
-    # water falls by water_drain, more by sweat_water per unit of heat, rises by drink_water
-    water_drain: NonNegative = 0.012
-    sweat_water: NonNegative = 0.01
-    drink_water: NonNegative = 0.04
-    # energy falls by walk_energy for a walk, rises by rest_energy for a rest
-    walk_energy: NonNegative = 0.03
-    rest_energy: NonNegative = 0.05
+
+class RuleParams(Frozen):
+    # the least felt step of hunger or thirst that is a need
+    need_at: Step5 = 2
+    # a belief at or above these serves a need, makes a tile unsafe, is believed
+    serve_at: Unit = 0.5
+    avoid_at: Unit = 0.5
+    believe_at: Unit = 0.5
+    # how far from the start the search looks, in steps along each axis
+    reach: int = Field(default=12, ge=1)
+    # the step an expected pleasure or unease is raised to at least
+    felt_step: Step5 = 2
+    # the tries of a target that make an expectation sure, and fairly sure
+    sure_tries: int = Field(default=2, ge=1)
+    fairly_sure_tries: int = Field(default=1, ge=1)
+    # the least felt step of a need at which serving it outranks staying safe
+    desperate_at: Step5 = 3
 
 
 class MemoryParams(Frozen):
-    # how many episodes Perceive recalls, and how they are chosen. One more than Evaluate's
-    # default window: the episode just judged is then the oldest one recalled, so its regulation
-    # line is read once, in the next prompt (spec section 8)
-    retrieval_k: int = Field(default=5, ge=1)
-    # salience = min(1, base_salience + salience_gain * comparison size)
-    base_salience: Unit = 0.2
-    salience_gain: NonNegative = 0.3
-    retrieval: Literal["last_k", "salient_k"] = "last_k"
+    # how many recent episodes are kept and recalled
+    recent_k: int = Field(default=6, ge=0)
 
 
-class EvaluateParams(Frozen):
-    # an episode is judged this many episodes after it was stored
-    window: int = Field(default=4, ge=1)
-    # change of need that maps to a score of 1
-    score_scale: Positive = 1.0
-    # |score| at which an action counts as having helped or hurt
-    helped: Unit = 0.25
+class AppraiseParams(Frozen):
+    # the most changes to the map one appraisal may make
+    max_changes: int = Field(default=12, ge=1)
 
 
-class PullParams(Frozen):
-    # how far a judged score moves the pull of that action at that place
-    rate: Unit = 0.5
-    # the least |pull| that Perceive puts into words
-    speak: NonNegative = 0.2
+class PromptParams(Frozen):
+    # decimals of every belief a model reads
+    decimals: int = Field(default=2, ge=0)
+    # the most characters of a free line (a why, a reading) after whitespace is collapsed
+    line_chars: int = Field(default=240, ge=1)
 
 
-class OverrideParams(Frozen):
-    enabled: bool = True
-    # a need at least this loud after the update, and at least worse_margin worse than expected
-    urgent_felt: NonNegative = 1.5
-    worse_margin: NonNegative = 0.2
-
-
-class DeliberateParams(Frozen):
-    stub: Literal["reactive", "lookahead", "blind"] = "reactive"
-    # the least |need| the reactive rule acts on
-    act_threshold: NonNegative = 0.5
-    # steps the lookahead stub plans over
-    horizon: int = Field(default=6, ge=1)
-    model: StubModelParams = StubModelParams()
-
-
-class ReconcileParams(Frozen):
-    # the least |felt error| on a channel that becomes the voiced surprise
-    voice_threshold: NonNegative = 0.5
+def _comfort_at() -> dict[Channel, float]:
+    return {
+        Channel.HUNGER: 0.55,
+        Channel.THIRST: 0.55,
+        Channel.ACHE: 0.3,
+        Channel.SICKNESS: 0.3,
+        Channel.UNEASE: 0.3,
+        Channel.PLEASURE: 1.0,
+    }
 
 
 class MetricsParams(Frozen):
-    # a channel counts as comfortable while its |need| is below this
-    comfort_felt: NonNegative = 1.0
+    # a step is uncomfortable for a channel when its true level is at or above this
+    comfort_at: Annotated[dict[Channel, Unit], every(Channel)] = Field(default_factory=_comfort_at)
+    # a belief is on the wrong side when the truth is on the other side of this
+    wrong_side: Unit = 0.5
+    # the film rings a tile when a belief moved by at least this
+    rewritten_by: Unit = 0.1
 
 
 class LLMParams(Frozen):
-    # how many times a phase agent may resend an output that fails validation (out of range,
-    # unknown action, malformed) before the run stops with an error; there is no stub fallback
+    # how many times a phase agent may resend an output that fails validation before the run
+    # stops with an error; there is no stand-in fallback
     output_retries: int = Field(default=3, ge=0)
     # sampling temperature sent to the model; null sends none (for models that reject it)
     temperature: NonNegative | None = 1.0
     # per-request timeout in seconds
     timeout_s: Positive = 60.0
-
-
-Scene = Literal["A", "B"]
-
-
-class LadderScene(Frozen):
-    """The believed water and energy of one scene of the ladder check."""
-
-    water: Unit
-    energy: Unit
-
-
-class LadderParams(Frozen):
-    """The ladder check's protocol: a frozen noon in the meadow, the body's believed heat swept
-    over the levels, and the pass mark on the share of answers choosing the oak's shade."""
-
-    # believed heat at each level, coolest first: skin 21, 23, 25, 27, 30, 33 and 36 degrees C
-    heat_levels: tuple[float, ...] = (-0.4, -0.2, 0.0, 0.2, 0.5, 0.8, 1.1)
-    # the swept body: set point, tightness, arousal and the standing habit for every kind of fact
-    setpoint: Levels = Levels(heat=0.0, water=0.80, energy=0.70)
-    tightness: dict[Channel, Positive] = Field(default_factory=lambda: _per_channel(3.0, 5.0, 5.0))
-    arousal: Unit = 0.40
-    habit: dict[FactKind, float] = Field(default_factory=lambda: dict.fromkeys(FactKind, 0.3))
-    # scene A: heat is the only need; scene B: a fixed moderate thirst and tiredness compete
-    scenes: dict[Scene, LadderScene] = Field(
-        default_factory=lambda: {
-            "A": LadderScene(water=0.80, energy=0.70),
-            "B": LadderScene(water=0.50, energy=0.46),
-        }
-    )
-    # answers per cell (scene and level), and how many calls run at once
-    samples: int = Field(default=30, ge=1)
-    jobs: int = Field(default=8, ge=1)
-    # the pass mark, per scene: slope of the shade share per level at least min_slope, share at
-    # the hottest level minus the coolest at least min_range, and no level's share above the next
-    # warmer level's by max_drop or more
-    min_slope: float = 0.05
-    min_range: float = 0.5
-    max_drop: float = 0.25
-
-    @field_validator("heat_levels")
-    @classmethod
-    def _levels(cls, value: tuple[float, ...]) -> tuple[float, ...]:
-        if len(value) < 2:
-            raise ValueError("needs at least two levels")
-        if any(a >= b for a, b in zip(value, value[1:], strict=False)):
-            raise ValueError("levels must be strictly ascending")
-        return value
-
-    @field_validator("tightness")
-    @classmethod
-    def _every_channel(cls, value: dict[Channel, float]) -> dict[Channel, float]:
-        return require_keys(value, Channel)
-
-    @field_validator("habit")
-    @classmethod
-    def _every_kind(cls, value: dict[FactKind, float]) -> dict[FactKind, float]:
-        return require_keys(value, FactKind)
-
-    @field_validator("scenes")
-    @classmethod
-    def _both_scenes(cls, value: dict[Scene, LadderScene]) -> dict[Scene, LadderScene]:
-        if set(value) != {"A", "B"}:
-            raise ValueError("needs scenes A and B")
-        return value
+    # further request settings, passed to the model as given (e.g. max_tokens)
+    settings: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class Params(Frozen):
     lens: LensParams = LensParams()
     feeling: FeelingParams = FeelingParams()
-    expectation: ExpectationParams = ExpectationParams()
     monitor: MonitorParams = MonitorParams()
-    belief: BeliefParams = BeliefParams()
+    reasoner: ReasonerParams = ReasonerParams()
+    rule: RuleParams = RuleParams()
     memory: MemoryParams = MemoryParams()
-    evaluate: EvaluateParams = EvaluateParams()
-    pulls: PullParams = PullParams()
-    override: OverrideParams = OverrideParams()
-    deliberate: DeliberateParams = DeliberateParams()
-    reconcile: ReconcileParams = ReconcileParams()
+    appraise: AppraiseParams = AppraiseParams()
+    prompt: PromptParams = PromptParams()
     metrics: MetricsParams = MetricsParams()
     llm: LLMParams = LLMParams()
-    ladder: LadderParams = LadderParams()
-
-
-Backend = Literal["stub", "llm"]
 
 
 class Backends(Frozen):
-    appraise: Backend = "stub"
-    deliberate: Backend = "stub"
+    deliberate: Literal["rule", "blind", "llm"] = "rule"
+    appraise: Literal["reasoner", "llm"] = "reasoner"
 
 
 class AgentSpec(Frozen):
     name: SafeName
     temperament: Temperament
-    body: BodyState  # the true body at the start
-    belief: Levels  # the belief at the start
-    arousal: Unit = 0.2
-    voiced: SurpriseNote | None = None
 
 
 class RunConfig(Frozen):
@@ -323,7 +212,6 @@ class RunConfig(Frozen):
     seed: int
     ticks: int | None = Field(ge=1)
     world: WorldConfig
-    start_place: Place
     agent: AgentSpec
     params: Params
     backends: Backends
@@ -334,8 +222,7 @@ class ExperimentConfig(Frozen):
     name: SafeName
     seeds: list[int] = Field(min_length=1)
     ticks: int | None = Field(default=None, ge=1)
-    world: WorldConfig = WorldConfig()
-    start_place: Place = Place.MEADOW
+    world: WorldConfig
     agents: list[AgentSpec] = Field(min_length=1)
     params: Params = Params()
     backends: Backends = Backends()
@@ -365,7 +252,6 @@ class ExperimentConfig(Frozen):
                 seed=seed,
                 ticks=self.ticks,
                 world=self.world,
-                start_place=self.start_place,
                 agent=agent,
                 params=self.params,
                 backends=self.backends,
@@ -419,33 +305,57 @@ def resolve_model(config: RunConfig) -> str | None:
     raise ConfigError(f'a backend is "llm" but neither config `model` nor {MODEL_ENV_VAR} is set')
 
 
-def initial_agent_state(config: RunConfig) -> AgentState:
-    """The spec's temperament and belief, a feeling settled from the baseline with the spec's
-    arousal, empty memory, every pull 0, the spec's voiced surprise."""
-    # feeling.py imports this module for FeelingParams, so it is imported here, not at the top
-    from surprise_loop.feeling import feel
+def initial_agent_state(config: RunConfig, signal: Signal) -> AgentState:
+    """The creature before its first tick: what it feels on the starting tile, a map that holds
+    its presumption and the starting tile, the reasoner's starting shares, no tries and no
+    memory."""
+    # these modules import this one, so they are imported here
+    from surprise_loop.feeling import tone_step
+    from surprise_loop.lens import sense
+    from surprise_loop.reasoner import initial_reasoner, marginals, reasoner_beliefs
 
-    spec = config.agent
-    t = spec.temperament
-    start = Feeling(
-        discomfort=0, valence=t.baseline, arousal=spec.arousal, mood=t.baseline, phasic=0
+    temperament = config.agent.temperament
+    levels, smell, damp = sense(
+        signal, temperament, derive_rng(config.seed, "sense", 0), config.params.lens
     )
-    feeling = feel(spec.belief, t, start, None, config.params.feeling)
+    felt = FeltRecord(
+        moved=None,
+        levels=levels,
+        smell=smell,
+        damp=damp,
+        tone=tone_step(levels, config.params.feeling),
+        stir=0,
+        at=(0, 0),
+    )
+    reasoner = initial_reasoner(temperament.presumes)
     return AgentState(
-        temperament=t,
-        belief=spec.belief,
-        feeling=feeling.model_copy(update={"arousal": spec.arousal}),
+        temperament=temperament,
+        felt=felt,
+        stir=0.0,
+        # both maps start as the same picture, the starting tile known to be walkable
+        own_map=CreatureMap(
+            untried=marginals(temperament.presumes),
+            tiles={key((0, 0)): reasoner_beliefs(reasoner, (0, 0))},
+        ),
+        reasoner=reasoner,
+        tries={},
         memory=Memory(episodes=[]),
-        pulls=Pulls(values={place: {action: 0.0 for action in Action} for place in Place}),
-        attention=None,
-        voiced=spec.voiced,
         tick=0,
     )
 
 
-def derive_rng(seed: int, *key: int | str) -> random.Random:
-    """A generator keyed by seed and context; string seeding is stable across processes."""
-    return random.Random(":".join(map(str, (seed, *key))))
+@dataclass
+class TokenCount:
+    """What a run's model calls have used so far; the one mutable thing a run carries."""
+
+    requests: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+    def add(self, requests: int, input_tokens: int, output_tokens: int) -> None:
+        self.requests += requests
+        self.input_tokens += input_tokens
+        self.output_tokens += output_tokens
 
 
 @dataclass(frozen=True)
@@ -453,3 +363,4 @@ class Runtime:
     config: RunConfig
     world: World
     model: object | None = None  # resolved pydantic-ai Model when a backend is "llm"
+    usage: TokenCount = field(default_factory=TokenCount)

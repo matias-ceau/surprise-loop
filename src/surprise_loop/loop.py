@@ -1,8 +1,7 @@
 """The tick loop, tick dumps, resume and replay.
 
-One tick is Perceive, Appraise, then pass 0 (Deliberate, Act, Monitor, Evaluate, Reconcile) and,
-when Reconcile raises an override and the world is not done, exactly one more pass, offered only
-the actions that serve the urgent need. `run` loops ticks and, given a run directory, writes
+One tick is the seven phases once, in the order Perceive, Deliberate, Act, Monitor, Evaluate,
+Appraise, Reconcile. `run` loops ticks and, given a run directory, writes
 `config.json` once and one `tick_<n>.json` per tick, so a run can be resumed and replayed from its
 files. Every written byte is deterministic.
 """
@@ -19,11 +18,16 @@ from pydantic import ValidationError
 
 from surprise_loop import phases as real
 from surprise_loop.agents import load_model
-from surprise_loop.config import RunConfig, Runtime, initial_agent_state, resolve_model
+from surprise_loop.config import (
+    RunConfig,
+    Runtime,
+    TokenCount,
+    initial_agent_state,
+    resolve_model,
+)
 from surprise_loop.phases.heuristics import require
-from surprise_loop.phases.perceive import build_percept
-from surprise_loop.state import AgentState, PassRecord, TickDump, TickRecord, Workspace
-from surprise_loop.world import ClearingWorld, Frozen, WorldState
+from surprise_loop.state import AgentState, TickDump, TickRecord, Workspace
+from surprise_loop.world import Frozen, GridWorld, WorldState
 
 Phase = Callable[[Workspace, Runtime], Awaitable[Workspace]]
 
@@ -59,11 +63,11 @@ class _Phases:
     """The seven phase functions a tick calls; the real ones by default."""
 
     perceive: Phase = real.perceive
-    appraise: Phase = real.appraise
     deliberate: Phase = real.deliberate
     act: Phase = real.act
     monitor: Phase = real.monitor
     evaluate: Phase = real.evaluate
+    appraise: Phase = real.appraise
     reconcile: Phase = real.reconcile
 
 
@@ -78,43 +82,22 @@ async def tick(agent: AgentState, rt: Runtime) -> tuple[AgentState, TickRecord]:
     return await _tick(agent, rt, _REAL_PHASES)
 
 
-async def _pass(ws: Workspace, rt: Runtime, ph: _Phases) -> Workspace:
-    for phase in (ph.deliberate, ph.act, ph.monitor, ph.evaluate, ph.reconcile):
-        ws = await phase(ws, rt)
-    return ws
-
-
 async def _tick(agent: AgentState, rt: Runtime, ph: _Phases) -> tuple[AgentState, TickRecord]:
     # During the tick `agent.tick` stays at the completed count, so the phases read the number of
-    # the tick in progress as `agent.tick + 1`; it is advanced only after the last pass.
-    number = agent.tick + 1
-    observation = rt.world.observe()
-    ws = Workspace(agent=agent, observation=observation)
-    ws = await ph.perceive(ws, rt)
-    ws = await ph.appraise(ws, rt)
-    appraisal = require(ws.appraisal, "appraisal", "tick")
-
-    ws = await _pass(ws, rt, ph)
-    if ws.override is not None and not rt.world.done:
-        outcome = require(ws.outcome, "outcome", "tick")
-        params = rt.config.params
-        ws = Workspace(
-            agent=ws.agent,
-            observation=outcome.observation,
-            pass_index=1,
-            percept=build_percept(
-                outcome.observation, ws.agent, params, offers=ws.override.actions
-            ),
-            appraisal=appraisal,
-            override=ws.override,
-            passes=ws.passes,
-        )
-        ws = await _pass(ws, rt, ph)
-
-    record = TickRecord(
-        tick=number, observation=observation, appraisal=appraisal, passes=list(ws.passes)
-    )
-    return ws.agent.model_copy(update={"tick": number}), record
+    # the tick in progress as `agent.tick + 1`; it is advanced only after Reconcile.
+    ws = Workspace(agent=agent)
+    for phase in (
+        ph.perceive,
+        ph.deliberate,
+        ph.act,
+        ph.monitor,
+        ph.evaluate,
+        ph.appraise,
+        ph.reconcile,
+    ):
+        ws = await phase(ws, rt)
+    record = require(ws.record, "record", "tick")
+    return ws.agent.model_copy(update={"tick": agent.tick + 1}), record
 
 
 # --- files --------------------------------------------------------------------------------------
@@ -127,7 +110,11 @@ def write_atomic(path: Path, text: str) -> None:
     temp.write_text(text, encoding="utf-8", newline="")
     # No fsync: after a power loss a renamed file may still be empty or partial. That is loud,
     # not silent: load_dumps or read_config then refuses the file, and the run is restarted.
-    os.replace(temp, path)
+    try:
+        os.replace(temp, path)
+    except OSError:
+        temp.unlink(missing_ok=True)
+        raise
 
 
 def _write_run_file(path: Path, text: str) -> None:
@@ -143,7 +130,7 @@ def _dump_name(tick: int) -> str:
     return f"tick_{tick:06d}.json"
 
 
-def _dump(config: RunConfig, agent: AgentState, world: ClearingWorld, rec: TickRecord) -> TickDump:
+def _dump(config: RunConfig, agent: AgentState, world: GridWorld, rec: TickRecord) -> TickDump:
     """The dump of the tick `rec` records, after it: the agent and the world as they now are."""
     return TickDump(
         run_id=config.run_id, tick=rec.tick, agent=agent, world=world.snapshot(), record=rec
@@ -198,9 +185,9 @@ def read_config(run_dir: Path) -> RunConfig:
         raise RunError(f"{run_dir}: cannot read {CONFIG_FILE}: {problem}") from None
 
 
-def _initial(config: RunConfig) -> tuple[AgentState, ClearingWorld]:
-    world = ClearingWorld(config.world, config.seed, config.agent.body, config.start_place)
-    return initial_agent_state(config), world
+def _initial(config: RunConfig) -> tuple[AgentState, GridWorld]:
+    world = GridWorld(config.world, config.seed)
+    return initial_agent_state(config, world.observe()), world
 
 
 def load_result(run_dir: Path) -> RunResult:
@@ -231,7 +218,7 @@ def _finished(config: RunConfig, ticks_done: int, world_done: bool) -> bool:
 
 def is_complete(result: RunResult) -> bool:
     """Whether `run` would add no tick to `result`: the same stop rule `run` uses."""
-    world_done = ClearingWorld.restore(result.config.world, result.world).done
+    world_done = GridWorld.restore(result.config.world, result.world).done
     return _finished(result.config, len(result.records), world_done)
 
 
@@ -244,10 +231,17 @@ async def run(
     *,
     resume: bool = False,
     stop_after_tick: int | None = None,
+    usage: TokenCount | None = None,
 ) -> RunResult:
-    """Run ticks until the world is done, `config.ticks` are complete or `stop_after_tick`."""
+    """Run ticks until the world is done, `config.ticks` are complete or `stop_after_tick`. The
+    model calls' requests and tokens are added to `usage` when one is given."""
     return await _run(
-        config, run_dir, resume=resume, stop_after_tick=stop_after_tick, phases=_REAL_PHASES
+        config,
+        run_dir,
+        resume=resume,
+        stop_after_tick=stop_after_tick,
+        phases=_REAL_PHASES,
+        usage=usage,
     )
 
 
@@ -258,6 +252,7 @@ async def _run(
     resume: bool = False,
     stop_after_tick: int | None = None,
     phases: _Phases,
+    usage: TokenCount | None = None,
 ) -> RunResult:
     config = config.model_copy(update={"model": resolve_model(config)})
     model = load_model(config.model)
@@ -285,7 +280,7 @@ async def _run(
             if dumps:
                 records = [d.record for d in dumps]
                 agent = dumps[-1].agent
-                world = ClearingWorld.restore(config.world, dumps[-1].world)
+                world = GridWorld.restore(config.world, dumps[-1].world)
         else:
             try:
                 run_dir.mkdir(parents=True, exist_ok=True)
@@ -293,7 +288,7 @@ async def _run(
                 raise RunError(f"{run_dir}: cannot create: {_reason(e)}") from None
             _write_run_file(run_dir / CONFIG_FILE, config.model_dump_json())
 
-    rt = Runtime(config=config, world=world, model=model)
+    rt = Runtime(config=config, world=world, model=model, usage=usage or TokenCount())
     async with AsyncExitStack() as stack:
         if model is not None:
             # keep the model's HTTP client open for the whole run instead of one per call
@@ -320,24 +315,17 @@ async def replay(run_dir: Path) -> int:
     return await _replay(run_dir, _REAL_PHASES)
 
 
-def _recorded(record: TickRecord, run_dir: Path, base: _Phases) -> _Phases:
-    """`base` with Appraise and Deliberate returning what `record` holds. Evaluate is code and
-    runs for real."""
+def _recorded(record: TickRecord, base: _Phases) -> _Phases:
+    """`base` with Deliberate and Appraise returning what `record` holds. Every other phase,
+    Evaluate included, runs for real."""
 
-    def recorded_pass(ws: Workspace) -> PassRecord:
-        if ws.pass_index >= len(record.passes):
-            raise ReplayMismatch(
-                run_dir, record.tick, f"the replay needs pass {ws.pass_index}, not in the record"
-            )
-        return record.passes[ws.pass_index]
+    async def deliberate(ws: Workspace, rt: Runtime) -> Workspace:
+        return ws.model_copy(update={"decision": record.decision})
 
     async def appraise(ws: Workspace, rt: Runtime) -> Workspace:
         return ws.model_copy(update={"appraisal": record.appraisal})
 
-    async def deliberate(ws: Workspace, rt: Runtime) -> Workspace:
-        return ws.model_copy(update={"decision": recorded_pass(ws).decision})
-
-    return dataclasses.replace(base, appraise=appraise, deliberate=deliberate)
+    return dataclasses.replace(base, deliberate=deliberate, appraise=appraise)
 
 
 async def _replay(run_dir: Path, base: _Phases) -> int:
@@ -350,7 +338,7 @@ async def _replay(run_dir: Path, base: _Phases) -> int:
     for stored in dumps:
         if world.done:
             raise ReplayMismatch(run_dir, stored.tick, "the world ended before this tick")
-        agent, record = await _tick(agent, rt, _recorded(stored.record, run_dir, base))
+        agent, record = await _tick(agent, rt, _recorded(stored.record, base))
         rebuilt = _dump(config, agent, world, record)
         if rebuilt != stored:
             differing = [

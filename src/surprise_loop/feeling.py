@@ -1,59 +1,32 @@
-"""The definitions of feeling: the one place felt strength, need, discomfort and affect live.
+"""The summary feeling, defined in one place: the tone of the felt levels, and stir.
 
-Felt strength is signed and in felt units: positive is more strain (too hot, thirsty, tired).
-Need is the felt strength with water and energy clipped at 0 from below: having drunk more than
-enough is not a need. Heat keeps its sign, because too cold is a need as well.
+Tone weighs every channel's felt step, pleasure for and the others against. Stir follows the size
+of the surprise, so it rises when expectations fail and settles when they hold.
 """
 
-import math
-
 from surprise_loop.config import FeelingParams
-from surprise_loop.state import Comparison, Feeling, Temperament
-from surprise_loop.world import Channel, Levels
+from surprise_loop.lens import ladder_step
+from surprise_loop.phrases import FEEL_WORDS
+from surprise_loop.world import Channel
+
+# the top step of the five-word ladder, which a tone sum is scaled by
+TOP_STEP = len(FEEL_WORDS) - 1
 
 
-def felt(levels: Levels, t: Temperament) -> dict[Channel, float]:
-    """Signed felt strength per channel."""
-    out: dict[Channel, float] = {}
-    for c in Channel:
-        offset = levels.of(c) - t.setpoint.of(c)
-        out[c] = t.tightness[c] * (offset if c is Channel.HEAT else -offset)
-    return out
+def valence(c: Channel) -> int:
+    """+1 for a channel that feels good when high (pleasure), -1 for the others."""
+    return 1 if c is Channel.PLEASURE else -1
 
 
-def needs(levels: Levels, t: Temperament) -> dict[Channel, float]:
-    """Felt strength, with water and energy clipped at 0 from below."""
-    return {c: v if c is Channel.HEAT else max(0, v) for c, v in felt(levels, t).items()}
+def tone_step(levels: dict[Channel, int], p: FeelingParams) -> int:
+    total = sum(valence(c) * p.tone_weights[c] * levels[c] for c in Channel)
+    value = min(1.0, max(-1.0, total / TOP_STEP))
+    return ladder_step(value, p.tone_edges)
 
 
-def discomfort(levels: Levels, t: Temperament) -> float:
-    return sum(abs(v) for v in needs(levels, t).values())
+def next_stir(stir: float, surprise: float, p: FeelingParams) -> float:
+    return (1 - p.stir_rate) * stir + p.stir_rate * surprise
 
 
-def grade(x: float, edges: tuple[float, ...]) -> int:
-    """How many edges |x| reaches."""
-    return sum(abs(x) >= e for e in edges)
-
-
-def feel(
-    belief: Levels,
-    t: Temperament,
-    previous: Feeling,
-    comparison: Comparison | None,
-    p: FeelingParams,
-) -> Feeling:
-    """The next feeling: tone from standing discomfort, a phasic lift or drop from how the last
-    outcome compared with what was expected, arousal from surprise and strain, mood from valence."""
-    need = needs(belief, t)
-    d = sum(abs(v) for v in need.values())
-    phasic = p.phasic_decay * previous.phasic
-    size = 0
-    if comparison is not None:
-        phasic += p.phasic_gain * math.tanh(comparison.better)
-        size = comparison.size
-    valence = min(1, max(-1, t.baseline - math.tanh(p.tone_gain * d) + phasic))
-    strain = min(1, max(abs(v) for v in need.values()) / p.strain_full)
-    target = min(1, p.surprise_gain * size + p.strain_gain * strain)
-    arousal = p.arousal_inertia * previous.arousal + (1 - p.arousal_inertia) * target
-    mood = p.mood_inertia * previous.mood + (1 - p.mood_inertia) * valence
-    return Feeling(discomfort=d, valence=valence, arousal=arousal, mood=mood, phasic=phasic)
+def stir_step(stir: float, p: FeelingParams) -> int:
+    return ladder_step(stir, p.stir_edges)

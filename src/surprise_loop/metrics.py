@@ -1,13 +1,12 @@
 """Measures of a run, computed from its records.
 
-Everything here is pure: no I/O, no randomness, inputs are never mutated. `passes` is always the
-flattened `PassRecord`s of a run in step order (see `flatten`): each pass is one world step. The
-result model is flat, so it maps directly onto a CSV row. Every measure is defined for a run with
-no passes (counts and shares are 0) and for a body that is collapsed all day.
+Everything here is pure: no I/O, no randomness, inputs are never mutated. `summarize` turns a run
+into one flat row, so it maps directly onto a CSV row; every measure is defined for a run with no
+ticks (counts and shares are 0, the map errors are those of the starting state).
 
-Comfort is read from the true body (`outcome.info.body`) under the run's temperament, never from
-the belief: a channel is uncomfortable after a step when its need has magnitude at least
-`params.metrics.comfort_felt` (heat either way; water and energy only as a deficit).
+Comfort is read from the true body after each step (`outcome.signal.body`), never from what was
+felt: a channel is uncomfortable after a step when its true level is at least
+`params.metrics.comfort_at[channel]`. Pleasure is never a discomfort.
 
 The CSV writers at the end turn a list of `RunResult`s into the experiment's tables. They are pure
 and deterministic: rows follow the given results (the CLI passes them in config order, all seeds
@@ -19,46 +18,79 @@ import csv
 import io
 from collections.abc import Iterable, Sequence
 from enum import Enum
+from itertools import combinations, pairwise
+from typing import Literal
 
-from surprise_loop.feeling import needs
 from surprise_loop.loop import RunResult
-from surprise_loop.phases.heuristics import reactive_choice
-from surprise_loop.state import FeltScene, PassRecord, TickRecord
-from surprise_loop.world import Action, Channel, ClearingWorld, Frozen, Levels
+from surprise_loop.phases.heuristics import measures
+from surprise_loop.reasoner import reasoner_beliefs
+from surprise_loop.state import AgentState, Measures, TickRecord
+from surprise_loop.world import (
+    Belief,
+    Channel,
+    Direction,
+    Frozen,
+    Position,
+    WorldConfig,
+    key,
+    layout_positions,
+    neighbours,
+)
+
+DISCOMFORTS: tuple[Channel, ...] = (
+    Channel.HUNGER,
+    Channel.THIRST,
+    Channel.ACHE,
+    Channel.SICKNESS,
+    Channel.UNEASE,
+)
 
 
 class RunMetrics(Frozen):
     steps: int
-    ticks: int
-    truncated: bool
-    uncomfortable_heat: int
-    uncomfortable_water: int
-    uncomfortable_energy: int
-    collapsed_steps: int
-    stumbles: int
-    n_go_meadow: int
-    n_go_oak: int
-    n_go_stream: int
-    n_drink: int
-    n_rest: int
-    n_look: int
-    mean_size: float
-    band_hits_heat: float
-    band_hits_water: float
-    band_hits_energy: float
-    world_expectations: int
-    world_held: int
-    overrides: int
-    # among the passes offering at least two actions, the share whose action is the reactive
-    # rule's choice (0.0 when there is none): with a single offer the rule cannot disagree
+    uncomfortable_hunger: int
+    uncomfortable_thirst: int
+    uncomfortable_ache: int
+    uncomfortable_sickness: int
+    uncomfortable_unease: int
+    uncomfortable_total: int
+    surprised_share: float
+    mean_surprise: float
+    hit_moved: float
+    hit_hunger: float
+    hit_thirst: float
+    hit_ache: float
+    hit_sickness: float
+    hit_unease: float
+    hit_pleasure: float
+    hit_smell: float
+    hit_damp: float
     rule_agreement: float
-    final_valence: float
-    mean_arousal: float
+    chance_agreement: float
+    tiles_tried: int
+    start_error: float
+    own_error: float
+    reasoner_error: float
+    gap: float
+    own_error_all: float
+    reasoner_error_all: float
+    gap_all: float
+    false_harm: int
+    false_safe: int
+    reasoner_false_harm: int
+    reasoner_false_safe: int
+    wrong_tile_steps: int
+    sickness_arrivals: int
+    changes_per_step: float
+    stray_changes: int
 
 
-def flatten(records: list[TickRecord]) -> list[PassRecord]:
-    """All passes in tick order, then pass order: that is world-step order."""
-    return [p for record in records for p in record.passes]
+class Gate2(Frozen):
+    completed: bool
+    start_error: float
+    own_error: float
+    reasoner_error: float
+    passed: bool
 
 
 def _share(hits: int, total: int) -> float:
@@ -69,77 +101,139 @@ def _mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
 
-def _true_body(p: PassRecord) -> Levels:
-    body = p.outcome.info.body
-    return Levels(heat=body.heat, water=body.water, energy=body.energy)
+def _last_measures(result: RunResult) -> Measures:
+    """The last tick's measures; for a run with no tick, those of its starting state."""
+    if result.records:
+        return result.records[-1].measures
+    config = result.config
+    return measures(result.agent, config.world, config.params.metrics)
+
+
+def _stray_changes(records: list[TickRecord], memory: int) -> int:
+    """Changes to a spot that is not the tick's target, not a neighbour of the position after the
+    step, and not the target of any of the previous `memory` ticks."""
+    stray = 0
+    for i, record in enumerate(records):
+        near: set[Position] = {
+            record.outcome.info.target,
+            *neighbours(record.outcome.signal.position),
+            *(r.outcome.info.target for r in records[max(0, i - memory) : i]),
+        }
+        stray += sum(1 for change in record.appraisal.changes if change.at not in near)
+    return stray
 
 
 def summarize(result: RunResult) -> RunMetrics:
     """The run's measures as one flat, CSV-ready row."""
-    passes = flatten(result.records)
+    records = result.records
     config = result.config
-    t, comfort = config.agent.temperament, config.params.metrics.comfort_felt
-    n = len(passes)
+    comfort = config.params.metrics.comfort_at
+    n = len(records)
 
-    true_needs = [needs(_true_body(p), t) for p in passes]
+    uncomfortable = {
+        c: sum(1 for r in records if r.outcome.signal.body[c] >= comfort[c]) for c in DISCOMFORTS
+    }
 
-    def uncomfortable(c: Channel) -> int:
-        return sum(1 for need in true_needs if abs(need[c]) >= comfort)
+    def hit_level(c: Channel) -> float:
+        return _share(
+            sum(1 for r in records if r.decision.expectation.levels[c] == r.felt.levels[c]), n
+        )
 
-    def band_hits(c: Channel) -> float:
-        return _share(sum(1 for p in passes if p.comparison.body[c] == 0), n)
+    def hit(field: Literal["moved", "smell", "damp"]) -> float:
+        hits = (getattr(r.decision.expectation, field) == getattr(r.felt, field) for r in records)
+        return _share(sum(hits), n)
 
-    def count(action: Action) -> int:
-        return sum(1 for p in passes if p.decision.action is action)
-
-    with_choice = [p for p in passes if len(p.offers) >= 2]
-    agreeing = sum(
-        1
-        for p in with_choice
-        if p.decision.action is reactive_choice(p.scene, p.offers, config.params.deliberate)
-    )
-    compared = [p.comparison.world for p in passes if p.comparison.world is not None]
+    last = _last_measures(result)
     return RunMetrics(
         steps=n,
-        ticks=len(result.records),
-        truncated=not ClearingWorld.restore(config.world, result.world).done,
-        uncomfortable_heat=uncomfortable(Channel.HEAT),
-        uncomfortable_water=uncomfortable(Channel.WATER),
-        uncomfortable_energy=uncomfortable(Channel.ENERGY),
-        collapsed_steps=sum(1 for p in passes if p.outcome.info.collapsed),
-        stumbles=sum(1 for p in passes if p.outcome.info.stumbled),
-        n_go_meadow=count(Action.GO_MEADOW),
-        n_go_oak=count(Action.GO_OAK),
-        n_go_stream=count(Action.GO_STREAM),
-        n_drink=count(Action.DRINK),
-        n_rest=count(Action.REST),
-        n_look=count(Action.LOOK),
-        mean_size=_mean([p.comparison.size for p in passes]),
-        band_hits_heat=band_hits(Channel.HEAT),
-        band_hits_water=band_hits(Channel.WATER),
-        band_hits_energy=band_hits(Channel.ENERGY),
-        world_expectations=len(compared),
-        world_held=sum(1 for mismatch in compared if not mismatch),
-        overrides=sum(1 for p in passes if p.override is not None),
-        rule_agreement=_share(agreeing, len(with_choice)),
-        final_valence=result.agent.feeling.valence,
-        mean_arousal=_mean([p.feeling_after.arousal for p in passes]),
+        uncomfortable_hunger=uncomfortable[Channel.HUNGER],
+        uncomfortable_thirst=uncomfortable[Channel.THIRST],
+        uncomfortable_ache=uncomfortable[Channel.ACHE],
+        uncomfortable_sickness=uncomfortable[Channel.SICKNESS],
+        uncomfortable_unease=uncomfortable[Channel.UNEASE],
+        uncomfortable_total=sum(uncomfortable.values()),
+        surprised_share=_share(sum(1 for r in records if r.comparison.surprise > 0), n),
+        mean_surprise=_mean([r.comparison.surprise for r in records]),
+        hit_moved=hit("moved"),
+        hit_hunger=hit_level(Channel.HUNGER),
+        hit_thirst=hit_level(Channel.THIRST),
+        hit_ache=hit_level(Channel.ACHE),
+        hit_sickness=hit_level(Channel.SICKNESS),
+        hit_unease=hit_level(Channel.UNEASE),
+        hit_pleasure=hit_level(Channel.PLEASURE),
+        hit_smell=hit("smell"),
+        hit_damp=hit("damp"),
+        rule_agreement=_share(sum(1 for r in records if r.decision.direction in r.rule_best), n),
+        chance_agreement=_mean([len(r.rule_best) / len(Direction) for r in records]),
+        tiles_tried=last.tiles_tried,
+        start_error=last.start_error,
+        own_error=last.own_error,
+        reasoner_error=last.reasoner_error,
+        gap=last.gap,
+        own_error_all=last.own_error_all,
+        reasoner_error_all=last.reasoner_error_all,
+        gap_all=last.gap_all,
+        false_harm=last.false_harm,
+        false_safe=last.false_safe,
+        reasoner_false_harm=last.reasoner_false_harm,
+        reasoner_false_safe=last.reasoner_false_safe,
+        wrong_tile_steps=sum(len(r.measures.wrong) for r in records),
+        sickness_arrivals=sum(1 for r in records if r.outcome.info.sickness_arrived),
+        changes_per_step=_mean([len(r.appraisal.changes) for r in records]),
+        stray_changes=_stray_changes(records, max(config.world.body.sick_delays)),
     )
 
 
-def _noticed_signs(scene: FeltScene) -> dict[str, str]:
-    return {f.name: f.sign for f in scene.facts if f.noticed}
+def _beliefs(
+    agent: AgentState, at: Position, which: Literal["own", "reasoner"]
+) -> dict[Belief, float]:
+    if which == "own":
+        return agent.own_map.at(at)
+    return reasoner_beliefs(agent.reasoner, at)
 
 
-def opposite_value_steps(a: RunResult, b: RunResult) -> int:
-    """The steps (passes paired by index, up to the shorter run) at which some fact is noticed in
-    both scenes and valued "+" in one and "-" in the other."""
-    count = 0
-    for pa, pb in zip(flatten(a.records), flatten(b.records), strict=False):
-        signs_a, signs_b = _noticed_signs(pa.scene), _noticed_signs(pb.scene)
-        if any({signs_a[name], signs_b[name]} == {"+", "-"} for name in signs_a.keys() & signs_b):
-            count += 1
-    return count
+def map_distance(
+    a: AgentState,
+    b: AgentState,
+    world: WorldConfig,
+    which: Literal["own", "reasoner"],
+    tiles: Literal["shared", "all"] = "shared",
+) -> float | None:
+    """The mean absolute difference of the five beliefs, read from each creature's own map or
+    from the reasoner's. With `shared`, over the layout tiles tried in both states, and None when
+    there is none; with `all`, over every tile of the layout, where an untried tile has the map's
+    untried beliefs or the reasoner's presumption."""
+    over = layout_positions(world)
+    if tiles == "shared":
+        over = tuple(at for at in over if key(at) in a.tries and key(at) in b.tries)
+        if not over:
+            return None
+    total = sum(
+        abs(_beliefs(a, at, which)[belief] - _beliefs(b, at, which)[belief])
+        for at in over
+        for belief in Belief
+    )
+    return total / (len(over) * len(Belief))
+
+
+def gate2(result: RunResult) -> Gate2:
+    """Gate 2's marks: the run completed, and over the tiles it tried the creature's own map ended
+    closer to the world than its start, closing at least half of what the reasoner closed."""
+    config = result.config
+    # a tick cap longer than the day ends with the day
+    steps = config.world.steps
+    ticks = min(config.ticks, steps) if config.ticks is not None else steps
+    completed = len(result.records) == ticks
+    last = _last_measures(result)
+    start, own, reasoner = last.start_error, last.own_error, last.reasoner_error
+    passed = completed and own < start and (start - own) >= 0.5 * (start - reasoner)
+    return Gate2(
+        completed=completed,
+        start_error=start,
+        own_error=own,
+        reasoner_error=reasoner,
+        passed=passed,
+    )
 
 
 def icc1(groups: list[list[float]]) -> float:
@@ -167,14 +261,6 @@ def icc1(groups: list[list[float]]) -> float:
 
 
 # --- CSV tables ---------------------------------------------------------------------------------
-
-# The `RunMetrics` fields whose between-agent stability `stability_csv` reports: every
-# behavioural measure. Left out: `steps` and `ticks` (set by the length of the day and the cap,
-# and by overrides for steps, so not a disposition of the agent) and `truncated` (a flag that
-# qualifies the other measures rather than measuring behaviour).
-STABILITY_METRICS: tuple[str, ...] = tuple(
-    f for f in RunMetrics.model_fields if f not in {"steps", "ticks", "truncated"}
-)
 
 Cell = str | int | float | bool | Enum | None
 
@@ -214,74 +300,46 @@ def results_csv(results: Sequence[RunResult]) -> str:
     return _csv(["agent", "seed", *names], rows)
 
 
-# per channel: the comparison's body error, the belief after the pass, the true body after it
 TRACE_COLUMNS: tuple[str, ...] = (
     "agent",
     "seed",
-    "step",
-    "minute",
-    "place",
-    "action",
-    "event",
-    *(f"error_{c.value}" for c in Channel),
-    "world",
-    "better",
-    "size",
-    *(f"belief_{c.value}" for c in Channel),
-    *(f"body_{c.value}" for c in Channel),
-    "valence",
-    "arousal",
+    "tick",
+    "direction",
+    "moved",
+    "surprise",
+    "worse",
+    "tiles_tried",
+    "start_error",
+    "own_error",
+    "reasoner_error",
+    "gap",
+    "false_harm",
+    "false_safe",
 )
 
 
-def _trace_row(result: RunResult, p: PassRecord) -> list[Cell]:
-    info, c = p.outcome.info, p.comparison
-    body = _true_body(p)
+def _trace_row(result: RunResult, r: TickRecord) -> list[Cell]:
+    m = r.measures
     return [
         *_key(result),
-        info.step,
-        info.minute,
-        p.scene.place,  # where the decision was made
-        p.decision.action,
-        p.outcome.observation.event,
-        *(c.body[ch] for ch in Channel),
-        c.world,
-        c.better,
-        c.size,
-        *(p.belief_after.of(ch) for ch in Channel),
-        *(body.of(ch) for ch in Channel),
-        p.feeling_after.valence,
-        p.feeling_after.arousal,
+        r.tick,
+        r.decision.direction,
+        r.outcome.signal.moved,
+        r.comparison.surprise,
+        r.comparison.worse,
+        m.tiles_tried,
+        m.start_error,
+        m.own_error,
+        m.reasoner_error,
+        m.gap,
+        m.false_harm,
+        m.false_safe,
     ]
 
 
 def trace_csv(results: Sequence[RunResult]) -> str:
-    """One row per world step per run. `step` and `minute` are the world's after the step; the
-    comparison's `world` is empty when there was nothing to compare."""
-    rows = [_trace_row(result, p) for result in results for p in flatten(result.records)]
-    return _csv(TRACE_COLUMNS, rows)
-
-
-def stability_csv(results: Sequence[RunResult]) -> str:
-    """ICC(1) of each `STABILITY_METRICS` measure, with seeds grouped within agent.
-
-    Agents are grouped by name in order of first appearance, each group's values in the order
-    given. `n_agents` is the number of groups, `n_seeds` the number of distinct seeds.
-    """
-    groups: dict[str, list[RunMetrics]] = {}
-    for result in results:
-        groups.setdefault(result.config.agent.name, []).append(summarize(result))
-    n_seeds = len({result.config.seed for result in results})
-    rows = [
-        [
-            name,
-            icc1([[float(getattr(m, name)) for m in group] for group in groups.values()]),
-            len(groups),
-            n_seeds,
-        ]
-        for name in STABILITY_METRICS
-    ]
-    return _csv(["metric", "icc1", "n_agents", "n_seeds"], rows)
+    """One row per tick per run."""
+    return _csv(TRACE_COLUMNS, [_trace_row(res, r) for res in results for r in res.records])
 
 
 def _agents(results: Sequence[RunResult]) -> list[str]:
@@ -289,29 +347,91 @@ def _agents(results: Sequence[RunResult]) -> list[str]:
     return list(dict.fromkeys(result.config.agent.name for result in results))
 
 
-def pairs_csv(results: Sequence[RunResult]) -> str:
-    """For results of exactly two agents: one row per seed (in the first agent's order) with
-    `opposite_value_steps` of the two runs of that seed, agents in order of first appearance."""
-    agent_a, agent_b = _agents(results)
-    run = {(result.config.agent.name, result.config.seed): result for result in results}
-    seeds = [result.config.seed for result in results if result.config.agent.name == agent_a]
-    rows = [
-        [seed, agent_a, agent_b, opposite_value_steps(run[agent_a, seed], run[agent_b, seed])]
+def _seeds(results: Sequence[RunResult]) -> list[int]:
+    """The seeds in order of first appearance."""
+    return list(dict.fromkeys(result.config.seed for result in results))
+
+
+DISTANCE_COLUMNS: tuple[str, ...] = (
+    "kind",
+    "agent_a",
+    "agent_b",
+    "seed_a",
+    "seed_b",
+    "own_distance",
+    "reasoner_distance",
+    "own_distance_all",
+    "reasoner_distance_all",
+)
+
+
+def distances_csv(results: Sequence[RunResult]) -> str:
+    """The distance between the final maps of two runs. `between` rows first: at each seed, every
+    two agents. Then `within` rows: for each agent, each two consecutive seeds."""
+    run = {(r.config.agent.name, r.config.seed): r for r in results}
+    agents, seeds = _agents(results), _seeds(results)
+    pairs = [
+        ("between", (a, seed), (b, seed))
         for seed in seeds
+        for a, b in combinations([a for a in agents if (a, seed) in run], 2)
+    ] + [
+        ("within", (agent, s), (agent, t))
+        for agent in agents
+        for s, t in pairwise([s for s in seeds if (agent, s) in run])
     ]
-    return _csv(["seed", "agent_a", "agent_b", "opposite_value_steps"], rows)
+    rows = []
+    for kind, first, second in pairs:
+        a, b = run[first], run[second]
+        world = a.config.world
+        rows.append(
+            [
+                kind,
+                first[0],
+                second[0],
+                first[1],
+                second[1],
+                map_distance(a.agent, b.agent, world, "own"),
+                map_distance(a.agent, b.agent, world, "reasoner"),
+                map_distance(a.agent, b.agent, world, "own", tiles="all"),
+                map_distance(a.agent, b.agent, world, "reasoner", tiles="all"),
+            ]
+        )
+    return _csv(DISTANCE_COLUMNS, rows)
 
 
-TABLE_FILES: tuple[str, ...] = ("results.csv", "trace.csv", "stability.csv", "pairs.csv")
+def stability_csv(results: Sequence[RunResult]) -> str:
+    """ICC(1) of each `RunMetrics` field, with seeds grouped within agent.
+
+    Agents are grouped by name in order of first appearance, each group's values in the order
+    given. `n_agents` is the number of groups, `n_seeds` the number of distinct seeds.
+    """
+    groups: dict[str, list[RunMetrics]] = {}
+    for result in results:
+        groups.setdefault(result.config.agent.name, []).append(summarize(result))
+    n_seeds = len(_seeds(results))
+    rows = [
+        [
+            name,
+            icc1([[float(getattr(m, name)) for m in group] for group in groups.values()]),
+            len(groups),
+            n_seeds,
+        ]
+        for name in RunMetrics.model_fields
+    ]
+    return _csv(["metric", "icc1", "n_agents", "n_seeds"], rows)
+
+
+TABLE_FILES: tuple[str, ...] = ("results.csv", "trace.csv", "distances.csv", "stability.csv")
 
 
 def experiment_tables(results: Sequence[RunResult]) -> dict[str, str]:
-    """The experiment's CSV files by file name: results.csv and trace.csv; stability.csv when the
-    results hold at least two seeds (with one, no ICC is defined); pairs.csv when they hold
-    exactly two agents."""
-    tables = {"results.csv": results_csv(results), "trace.csv": trace_csv(results)}
-    if len({result.config.seed for result in results}) >= 2:
+    """The experiment's CSV files by file name: results.csv, trace.csv and distances.csv always;
+    stability.csv when the results hold at least two seeds (with one, no ICC is defined)."""
+    tables = {
+        "results.csv": results_csv(results),
+        "trace.csv": trace_csv(results),
+        "distances.csv": distances_csv(results),
+    }
+    if len(_seeds(results)) >= 2:
         tables["stability.csv"] = stability_csv(results)
-    if len(_agents(results)) == 2:
-        tables["pairs.csv"] = pairs_csv(results)
     return tables

@@ -3,58 +3,63 @@
 import json
 import re
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
+from creatures import run_config
 from pydantic_ai import ModelResponse, ToolCallPart
 from pydantic_ai.messages import ModelMessage, ModelRequest, ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from surprise_loop.config import Backends, LLMParams, RunConfig, Runtime, load_config
-from surprise_loop.phrases import APPRAISE_INSTRUCTION, DELIBERATE_INSTRUCTION, OFFER_PHRASES
-from surprise_loop.world import Action, ClearingWorld
+from surprise_loop.agents import APPRAISE_INSTRUCTIONS, DELIBERATE_INSTRUCTIONS
+from surprise_loop.config import Backends, RunConfig, Runtime
+from surprise_loop.world import GridWorld
 
-ROOT = Path(__file__).resolve().parents[1]
-AFTERNOON_LLM = ROOT / "experiments" / "clearing_afternoon_llm.yaml"
-
-# What no text a model reads may hold: a digit, an identifier-like token, or a word that frames
-# the clearing as anything but a place.
-MACHINE_LIKE = re.compile(r"[0-9_]")
+# What no text a model reads may hold: a word that frames the place as anything but a place.
 FORBIDDEN = re.compile(r"\b(game|simulation|experiment)", re.IGNORECASE)
 
-APPRAISAL = {"reading": "The sun is too much for me.", "about": "heat"}
-DECISION = {
-    "letter": "A",
-    "heat": "much cooler",
-    "thirst": "about the same",
-    "tiredness": "a bit more tired",
-    "expect": "yes",
-    "sure": "fairly sure",
-    "why": "The shade is close.",
+BOTH_LLM = Backends(deliberate="llm", appraise="llm")
+
+DECISION: dict[str, Any] = {
+    "why": "The east looks open.",
+    "direction": "east",
+    "moved": True,
+    "hunger": "slight",
+    "thirst": "slight",
+    "ache": "none",
+    "sickness": "none",
+    "unease": "none",
+    "pleasure": "none",
+    "smell": "none",
+    "damp": "faint",
+    "sure": "guessing",
 }
+APPRAISAL: dict[str, Any] = {"reading": "Nothing new here.", "changes": []}
 
 
-def afternoon(
-    agent: int = 0,
+def beliefs(blocks: float, hurts: float, feeds: float, quenches: float, pleases: float) -> dict:
+    return {
+        "blocks": blocks,
+        "hurts": hurts,
+        "feeds": feeds,
+        "quenches": quenches,
+        "pleases": pleases,
+    }
+
+
+def llm_config(
+    agent: str = "plain",
     *,
-    backends: Backends | None = None,
+    backends: Backends = BOTH_LLM,
     model: str | None = "test",
     ticks: int | None = 20,
-    llm: LLMParams | None = None,
+    **changes: Any,
 ) -> RunConfig:
-    """A run of the model afternoon (0 is ilo, 1 is tavi)."""
-    config = load_config(AFTERNOON_LLM).runs()[agent]
-    update: dict[str, Any] = {"model": model, "ticks": ticks}
-    if backends is not None:
-        update["backends"] = backends
-    if llm is not None:
-        update["params"] = config.params.model_copy(update={"llm": llm})
-    return config.model_copy(update=update)
+    """A run of the two-maps layout with model-backed phases, capped at `ticks`."""
+    return run_config(agent, 1, backends=backends, model=model, ticks=ticks, **changes)
 
 
 def runtime(config: RunConfig, model: object) -> Runtime:
-    world = ClearingWorld(config.world, config.seed, config.agent.body, config.start_place)
-    return Runtime(config=config, world=world, model=model)
+    return Runtime(config=config, world=GridWorld(config.world, config.seed), model=model)
 
 
 def user_prompt(messages: list[ModelMessage]) -> str:
@@ -74,61 +79,56 @@ def retry_feedback(messages: list[ModelMessage]) -> str:
     return json.dumps([str(p.content) for p in returns])
 
 
-def offered_letters(prompt: str) -> dict[str, Action]:
-    """The lettered offers of a Deliberate prompt, letter to action, read back from its phrases."""
-    by_phrase: dict[str, set[Action]] = {}
-    for (_, action), phrase in OFFER_PHRASES.items():
-        by_phrase.setdefault(phrase, set()).add(action)
-    out: dict[str, Action] = {}
-    for line in prompt.split("\n"):
-        letter, sep, text = line.partition(". ")
-        if sep and len(letter) == 1 and letter in "ABCDE" and text in by_phrase:
-            [action] = by_phrase[text]
-            out[letter] = action
-    return out
-
-
 Answer = Callable[[str], dict[str, Any]]
 
 
 class Recorder:
-    """A FunctionModel for both agents: Appraise answers `appraisal`, Deliberate answers what
-    `decide(prompt)` returns. Every call is kept as (agent, instructions, user prompt)."""
+    """A FunctionModel for both agents: Deliberate answers `decide(prompt)`, Appraise answers
+    `appraise(prompt)`. Every call is kept as (agent, instructions, user prompt), with the output
+    tools the model was shown. `fail_on` makes the n-th Deliberate call (from 1) raise."""
 
     def __init__(
-        self, decide: Answer | None = None, appraisal: dict[str, Any] | None = None
+        self,
+        decide: Answer | None = None,
+        appraise: Answer | None = None,
+        fail_on: int | None = None,
     ) -> None:
         self.calls: list[tuple[str, str, str]] = []
+        self.tools: list[Any] = []
         self.decide = decide or (lambda prompt: DECISION)
-        self.appraisal = appraisal or APPRAISAL
+        self.appraise = appraise or (lambda prompt: APPRAISAL)
+        self.fail_on = fail_on
         self.model = FunctionModel(self._answer)
 
     def _answer(self, messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         prompt = user_prompt(messages)
         instructions = info.instructions or ""
-        if instructions == APPRAISE_INSTRUCTION:
-            name, args = "appraise", self.appraisal
-        elif instructions == DELIBERATE_INSTRUCTION:
-            name, args = "deliberate", self.decide(prompt)
+        if instructions == DELIBERATE_INSTRUCTIONS:
+            name, answer = "deliberate", self.decide
+            if self.fail_on is not None and len(self.prompts("deliberate")) + 1 == self.fail_on:
+                raise RuntimeError("the model is gone")
+        elif instructions == APPRAISE_INSTRUCTIONS:
+            name, answer = "appraise", self.appraise
         else:
             raise AssertionError(f"unknown agent with instructions {instructions!r}")
         self.calls.append((name, instructions, prompt))
-        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, args)])
+        self.tools.extend(info.output_tools)
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, answer(prompt))])
 
     def prompts(self, name: str) -> list[str]:
         return [p for n, _, p in self.calls if n == name]
 
 
-def prefer(*actions: Action) -> Answer:
-    """A Deliberate answer choosing the first of `actions` on offer (else the first letter),
-    expecting to feel much cooler: whatever it does, the heat comes out worse than expected."""
+def scripted(*answers: dict[str, Any]) -> tuple[FunctionModel, list[list[ModelMessage]]]:
+    """A model that gives `answers` in turn, repeating the last; and the messages of each call."""
+    calls: list[list[ModelMessage]] = []
 
-    def decide(prompt: str) -> dict[str, Any]:
-        offered = offered_letters(prompt)
-        letter = next((ltr for a in actions for ltr, b in offered.items() if a is b), min(offered))
-        return {**DECISION, "letter": letter}
+    def function(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        calls.append(list(messages))
+        args = answers[min(len(calls), len(answers)) - 1]
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, args)])
 
-    return decide
+    return FunctionModel(function), calls
 
 
 def failing_model() -> FunctionModel:

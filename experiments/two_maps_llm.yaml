@@ -1,0 +1,45 @@
+# Three creatures of two_maps.yaml on two seeds, with Deliberate and Appraise on a model. They
+# differ only in temperament. Two seeds, so that two creatures of different temperament can be
+# set against two days of the same creature. The model comes from SURPRISE_LOOP_MODEL.
+name: two_maps_llm
+seeds: [1, 2]
+model: null
+backends:
+  deliberate: llm
+  appraise: llm
+params:
+  llm:
+    temperature: 0.5
+    timeout_s: 120
+    settings: {max_tokens: 8000, openrouter_reasoning: {effort: low}}
+world:
+  layout:
+    - "...#..~.."
+    - ".F.#...T."
+    - ".....P..."
+    - "##..@..U."
+    - "...T..F.."
+    - ".~...#..B"
+    - "....F#..."
+  body:
+    smell_chance: 0.7
+    damp_chance: 0.7
+agents:
+  - name: plain
+    temperament:
+      presumes: {ground: 0.60, pleasant: 0.06, unpleasant: 0.05, obstacle: 0.12, food: 0.06, toxic: 0.03, water: 0.06, foul: 0.02}
+      gain: {hunger: 1.0, thirst: 1.0, ache: 1.0, sickness: 1.0, unease: 1.0, pleasure: 1.0}
+      noise: {hunger: 0.02, thirst: 0.02, ache: 0.02, sickness: 0.02, unease: 0.02, pleasure: 0.02}
+      blur: 0.0
+  - name: wary
+    temperament:
+      presumes: {ground: 0.40, pleasant: 0.02, unpleasant: 0.16, obstacle: 0.15, food: 0.03, toxic: 0.12, water: 0.03, foul: 0.09}
+      gain: {hunger: 1.2, thirst: 1.2, ache: 1.4, sickness: 1.4, unease: 1.4, pleasure: 0.7}
+      noise: {hunger: 0.02, thirst: 0.02, ache: 0.02, sickness: 0.02, unease: 0.02, pleasure: 0.02}
+      blur: 0.0
+  - name: hopeful
+    temperament:
+      presumes: {ground: 0.45, pleasant: 0.18, unpleasant: 0.01, obstacle: 0.08, food: 0.14, toxic: 0.01, water: 0.12, foul: 0.01}
+      gain: {hunger: 0.85, thirst: 0.85, ache: 0.7, sickness: 0.7, unease: 0.7, pleasure: 1.4}
+      noise: {hunger: 0.02, thirst: 0.02, ache: 0.02, sickness: 0.02, unease: 0.02, pleasure: 0.02}
+      blur: 0.0

@@ -1,473 +1,370 @@
-"""The shared pure functions of the phases: bands, comparison, belief, serving and the rules."""
+"""The rule chooser, its expectation, the blind chooser, the measures and the starting state."""
+
+import math
 
 import pytest
-from bodies import ILO
+from creatures import run_config
 
-from surprise_loop.config import (
-    BeliefParams,
-    DeliberateParams,
-    ExpectationParams,
-    MonitorParams,
-    StubModelParams,
-)
-from surprise_loop.feeling import discomfort
-from surprise_loop.phases.heuristics import (
-    bands_from_forecast,
-    bands_from_words,
-    clamp,
-    compare,
-    forecast,
-    heat_pull,
-    nearest,
-    reactive_choice,
-    require,
-    serving_actions,
-    updated_belief,
-)
-from surprise_loop.state import (
-    Band,
-    ChangeWord,
-    Decision,
-    Expectation,
-    FeltFact,
-    FeltScene,
-    Sureness,
-    Temperament,
-)
+from surprise_loop.config import RuleParams, initial_agent_state
+from surprise_loop.phases.heuristics import blind_decision, measures, rule_choice, rule_expectation
+from surprise_loop.reasoner import initial_reasoner, marginals, reasoner_beliefs
+from surprise_loop.state import AgentState, CreatureMap, FeltRecord, Sureness
 from surprise_loop.world import (
-    FACT_ABOUT,
-    Action,
+    Belief,
     Channel,
-    Event,
-    Fact,
-    FactName,
-    Levels,
-    Observation,
-    Place,
-    WorldConfig,
-    facts_at,
+    Direction,
+    GridWorld,
+    Kind,
+    Position,
+    derive_rng,
+    key,
+    layout_positions,
+    truth_at,
 )
 
-HEAT, WATER, ENERGY = Channel.HEAT, Channel.WATER, Channel.ENERGY
-WORLD = WorldConfig()
-# pinned here so no assertion depends on the provisional defaults in config.py
-EXPECT = ExpectationParams(
-    bit=0.25, much=1.0, stub_tolerance={HEAT: 0.05, WATER: 0.03, ENERGY: 0.03}
-)
-MONITOR = MonitorParams(world_weight=0.7)
-BELIEF = BeliefParams(expectation_weight={HEAT: 0.5, WATER: 0.5, ENERGY: 0.5})
-MODEL = StubModelParams(
-    heat_rate=0.25,
-    heat_per_bearing=0.5,
-    water_drain=0.004,
-    sweat_water=0.01,
-    drink_water=0.08,
-    walk_energy=0.03,
-    rest_energy=0.02,
-)
-DELIB = DeliberateParams(stub="reactive", act_threshold=0.5, horizon=6, model=MODEL)
-BELIEF_NOW = Levels(heat=0.4, water=0.6, energy=0.5)
+P = RuleParams()
+ALL = tuple(Direction)
 
 
-def band(lo: float | None, hi: float | None) -> Band:
-    return Band(lo=lo, hi=hi)
-
-
-def bands(heat: Band, water: Band, energy: Band) -> dict[Channel, Band]:
-    return {HEAT: heat, WATER: water, ENERGY: energy}
-
-
-def around(levels: Levels, half: float = 0.05) -> dict[Channel, Band]:
-    return {c: band(levels.of(c) - half, levels.of(c) + half) for c in Channel}
-
-
-def decision(
-    expected: dict[Channel, Band], action: Action = Action.REST, world: bool | None = None
-) -> Decision:
-    expectation = Expectation(
-        words=None, bands=expected, world=world, sureness=Sureness.FAIRLY_SURE
-    )
-    return Decision(action=action, expectation=expectation)
-
-
-def observation(
-    signal: Levels,
-    place: Place = Place.MEADOW,
-    event: Event = Event.RESTED,
-    minute: int = 780,
-    facts: list[Fact] | None = None,
-) -> Observation:
-    return Observation(
-        step=1,
-        minute=minute,
-        place=place,
-        last_action=None,
-        event=event,
-        facts=facts if facts is not None else facts_at(WORLD, place, minute, True, False),
-        signal=signal,
-        offers=[Action.REST, Action.LOOK],
+def felt(at: Position = (0, 0), **levels: int) -> FeltRecord:
+    return FeltRecord(
+        moved=None,
+        levels=dict.fromkeys(Channel, 0) | {Channel(c): v for c, v in levels.items()},
+        smell=0,
+        damp=0,
+        tone=0,
+        stir=0,
+        at=at,
     )
 
 
-# --- require and clamp ------------------------------------------------------------------------
+def beliefs(**values: float) -> dict[Belief, float]:
+    return dict.fromkeys(Belief, 0.0) | {Belief(b): v for b, v in values.items()}
 
 
-def test_require_returns_the_value_or_names_what_is_missing() -> None:
-    assert require(3, "x", "act") == 3
-    with pytest.raises(ValueError, match=r"act needs ws\.decision"):
-        require(None, "decision", "act")
+def untried(agent: str) -> dict[Belief, float]:
+    return marginals(run_config(agent).agent.temperament.presumes)
 
 
-def test_clamp() -> None:
-    assert clamp(2.0, -1, 1) == 1
-    assert clamp(-2.0, -1, 1) == -1
-    assert clamp(0.3, -1, 1) == 0.3
+def a_map(agent: str = "plain", **tiles: dict[Belief, float]) -> CreatureMap:
+    """A map with `agent`'s untried beliefs; tile keywords are written like `t3_0` for (3, 0)."""
+    return CreatureMap(untried=untried(agent), tiles={_key(name): b for name, b in tiles.items()})
 
 
-# --- bands ------------------------------------------------------------------------------------
+def _key(name: str) -> str:
+    x, y = name[1:].replace("m", "-").split("_")
+    return f"{x},{y}"
 
-# each word's band, as a change of felt strength
-WORD_CHANGE = {
-    ChangeWord.MUCH_LESS: (None, -1.0),
-    ChangeWord.BIT_LESS: (-1.0, -0.25),
-    ChangeWord.SAME: (-0.25, 0.25),
-    ChangeWord.BIT_MORE: (0.25, 1.0),
-    ChangeWord.MUCH_MORE: (1.0, None),
+
+def choose(f: FeltRecord, m: CreatureMap, tries: dict[str, int], seed: int = 1):
+    return rule_choice(f, m, tries, P, derive_rng(seed, "rule", 1))
+
+
+# the starting state
+
+
+def test_initial_agent_state_for_the_plain_creature() -> None:
+    config = run_config("plain")
+    agent = initial_agent_state(config, GridWorld(config.world, config.seed).observe())
+    assert agent.felt.at == (0, 0)
+    assert agent.felt.moved is None
+    assert agent.felt.levels[Channel.HUNGER] == 1
+    assert agent.felt.levels[Channel.THIRST] == 1
+    assert agent.felt.stir == 0
+    assert agent.stir == 0.0
+    assert agent.own_map.untried == marginals(config.agent.temperament.presumes)
+    assert math.isclose(agent.own_map.untried[Belief.BLOCKS], 0.29)
+    assert agent.reasoner == initial_reasoner(config.agent.temperament.presumes)
+    assert agent.own_map.tiles == {"0,0": reasoner_beliefs(agent.reasoner, (0, 0))}
+    assert agent.own_map.at((0, 0))[Belief.BLOCKS] == 0
+    assert reasoner_beliefs(agent.reasoner, (0, 0))[Belief.BLOCKS] == 0
+    assert agent.tries == {}
+    assert agent.memory.episodes == []
+    assert agent.tick == 0
+
+
+# rule_choice
+
+FOOD = beliefs(blocks=1.0, feeds=0.9)
+
+
+def test_a_hungry_creature_heads_for_tried_food() -> None:
+    rc = choose(felt(hunger=3), a_map(t3_0=FOOD), {"3,0": 1})
+    assert rc.best == (Direction.EAST,)
+    assert rc.choice == Direction.EAST
+
+
+def test_food_believed_to_hurt_is_no_goal_until_the_need_is_desperate() -> None:
+    m = a_map(t3_0=beliefs(blocks=1.0, feeds=0.9, hurts=0.6))
+    assert choose(felt(hunger=2), m, {"3,0": 1}).best == ALL
+    assert choose(felt(hunger=3), m, {"3,0": 1}).best == (Direction.EAST,)
+
+
+WATER = beliefs(blocks=1.0, quenches=0.9)
+
+
+def test_believed_water_serves_a_need_before_it_is_tried() -> None:
+    assert choose(felt(thirst=2), a_map(t2_0=WATER), {}).best == (Direction.EAST,)
+
+
+def test_believed_water_that_may_hurt_waits_while_the_need_is_not_desperate() -> None:
+    m = a_map(t2_0=beliefs(blocks=1.0, quenches=1.0, hurts=0.75))
+    assert choose(felt(thirst=2), m, {}).best == ALL
+
+
+def test_a_desperate_need_heads_for_believed_water_that_may_hurt() -> None:
+    m = a_map(t2_0=beliefs(blocks=1.0, quenches=1.0, hurts=0.75))
+    assert choose(felt(thirst=3), m, {}).best == (Direction.EAST,)
+
+
+def test_a_curious_creature_tries_the_new_before_the_known() -> None:
+    tries = {"-1,0": 1}
+    curious = choose(felt(), a_map("plain", tm1_0=beliefs()), tries)
+    assert curious.best == (Direction.NORTH, Direction.EAST, Direction.SOUTH)
+    assert choose(felt(), a_map("wary", tm1_0=beliefs()), tries).best == (Direction.WEST,)
+
+
+def test_no_need_and_nothing_tried_explores_every_way() -> None:
+    a = choose(felt(), a_map(), {}, seed=7)
+    b = choose(felt(), a_map(), {}, seed=7)
+    assert a.best == ALL
+    assert a.choice in ALL
+    assert a == b
+
+
+def test_a_wary_creature_with_no_need_goes_back_to_what_it_knows() -> None:
+    rc = choose(felt(), a_map("wary", tm1_0=beliefs()), {"-1,0": 1})
+    assert rc.best == (Direction.WEST,)
+
+
+def test_a_wary_creature_with_nothing_tried_falls_back_to_untried_tiles() -> None:
+    assert untried("wary")[Belief.HURTS] < P.avoid_at
+    assert choose(felt(), a_map("wary"), {}).best == ALL
+
+
+def test_a_believed_block_is_walked_round() -> None:
+    m = a_map(t1_0=beliefs(blocks=0.9), t2_0=FOOD)
+    rc = choose(felt(hunger=3), m, {"2,0": 1})
+    assert rc.best == (Direction.NORTH, Direction.SOUTH)
+
+
+def test_hunger_wins_a_tie_and_thirst_wins_when_louder() -> None:
+    water = beliefs(blocks=1.0, quenches=0.9)
+    m = a_map(t2_0=FOOD, tm2_0=water)
+    tries = {"2,0": 1, "-2,0": 1}
+    assert choose(felt(hunger=3, thirst=3), m, tries).best == (Direction.EAST,)
+    assert choose(felt(hunger=2, thirst=3), m, tries).best == (Direction.WEST,)
+
+
+def test_a_curious_creature_walks_past_an_untried_tile_it_believes_harmful() -> None:
+    tried_ground = {"t0_1": beliefs(), "t0_m1": beliefs(), "tm1_0": beliefs()}
+    m = a_map(t1_0=beliefs(hurts=0.9), **tried_ground)
+    rc = choose(felt(), m, {"0,1": 1, "0,-1": 1, "-1,0": 1})
+    assert rc.best == (Direction.NORTH, Direction.SOUTH, Direction.WEST)
+
+
+def test_a_loud_need_with_nothing_safe_to_try_heads_for_harm() -> None:
+    m = CreatureMap(untried=beliefs(hurts=0.9), tiles={"-1,0": beliefs()})
+    rc = choose(felt(hunger=3), m, {"-1,0": 1})
+    assert rc.best == (Direction.NORTH, Direction.EAST, Direction.SOUTH)
+
+
+@pytest.mark.parametrize(
+    "untried_beliefs",
+    [
+        beliefs(hurts=0.6, feeds=0.3, quenches=0.3, pleases=0.3),  # curious
+        beliefs(hurts=0.9),  # not curious
+    ],
+)
+def test_with_no_need_and_only_harm_untried_it_goes_back_to_what_it_knows(
+    untried_beliefs: dict[Belief, float],
+) -> None:
+    m = CreatureMap(untried=untried_beliefs, tiles={"-1,0": beliefs()})
+    assert choose(felt(), m, {"-1,0": 1}).best == (Direction.WEST,)
+
+
+@pytest.mark.parametrize(
+    "untried_beliefs",
+    [
+        beliefs(hurts=0.6, feeds=0.3, quenches=0.3, pleases=0.3),  # curious
+        beliefs(hurts=0.9),  # not curious
+    ],
+)
+def test_with_no_need_it_stands_on_known_ground_and_does_not_push_at_things(
+    untried_beliefs: dict[Belief, float],
+) -> None:
+    food = beliefs(blocks=1.0, feeds=0.9)
+    m = CreatureMap(untried=untried_beliefs, tiles={"1,0": food, "0,1": beliefs()})
+    # the tried, safe food east is no goal; the tried, safe ground north is
+    assert choose(felt(), m, {"1,0": 3, "0,1": 1}).best == (Direction.NORTH,)
+
+
+def test_with_no_need_and_only_a_tried_obstacle_known_it_explores() -> None:
+    m = a_map("wary", t1_0=beliefs(blocks=1.0))
+    assert choose(felt(), m, {"1,0": 2}).best == (Direction.NORTH, Direction.SOUTH, Direction.WEST)
+
+
+# rule_expectation
+
+
+def test_expecting_to_eat() -> None:
+    m = a_map(t1_0=beliefs(blocks=1.0, feeds=0.9))
+    e = rule_expectation(Direction.EAST, felt(hunger=2), m, {"1,0": 2}, P)
+    assert not e.moved
+    assert e.levels[Channel.HUNGER] == 1
+    assert e.levels[Channel.ACHE] == 0
+    assert e.sure == Sureness.SURE
+    assert rule_expectation(Direction.EAST, felt(hunger=2), m, {"1,0": 1}, P).sure == (
+        Sureness.FAIRLY_SURE
+    )
+    assert rule_expectation(Direction.EAST, felt(hunger=2), m, {}, P).sure == Sureness.GUESSING
+
+
+def test_expecting_to_eat_when_full_expects_an_ache() -> None:
+    m = a_map(t1_0=beliefs(blocks=1.0, feeds=0.9))
+    e = rule_expectation(Direction.EAST, felt(hunger=0, ache=1), m, {}, P)
+    assert e.levels[Channel.HUNGER] == 0
+    assert e.levels[Channel.ACHE] == 2
+    top = rule_expectation(Direction.EAST, felt(ache=4), m, {}, P)
+    assert top.levels[Channel.ACHE] == 4
+
+
+def test_expecting_to_drink() -> None:
+    m = a_map(t1_0=beliefs(blocks=1.0, quenches=0.9))
+    e = rule_expectation(Direction.EAST, felt(thirst=2), m, {}, P)
+    assert not e.moved
+    assert e.levels[Channel.THIRST] == 1
+
+
+def test_expecting_pleasant_ground_and_the_smell_beside_it() -> None:
+    m = a_map(t1_0=beliefs(pleases=0.9), t2_0=FOOD, t1_1=FOOD, t1_m1=FOOD)
+    e = rule_expectation(Direction.EAST, felt(pleasure=1), m, {}, P)
+    assert e.moved
+    assert e.levels[Channel.PLEASURE] == 2
+    assert e.smell == 2  # three believed food beside the new spot, at most two on the ladder
+    assert e.damp == 0
+    high = rule_expectation(Direction.EAST, felt(pleasure=3), m, {}, P)
+    assert high.levels[Channel.PLEASURE] == 3
+
+
+def test_expecting_ground_believed_to_hurt() -> None:
+    m = a_map(t1_0=beliefs(hurts=0.9))
+    e = rule_expectation(Direction.EAST, felt(), m, {}, P)
+    assert e.moved
+    assert e.levels[Channel.UNEASE] == 2
+
+
+# blind_decision
+
+
+def test_the_blind_chooser_reads_only_the_felt_record() -> None:
+    f = felt(hunger=2, thirst=1)
+    d = blind_decision(f, derive_rng(3, "blind", 1))
+    assert d == blind_decision(f, derive_rng(3, "blind", 1))
+    assert d.expectation.moved
+    assert d.expectation.levels == f.levels
+    assert (d.expectation.smell, d.expectation.damp) == (f.smell, f.damp)
+    assert d.expectation.sure == Sureness.GUESSING
+    assert d.why == ""
+
+
+# measures
+
+
+def _agent(own_map: CreatureMap, tries: dict[str, int]) -> AgentState:
+    config = run_config("plain")
+    agent = initial_agent_state(config, GridWorld(config.world, config.seed).observe())
+    return agent.model_copy(update={"own_map": own_map, "tries": tries})
+
+
+def _error(a, b, tiles) -> float:
+    if not tiles:
+        return 0.0
+    return sum(abs(a(t)[x] - b(t)[x]) for t in tiles for x in Belief) / (len(tiles) * len(Belief))
+
+
+def test_measures_on_two_tried_tiles() -> None:
+    world = run_config("plain").world
+    harmful, fine = (1, 0), (-1, 0)  # both truly ground
+    own = a_map(t1_0=beliefs(hurts=0.9), tm1_0=beliefs())
+    agent = _agent(own, {key(harmful): 2, key(fine): 1, "0,1": 0})
+    m = measures(agent, world, run_config("plain").params.metrics)
+
+    tried = [harmful, fine]
+    everywhere = list(layout_positions(world))
+
+    def truth(t: Position) -> dict[Belief, float]:
+        return truth_at(world, t)
+
+    def reasoner(t: Position) -> dict[Belief, float]:
+        return reasoner_beliefs(agent.reasoner, t)
+
+    assert m.tiles_tried == 2
+    assert m.false_harm == 1
+    assert m.false_safe == 0
+    assert m.reasoner_false_harm == 0
+    assert m.reasoner_false_safe == 0
+    assert m.wrong == (key(harmful),)
+    assert math.isclose(m.own_error, 0.9 / 10)
+    assert math.isclose(m.start_error, _error(lambda t: own.untried, truth, tried))
+    assert math.isclose(m.reasoner_error, _error(reasoner, truth, tried))
+    assert math.isclose(m.gap, _error(own.at, reasoner, tried))
+    assert math.isclose(m.own_error_all, _error(own.at, truth, everywhere))
+    assert math.isclose(m.reasoner_error_all, _error(reasoner, truth, everywhere))
+    assert math.isclose(m.gap_all, _error(own.at, reasoner, everywhere))
+
+
+def pinned_agent() -> AgentState:
+    """Three tried tiles (ground, food, toxic) and an untried one, in both maps."""
+    own = a_map(
+        t1_0=beliefs(hurts=0.9),
+        t2_m1=beliefs(blocks=1.0, feeds=0.7, hurts=0.3),
+        tm1_m1=beliefs(blocks=1.0, feeds=0.8),
+        t0_1=beliefs(pleases=0.6),
+    )
+    agent = _agent(own, {"1,0": 1, "2,-1": 3, "-1,-1": 1})
+    reasoner = agent.reasoner.model_copy(
+        update={
+            "tiles": {
+                "2,-1": dict.fromkeys(Kind, 0.0) | {Kind.FOOD: 0.75, Kind.TOXIC: 0.25},
+                "-1,-1": dict.fromkeys(Kind, 0.0) | {Kind.FOOD: 0.5, Kind.TOXIC: 0.5},
+                "0,1": dict.fromkeys(Kind, 0.0) | {Kind.GROUND: 0.6, Kind.PLEASANT: 0.4},
+            }
+        }
+    )
+    return agent.model_copy(update={"reasoner": reasoner})
+
+
+# measures of pinned_agent, recorded before measures was rewritten to read each tile once
+PINNED = {
+    "tiles_tried": 3,
+    "start_error": 0.3426666666666666,
+    "own_error": 0.18000000000000002,
+    "reasoner_error": 0.09133333333333332,
+    "gap": 0.158,
+    "own_error_all": 0.16882539682539682,
+    "reasoner_error_all": 0.16396825396825396,
+    "gap_all": 0.008158730158730159,
+    "false_harm": 1,
+    "false_safe": 1,
+    "reasoner_false_harm": 0,
+    "reasoner_false_safe": 0,
+    "wrong": ("-1,-1", "1,0"),
 }
 
 
-@pytest.mark.parametrize("word", list(ChangeWord))
-def test_word_band_for_heat_is_the_change_over_tightness_above_the_belief(
-    word: ChangeWord,
-) -> None:
-    lo, hi = WORD_CHANGE[word]
-    got = bands_from_words(dict.fromkeys(Channel, word), BELIEF_NOW, ILO, EXPECT)[HEAT]
-    t = ILO.tightness[HEAT]
-    want_lo = None if lo is None else BELIEF_NOW.heat + lo / t
-    want_hi = None if hi is None else BELIEF_NOW.heat + hi / t
-    assert got.lo == pytest.approx(want_lo)
-    assert got.hi == pytest.approx(want_hi)
-
-
-@pytest.mark.parametrize("channel", [WATER, ENERGY])
-@pytest.mark.parametrize("word", list(ChangeWord))
-def test_word_band_for_water_and_energy_is_mirrored(word: ChangeWord, channel: Channel) -> None:
-    lo, hi = WORD_CHANGE[word]
-    got = bands_from_words(dict.fromkeys(Channel, word), BELIEF_NOW, ILO, EXPECT)[channel]
-    t = ILO.tightness[channel]
-    level = BELIEF_NOW.of(channel)
-    # more strain is a lower level, so the felt change's hi edge becomes the level's lo edge
-    want_lo = None if hi is None else level - hi / t
-    want_hi = None if lo is None else level - lo / t
-    assert got.lo == pytest.approx(want_lo)
-    assert got.hi == pytest.approx(want_hi)
-
-
-def test_a_less_thirsty_band_lies_above_the_present_water_level() -> None:
-    got = bands_from_words(dict.fromkeys(Channel, ChangeWord.BIT_LESS), BELIEF_NOW, ILO, EXPECT)
-    assert got[WATER].lo is not None and got[WATER].lo > BELIEF_NOW.water
-    assert got[ENERGY].lo is not None and got[ENERGY].lo > BELIEF_NOW.energy
-    assert got[HEAT].hi is not None and got[HEAT].hi < BELIEF_NOW.heat
-
-
-def test_bands_from_forecast_are_the_forecast_plus_or_minus_tolerance() -> None:
-    f = Levels(heat=0.3, water=0.6, energy=0.4)
-    got = bands_from_forecast(f, EXPECT)
-    assert got[HEAT].lo == pytest.approx(0.25) and got[HEAT].hi == pytest.approx(0.35)
-    assert got[WATER].lo == pytest.approx(0.57) and got[WATER].hi == pytest.approx(0.63)
-    assert got[ENERGY].lo == pytest.approx(0.37) and got[ENERGY].hi == pytest.approx(0.43)
-
-
-def test_nearest_clamps_each_channel_into_its_band() -> None:
-    signal = Levels(heat=0.9, water=0.1, energy=0.5)
-    got = nearest(signal, bands(band(0.2, 0.3), band(0.4, None), band(None, 0.6)))
-    assert got == Levels(heat=0.3, water=0.4, energy=0.5)
-    open_both = nearest(signal, bands(band(None, None), band(None, 0.0), band(0.7, None)))
-    assert open_both == Levels(heat=0.9, water=0.0, energy=0.7)
-
-
-# --- compare ------------------------------------------------------------------------------------
-
-
-def test_inside_the_band_every_error_is_zero() -> None:
-    signal = Levels(heat=0.4, water=0.6, energy=0.5)
-    got = compare(decision(around(signal)), observation(signal), ILO, MONITOR)
-    assert got.body == dict.fromkeys(Channel, 0.0)
-    assert got.body_felt == dict.fromkeys(Channel, 0.0)
-    assert got.better == 0
-    assert got.world is None
-    assert got.size == 0
-
-
-def test_a_heat_signal_above_its_band_is_a_positive_error() -> None:
-    expected = bands(band(0.2, 0.3), band(0.55, 0.65), band(0.45, 0.55))
-    got = compare(
-        decision(expected), observation(Levels(heat=0.4, water=0.6, energy=0.5)), ILO, MONITOR
-    )
-    assert got.body[HEAT] == pytest.approx(0.1)
-    assert got.body_felt[HEAT] == pytest.approx(0.1 * ILO.tightness[HEAT])
-    assert got.body[WATER] == got.body[ENERGY] == 0
-
-
-def test_a_water_signal_below_its_band_is_more_thirst_than_expected() -> None:
-    expected = bands(band(0.35, 0.45), band(0.5, 0.6), band(0.45, 0.55))
-    got = compare(
-        decision(expected), observation(Levels(heat=0.4, water=0.4, energy=0.5)), ILO, MONITOR
-    )
-    assert got.body[WATER] == pytest.approx(-0.1)
-    assert got.body_felt[WATER] == pytest.approx(0.1 * ILO.tightness[WATER])
-    assert got.body_felt[WATER] > 0
-
-
-def test_an_energy_signal_above_its_band_is_less_tired_than_expected() -> None:
-    expected = bands(band(0.35, 0.45), band(0.55, 0.65), band(0.3, 0.4))
-    got = compare(
-        decision(expected), observation(Levels(heat=0.4, water=0.6, energy=0.5)), ILO, MONITOR
-    )
-    assert got.body[ENERGY] == pytest.approx(0.1)
-    assert got.body_felt[ENERGY] == pytest.approx(-0.1 * ILO.tightness[ENERGY])
-
-
-def arrive_at_oak(minute: int, world: bool | None, event: Event = Event.ARRIVED):
-    signal = Levels(heat=0.4, water=0.6, energy=0.5)
-    obs = observation(signal, place=Place.OAK, event=event, minute=minute)
-    return compare(decision(around(signal), Action.GO_OAK, world), obs, ILO, MONITOR)
-
-
-def test_arriving_at_a_sunlit_log_after_expecting_shade_is_a_world_mismatch() -> None:
-    names = {f.name for f in facts_at(WORLD, Place.OAK, 780, True, False)}
-    assert FactName.LOG_SUN in names and FactName.LOG not in names
-    got = arrive_at_oak(780, world=True)
-    assert got.world is True
-    assert got.size == pytest.approx(MONITOR.world_weight)
-
-
-def test_arriving_at_a_shaded_log_after_expecting_shade_held() -> None:
-    names = {f.name for f in facts_at(WORLD, Place.OAK, 960, True, False)}
-    assert FactName.LOG in names
-    got = arrive_at_oak(960, world=True)
-    assert got.world is False
-    assert got.size == 0
-
-
-def test_no_world_comparison_without_an_expectation_or_an_arrival() -> None:
-    assert arrive_at_oak(780, world=None).world is None
-    assert arrive_at_oak(780, world=True, event=Event.STUMBLED).world is None
-
-
-def test_the_stream_question_reads_water_from_the_arrival_facts() -> None:
-    signal = Levels(heat=0.4, water=0.6, energy=0.5)
-    full = observation(
-        signal, Place.STREAM, Event.ARRIVED, facts=facts_at(WORLD, Place.STREAM, 780, True, False)
-    )
-    trickle = observation(
-        signal, Place.STREAM, Event.ARRIVED, facts=facts_at(WORLD, Place.STREAM, 780, False, False)
-    )
-    go = Action.GO_STREAM
-    assert compare(decision(around(signal), go, True), full, ILO, MONITOR).world is False
-    assert compare(decision(around(signal), go, True), trickle, ILO, MONITOR).world is True
-    assert compare(decision(around(signal), go, False), trickle, ILO, MONITOR).world is False
-
-
-def test_size_adds_world_weight_to_the_felt_error_on_a_mismatch() -> None:
-    signal = Levels(heat=0.4, water=0.6, energy=0.5)
-    expected = around(signal) | {HEAT: band(0.2, 0.3)}
-    obs = observation(signal, place=Place.OAK, event=Event.ARRIVED, minute=780)
-    got = compare(decision(expected, Action.GO_OAK, True), obs, ILO, MONITOR)
-    assert got.size == pytest.approx(0.1 * ILO.tightness[HEAT] + MONITOR.world_weight)
-
-
-def test_an_outcome_better_for_the_body_gives_positive_better_and_a_size() -> None:
-    # less thirsty than expected: the signal is above the water band, below the set point
-    expected = bands(band(0.35, 0.45), band(0.5, 0.6), band(0.45, 0.55))
-    signal = Levels(heat=0.4, water=0.7, energy=0.5)
-    got = compare(decision(expected), observation(signal), ILO, MONITOR)
-    edge = Levels(heat=0.4, water=0.6, energy=0.5)
-    assert got.better == pytest.approx(discomfort(edge, ILO) - discomfort(signal, ILO))
-    assert got.better > 0
-    assert got.size == pytest.approx(0.1 * ILO.tightness[WATER])
-
-
-# --- belief -------------------------------------------------------------------------------------
-
-
-def trusting(trust: float) -> Temperament:
-    return ILO.model_copy(update={"trust": dict.fromkeys(Channel, trust)})
-
-
-def test_inside_the_band_the_belief_is_the_signal() -> None:
-    signal = Levels(heat=0.4, water=0.6, energy=0.5)
-    assert updated_belief(signal, around(signal), ILO, BELIEF) == signal
-
-
-def test_outside_the_band_the_belief_moves_from_the_edge_toward_the_signal() -> None:
-    signal = Levels(heat=0.5, water=0.4, energy=0.5)
-    expected = bands(band(0.2, 0.3), band(0.5, 0.6), band(0.45, 0.55))
-    got = updated_belief(signal, expected, ILO, BELIEF)
-    k_heat = ILO.trust[HEAT] / (ILO.trust[HEAT] + BELIEF.expectation_weight[HEAT])
-    k_water = ILO.trust[WATER] / (ILO.trust[WATER] + BELIEF.expectation_weight[WATER])
-    assert got.heat == pytest.approx(0.3 + k_heat * (0.5 - 0.3))
-    assert got.water == pytest.approx(0.5 + k_water * (0.4 - 0.5))
-    assert got.energy == 0.5
-
-
-def test_higher_trust_moves_the_belief_further_toward_the_signal() -> None:
-    signal = Levels(heat=0.5, water=0.6, energy=0.5)
-    expected = around(signal) | {HEAT: band(0.2, 0.3)}
-    low = updated_belief(signal, expected, trusting(0.1), BELIEF)
-    high = updated_belief(signal, expected, trusting(0.9), BELIEF)
-    assert 0.3 < low.heat < high.heat < 0.5
-
-
-def test_the_belief_is_continuous_at_the_band_edge() -> None:
-    expected = bands(band(0.2, 0.3), band(0.5, 0.6), band(0.45, 0.55))
-    eps = 1e-9
-    inside = updated_belief(Levels(heat=0.3, water=0.5, energy=0.5), expected, ILO, BELIEF)
-    outside = updated_belief(
-        Levels(heat=0.3 + eps, water=0.5 - eps, energy=0.5), expected, ILO, BELIEF
-    )
-    assert outside.heat == pytest.approx(inside.heat, abs=1e-8)
-    assert outside.water == pytest.approx(inside.water, abs=1e-8)
-
-
-# --- serving ------------------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("channel", "too_much", "place", "want"),
-    [
-        (HEAT, True, Place.OAK, [Action.REST]),
-        (HEAT, True, Place.MEADOW, [Action.GO_OAK]),
-        (HEAT, True, Place.STREAM, [Action.GO_OAK]),
-        (HEAT, False, Place.MEADOW, [Action.REST]),
-        (HEAT, False, Place.OAK, [Action.GO_MEADOW]),
-        (HEAT, False, Place.STREAM, [Action.GO_MEADOW]),
-        (WATER, True, Place.STREAM, [Action.DRINK]),
-        (WATER, True, Place.MEADOW, [Action.GO_STREAM]),
-        (WATER, True, Place.OAK, [Action.GO_STREAM]),
-        (ENERGY, True, Place.MEADOW, [Action.REST]),
-        (ENERGY, True, Place.OAK, [Action.REST]),
-        (ENERGY, True, Place.STREAM, [Action.REST]),
-    ],
-)
-def test_serving_actions(channel: Channel, too_much: bool, place: Place, want: list) -> None:
-    assert serving_actions(channel, too_much, place) == want
-
-
-# --- heat pull and forecast -------------------------------------------------------------------
-
-
-def test_heat_pull_sums_the_heat_bearings_of_the_facts_about_a_place() -> None:
-    facts = facts_at(WORLD, Place.MEADOW, 780, True, False)
-    # here: air +1.0, sun +1.0, breeze -0.3; the oak: its shade; the stream: its cool water
-    assert heat_pull(facts, None) == pytest.approx(1.7)
-    assert heat_pull(facts, Place.OAK) == pytest.approx(-1.0)
-    assert heat_pull(facts, Place.STREAM) == pytest.approx(-0.3)
-    assert heat_pull(facts, Place.MEADOW) == 0
-    assert heat_pull([], None) == 0
-
-
-@pytest.mark.parametrize(
-    ("action", "water_gain", "energy_change"),
-    [
-        (Action.GO_OAK, 0.0, -0.03),
-        (Action.DRINK, 0.08, 0.0),
-        (Action.REST, 0.0, 0.02),
-        (Action.LOOK, 0.0, 0.0),
-    ],
-)
-def test_forecast_is_the_stubs_one_step_model(
-    action: Action, water_gain: float, energy_change: float
-) -> None:
-    belief = Levels(heat=0.6, water=0.5, energy=0.4)
-    got = forecast(belief, -1.0, action, MODEL)
-    assert got.heat == pytest.approx(0.6 + 0.25 * (-1.0 * 0.5 - 0.6))
-    assert got.water == pytest.approx(0.5 - 0.004 - 0.01 * 0.6 + water_gain)
-    assert got.energy == pytest.approx(0.4 + energy_change)
-
-
-def test_forecast_sweats_no_water_when_cold() -> None:
-    got = forecast(Levels(heat=-0.5, water=0.5, energy=0.4), 0.0, Action.LOOK, MODEL)
-    assert got.water == pytest.approx(0.5 - 0.004)
-
-
-# --- the reactive rule ------------------------------------------------------------------------
-
-
-def scene(
-    place: Place, felt: dict[Channel, float], noticed: set[FactName], minute: int = 780
-) -> FeltScene:
-    facts = [
-        FeltFact(
-            name=f.name,
-            about=FACT_ABOUT[f.name],
-            weight=0.1,
-            value=0.0,
-            sign="0",
-            grade=0,
-            noticed=f.name in noticed,
-            phrase="A thing." if f.name in noticed else None,
-        )
-        for f in facts_at(WORLD, place, minute, True, False)
-    ]
-    return FeltScene(place=place, opening="Here.", facts=facts, body=[], surprise=None, felt=felt)
-
-
-MEADOW_OFFERS = [Action.GO_OAK, Action.GO_STREAM, Action.REST, Action.LOOK]
-STREAM_OFFERS = [Action.GO_MEADOW, Action.GO_OAK, Action.DRINK, Action.REST, Action.LOOK]
-
-
-def felt_of(heat: float = 0.0, water: float = 0.0, energy: float = 0.0) -> dict[Channel, float]:
-    return {HEAT: heat, WATER: water, ENERGY: energy}
-
-
-def test_a_hot_body_that_notices_the_oak_shade_goes_to_the_oak() -> None:
-    s = scene(Place.MEADOW, felt_of(heat=2.0, water=1.0), {FactName.OAK_SHADE, FactName.STREAM})
-    assert reactive_choice(s, MEADOW_OFFERS, DELIB) is Action.GO_OAK
-
-
-def test_without_the_oak_shade_noticed_the_next_need_is_served() -> None:
-    s = scene(Place.MEADOW, felt_of(heat=2.0, water=1.0), {FactName.STREAM})
-    assert reactive_choice(s, MEADOW_OFFERS, DELIB) is Action.GO_STREAM
-
-
-def test_without_the_oak_shade_noticed_and_no_other_need_it_looks() -> None:
-    s = scene(Place.MEADOW, felt_of(heat=2.0), {FactName.STREAM})
-    assert reactive_choice(s, MEADOW_OFFERS, DELIB) is Action.LOOK
-
-
-def test_thirst_at_the_stream_drinks() -> None:
-    s = scene(Place.STREAM, felt_of(water=1.5), {FactName.WATER})
-    assert reactive_choice(s, STREAM_OFFERS, DELIB) is Action.DRINK
-
-
-def test_the_loudest_need_is_served_first() -> None:
-    s = scene(Place.STREAM, felt_of(heat=0.8, water=1.5), {FactName.WATER, FactName.OAK_SHADE_FAR})
-    assert reactive_choice(s, STREAM_OFFERS, DELIB) is Action.DRINK
-    s = scene(Place.STREAM, felt_of(heat=1.8, water=1.5), {FactName.WATER, FactName.OAK_SHADE_FAR})
-    assert reactive_choice(s, STREAM_OFFERS, DELIB) is Action.GO_OAK
-
-
-def test_tiredness_rests_whatever_is_noticed() -> None:
-    s = scene(Place.MEADOW, felt_of(energy=1.0), set())
-    assert reactive_choice(s, MEADOW_OFFERS, DELIB) is Action.REST
-
-
-def test_nothing_above_the_threshold_looks() -> None:
-    s = scene(Place.MEADOW, felt_of(heat=0.4, water=-3.0, energy=-2.0), {FactName.OAK_SHADE})
-    assert reactive_choice(s, MEADOW_OFFERS, DELIB) is Action.LOOK
-
-
-def test_a_cold_body_in_the_meadow_rests() -> None:
-    s = scene(Place.MEADOW, felt_of(heat=-1.0), set())
-    assert reactive_choice(s, MEADOW_OFFERS, DELIB) is Action.REST
-
-
-def test_an_action_that_is_not_offered_is_not_chosen() -> None:
-    s = scene(Place.MEADOW, felt_of(heat=2.0, energy=1.0), {FactName.OAK_SHADE})
-    assert reactive_choice(s, [Action.REST], DELIB) is Action.REST
-
-
-def test_without_look_on_offer_the_rule_falls_back_to_the_first_offer() -> None:
-    s = scene(Place.MEADOW, felt_of(heat=2.0), set())
-    assert reactive_choice(s, [Action.GO_OAK], DELIB) is Action.GO_OAK
+def test_measures_pinned() -> None:
+    config = run_config("plain")
+    m = measures(pinned_agent(), config.world, config.params.metrics)
+    assert m.model_dump() == PINNED
+
+
+def test_measures_with_nothing_tried() -> None:
+    config = run_config("plain")
+    agent = _agent(a_map(), {})
+    m = measures(agent, config.world, config.params.metrics)
+    assert m.tiles_tried == 0
+    assert (m.start_error, m.own_error, m.reasoner_error, m.gap) == (0.0, 0.0, 0.0, 0.0)
+    assert (m.false_harm, m.false_safe, m.reasoner_false_harm, m.reasoner_false_safe) == (0,) * 4
+    assert m.wrong == ()
+    assert m.own_error_all > 0
